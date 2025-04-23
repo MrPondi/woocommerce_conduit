@@ -1,5 +1,5 @@
 app_name = "woocommerce_conduit"
-app_title = "Woocommerce Conduit"
+app_title = "WooCommerce Conduit"
 app_publisher = "Karol Parzonka"
 app_description = "Connect your woocomemrce site to frappe"
 app_email = "me@pondi.dev"

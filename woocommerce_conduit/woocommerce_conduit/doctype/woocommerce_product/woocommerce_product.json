@@ -1,0 +1,511 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-04-23 16:23:10.835234",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "server_info_section",
+  "woocommerce_server",
+  "column_break_kjjq",
+  "woocommerce_id",
+  "section_break_anet",
+  "woocommerce_name",
+  "purchasable",
+  "virtual",
+  "downloadable",
+  "column_break_oxfv",
+  "status",
+  "type",
+  "description_section",
+  "description",
+  "short_description",
+  "brand",
+  "section_break_wnpn",
+  "downloads",
+  "download_limit",
+  "download_expiry",
+  "accounting_tab",
+  "section_break_sdrm",
+  "price",
+  "regular_price",
+  "sale_price",
+  "tax_status",
+  "tax_class",
+  "column_break_owze",
+  "date_on_sale_from",
+  "date_on_sale_to",
+  "on_sale",
+  "total_sales",
+  "inventory_tab",
+  "sku",
+  "manage_stock",
+  "sold_individually",
+  "section_break_mrlx",
+  "stock_quantity",
+  "backorders",
+  "backorders_allowed",
+  "backordered",
+  "low_stock_amount",
+  "section_break_biqj",
+  "stock_status",
+  "shipping_section",
+  "weight",
+  "length",
+  "width",
+  "height",
+  "column_break_jixm",
+  "shipping_required",
+  "shipping_taxable",
+  "shipping_class",
+  "shipping_class_id",
+  "linked_products_tab",
+  "upsell_ids",
+  "cross_sell_ids",
+  "related_ids",
+  "misc_tab",
+  "slug",
+  "permalink",
+  "date_created",
+  "date_modified",
+  "column_break_romq",
+  "reviews_allowed",
+  "average_rating",
+  "rating_count",
+  "featured",
+  "parent_id",
+  "catalog_visibility"
+ ],
+ "fields": [
+  {
+   "collapsible": 1,
+   "fieldname": "server_info_section",
+   "fieldtype": "Section Break",
+   "label": "Server Info"
+  },
+  {
+   "fieldname": "woocommerce_server",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "label": "WooCommerce Server",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_kjjq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_anet",
+   "fieldtype": "Section Break"
+  },
+  {
+   "default": "1",
+   "fieldname": "purchasable",
+   "fieldtype": "Check",
+   "label": "Purchasable"
+  },
+  {
+   "default": "0",
+   "fieldname": "virtual",
+   "fieldtype": "Check",
+   "label": "Virtual"
+  },
+  {
+   "default": "0",
+   "fieldname": "downloadable",
+   "fieldtype": "Check",
+   "label": "Downloadable"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "description_section",
+   "fieldtype": "Section Break",
+   "label": "Description"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Text Editor",
+   "label": "Description"
+  },
+  {
+   "fieldname": "short_description",
+   "fieldtype": "Text Editor",
+   "label": "Short description"
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval: doc.downloadable",
+   "fieldname": "section_break_wnpn",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "downloads",
+   "fieldtype": "JSON",
+   "label": "Downloads"
+  },
+  {
+   "fieldname": "download_limit",
+   "fieldtype": "Int",
+   "label": "Download Limit"
+  },
+  {
+   "fieldname": "download_expiry",
+   "fieldtype": "Int",
+   "label": "Download Expiry"
+  },
+  {
+   "fieldname": "inventory_tab",
+   "fieldtype": "Tab Break",
+   "label": "Inventory",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sku",
+   "fieldtype": "Data",
+   "label": "SKU"
+  },
+  {
+   "fieldname": "total_sales",
+   "fieldtype": "Int",
+   "label": "Total Sales",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "manage_stock",
+   "fieldtype": "Check",
+   "label": "Manage Stock"
+  },
+  {
+   "default": "0",
+   "fieldname": "sold_individually",
+   "fieldtype": "Check",
+   "label": "Sold Individually"
+  },
+  {
+   "depends_on": "eval: doc.manage_stock",
+   "fieldname": "section_break_mrlx",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "stock_quantity",
+   "fieldtype": "Data",
+   "label": "Stock Quantity"
+  },
+  {
+   "default": "no",
+   "fieldname": "backorders",
+   "fieldtype": "Select",
+   "label": "Backorders",
+   "options": "no\nnotify\nyes"
+  },
+  {
+   "default": "0",
+   "fieldname": "backorders_allowed",
+   "fieldtype": "Check",
+   "label": "Allow Backorders"
+  },
+  {
+   "default": "0",
+   "fieldname": "backordered",
+   "fieldtype": "Check",
+   "label": "Backordered"
+  },
+  {
+   "fieldname": "low_stock_amount",
+   "fieldtype": "Int",
+   "label": "Low Stock Ammount"
+  },
+  {
+   "depends_on": "eval: doc.manage_stock==false",
+   "fieldname": "section_break_biqj",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "stock_status",
+   "fieldtype": "Select",
+   "label": "Stock Status",
+   "options": "instock\noutofstock\nonbackorder"
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval: doc.virtual==false",
+   "fieldname": "shipping_section",
+   "fieldtype": "Section Break",
+   "label": "Shipping"
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight",
+   "non_negative": 1,
+   "precision": "2"
+  },
+  {
+   "fieldname": "length",
+   "fieldtype": "Int",
+   "label": "Length",
+   "non_negative": 1,
+   "precision": "2"
+  },
+  {
+   "fieldname": "width",
+   "fieldtype": "Int",
+   "label": "Width",
+   "non_negative": 1,
+   "precision": "2"
+  },
+  {
+   "fieldname": "height",
+   "fieldtype": "Int",
+   "label": "Height",
+   "non_negative": 1,
+   "precision": "2"
+  },
+  {
+   "fieldname": "column_break_jixm",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "shipping_required",
+   "fieldtype": "Check",
+   "label": "Shipping required",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "shipping_taxable",
+   "fieldtype": "Check",
+   "label": "Shipping Taxable",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_class",
+   "fieldtype": "Data",
+   "label": "Shipping Class",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_class_id",
+   "fieldtype": "Data",
+   "label": "Shipping Class ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "brand",
+   "fieldtype": "Data",
+   "label": "Brand",
+   "read_only": 1
+  },
+  {
+   "bold": 1,
+   "fieldname": "woocommerce_name",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "label": "Item Name"
+  },
+  {
+   "fieldname": "column_break_oxfv",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_filter": 1,
+   "label": "Status",
+   "options": "draft\npending\nprivate\npublish\ntrash"
+  },
+  {
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "label": "Type",
+   "options": "simple\ngrouped\nexternal\nvariable\nvariation\npw-gift-card"
+  },
+  {
+   "fieldname": "accounting_tab",
+   "fieldtype": "Tab Break",
+   "label": "Accounting"
+  },
+  {
+   "fieldname": "section_break_sdrm",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "price",
+   "fieldtype": "Currency",
+   "label": "Price"
+  },
+  {
+   "fieldname": "regular_price",
+   "fieldtype": "Currency",
+   "label": "Regular Price"
+  },
+  {
+   "depends_on": "eval: doc.on_sale",
+   "fieldname": "sale_price",
+   "fieldtype": "Currency",
+   "label": "Sale Price"
+  },
+  {
+   "default": "taxable",
+   "fieldname": "tax_status",
+   "fieldtype": "Select",
+   "label": "Tax Status",
+   "options": "taxable\nshipping\nnone"
+  },
+  {
+   "fieldname": "tax_class",
+   "fieldtype": "Data",
+   "label": "Tax Class"
+  },
+  {
+   "fieldname": "column_break_owze",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "date_on_sale_from",
+   "fieldtype": "Datetime",
+   "label": "Date on sale from"
+  },
+  {
+   "depends_on": "eval: doc.on_sale",
+   "fieldname": "date_on_sale_to",
+   "fieldtype": "Datetime",
+   "label": "Date on sale to"
+  },
+  {
+   "default": "0",
+   "fieldname": "on_sale",
+   "fieldtype": "Check",
+   "label": "On Sale"
+  },
+  {
+   "fieldname": "linked_products_tab",
+   "fieldtype": "Tab Break",
+   "label": "Linked Products"
+  },
+  {
+   "fieldname": "upsell_ids",
+   "fieldtype": "JSON",
+   "label": "Upsell Ids",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cross_sell_ids",
+   "fieldtype": "JSON",
+   "label": "Cross Sell Ids",
+   "read_only": 1
+  },
+  {
+   "fieldname": "related_ids",
+   "fieldtype": "JSON",
+   "label": "Related Ids",
+   "read_only": 1
+  },
+  {
+   "description": "Summarize this product in 1-2 short sentences. We'll show it at the top of the page.",
+   "fieldname": "misc_tab",
+   "fieldtype": "Tab Break",
+   "label": "Misc"
+  },
+  {
+   "fieldname": "slug",
+   "fieldtype": "Data",
+   "label": "Slug"
+  },
+  {
+   "fieldname": "permalink",
+   "fieldtype": "Small Text",
+   "label": "Permalink",
+   "read_only": 1
+  },
+  {
+   "fieldname": "date_created",
+   "fieldtype": "Datetime",
+   "label": "Date Created",
+   "read_only": 1
+  },
+  {
+   "fieldname": "date_modified",
+   "fieldtype": "Datetime",
+   "label": "Date Modified",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_romq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "reviews_allowed",
+   "fieldtype": "Check",
+   "label": "Reviews Allowed"
+  },
+  {
+   "fieldname": "average_rating",
+   "fieldtype": "Float",
+   "label": "Average Rating",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rating_count",
+   "fieldtype": "Int",
+   "label": "Rating Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "featured",
+   "fieldtype": "Check",
+   "label": "Featured"
+  },
+  {
+   "fieldname": "parent_id",
+   "fieldtype": "Int",
+   "label": "Parent Id"
+  },
+  {
+   "fieldname": "catalog_visibility",
+   "fieldtype": "Select",
+   "label": "Catalog Visibility",
+   "options": "visible\ncatalog\nsearch\nhidden"
+  },
+  {
+   "fieldname": "woocommerce_id",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "label": "WooCommerce Product ID",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "in_create": 1,
+ "index_web_pages_for_search": 1,
+ "is_virtual": 1,
+ "links": [],
+ "modified": "2025-04-23 21:46:43.306612",
+ "modified_by": "Administrator",
+ "module": "Woocommerce Conduit",
+ "name": "WooCommerce Product",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "woocommerce_name"
+}
