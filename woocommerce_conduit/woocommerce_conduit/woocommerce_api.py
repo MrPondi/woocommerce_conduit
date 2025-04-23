@@ -95,6 +95,15 @@ class WooCommerceDocument(Document):
 		# Parse the server domain and record_id from the Document name
 		wc_server_domain, record_id = get_domain_and_id_from_woocommerce_record_name(self.name)
 
+		# Map Frappe query parameters to WooCommerce query parameters
+		params = {}
+
+		# Optimize fields selection for specific doctypes
+		if self.doctype == "WooCommerce Product":
+			params["_fields"] = (
+				"name,id,purchasable,virtual,downloadable,status,type,description,short_description,downloads,download_limit,download_expiry,price,regular_price,sale_price,tax_status,tax_class,date_on_sale_from,date_on_sale_to,on_sale,total_sales,sku,manage_stock,sold_individually,stock_quantity,backorders,backorders_allowed,backordered,low_stock_amount,stock_status,weight,dimensions,shipping_required,shipping_taxable,shipping_class,shipping_class_id,upsell_ids,cross_sell_ids,related_ids,slug,permalink,date_created,date_modified,reviews_allowed,average_rating,rating_count,featured,parent_id,catalog_visibility,images"
+			)
+
 		# Select the relevant WooCommerce server
 		try:
 			self.current_wc_api = next(api for api in self.wc_api_list if wc_server_domain in api.url)
@@ -103,7 +112,7 @@ class WooCommerceDocument(Document):
 
 		# Get WooCommerce Record
 		try:
-			response = self.current_wc_api.get(f"{self.resource}/{record_id}")
+			response = self.current_wc_api.get(f"{self.resource}/{record_id}", params=params)
 			if response.status_code != 200:
 				log_and_raise_error(error_text=f"API returned {response.status_code}", response=response)
 			record = response.json()

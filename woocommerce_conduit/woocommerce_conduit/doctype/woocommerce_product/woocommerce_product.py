@@ -36,6 +36,7 @@ class WooCommerceProduct(WooCommerceDocument):
 		downloads: DF.JSON | None
 		featured: DF.Check
 		height: DF.Int
+		image: DF.AttachImage | None
 		length: DF.Int
 		low_stock_amount: DF.Int
 		manage_stock: DF.Check
@@ -73,7 +74,7 @@ class WooCommerceProduct(WooCommerceDocument):
 		woocommerce_server: DF.Data | None
 	# end: auto-generated types
 
-	# doctype = "WooCommerce Product"
+	doctype = "WooCommerce Product"
 	resource = "products"
 	field_setter_map = {"woocommerce_name": "name", "woocommerce_id": "id"}  # noqa: RUF012
 
@@ -82,6 +83,13 @@ class WooCommerceProduct(WooCommerceDocument):
 
 	def db_update(self):
 		pass
+
+	def after_load_from_db(self, product: dict):
+		product["image"] = product["images"][0]["src"]
+		product["length"] = product["dimensions"]["length"]
+		product["width"] = product["dimensions"]["width"]
+		product["height"] = product["dimensions"]["height"]
+		return product
 
 	@staticmethod
 	def get_list(args):
