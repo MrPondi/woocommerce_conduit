@@ -1,0 +1,98 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-04-23 00:47:35.086465",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "woocommerce_server_url",
+  "column_break_meqy",
+  "api_consumer_key",
+  "api_consumer_secret",
+  "defaults_section",
+  "creation_user",
+  "last_sync_time"
+ ],
+ "fields": [
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enable Sync"
+  },
+  {
+   "fieldname": "woocommerce_server_url",
+   "fieldtype": "Data",
+   "label": "WooCommerce Server URL",
+   "placeholder": "https://store.mysite.com",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_meqy",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "api_consumer_key",
+   "fieldtype": "Data",
+   "label": "API consumer key",
+   "placeholder": "ck_xxxxxxxxxxxxxxxxx",
+   "reqd": 1
+  },
+  {
+   "fieldname": "api_consumer_secret",
+   "fieldtype": "Data",
+   "label": "API consumer secret",
+   "placeholder": "cs_xxxxxxxxxxxxxxxxx",
+   "reqd": 1
+  },
+  {
+   "fieldname": "defaults_section",
+   "fieldtype": "Section Break",
+   "label": "Defaults"
+  },
+  {
+   "description": "The user that will be used to create Customers, Items and Sales Orders. This user should have the relevant permissions.",
+   "fieldname": "creation_user",
+   "fieldtype": "Link",
+   "label": "Creation User",
+   "mandatory_depends_on": "eval: doc.enabled",
+   "options": "User",
+   "reqd": 1
+  },
+  {
+   "fieldname": "last_sync_time",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "in_list_view": 1,
+   "label": "Last Sync Time",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-04-23 03:36:03.397176",
+ "modified_by": "Administrator",
+ "module": "Woocommerce Conduit",
+ "name": "WooCommerce Server",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
