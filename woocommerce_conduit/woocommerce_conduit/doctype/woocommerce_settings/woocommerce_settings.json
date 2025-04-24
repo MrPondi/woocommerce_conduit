@@ -7,7 +7,8 @@
  "field_order": [
   "fetch_variations",
   "variation_batch_size",
-  "max_variations"
+  "max_variations",
+  "wc_last_sync_date_items"
  ],
  "fields": [
   {
@@ -29,13 +30,18 @@
    "fieldname": "max_variations",
    "fieldtype": "Int",
    "label": "Max Variations"
+  },
+  {
+   "fieldname": "wc_last_sync_date_items",
+   "fieldtype": "Datetime",
+   "label": "Last Items Syncronisation Date"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-04-23 23:13:20.889449",
+ "modified": "2025-04-24 15:11:39.131506",
  "modified_by": "Administrator",
  "module": "Woocommerce Conduit",
  "name": "WooCommerce Settings",

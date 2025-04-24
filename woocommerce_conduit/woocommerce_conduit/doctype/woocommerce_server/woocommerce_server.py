@@ -18,14 +18,22 @@ class WooCommerceServer(Document):
 
 	if TYPE_CHECKING:
 		from frappe.types import DF
+		from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_server_item_field.woocommerce_server_item_field import WooCommerceServerItemField
 
 		api_consumer_key: DF.Data
 		api_consumer_secret: DF.Data
 		creation_user: DF.Link
+		enable_image_sync: DF.Check
 		enabled: DF.Check
+		enabled_price_list: DF.Check
+		enabled_sync: DF.Check
+		item_field_map: DF.Table[WooCommerceServerItemField]
+		item_group: DF.Link
 		last_sync_time: DF.Datetime | None
+		name_by: DF.Literal["WooCommerce ID", "Product SKU"]
+		price_list: DF.Link
+		uom: DF.Link | None
 		woocommerce_server_url: DF.Data
-
 	# end: auto-generated types
 	def autoname(self):
 		"""

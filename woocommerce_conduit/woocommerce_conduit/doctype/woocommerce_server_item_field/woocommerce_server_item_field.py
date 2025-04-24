@@ -5,7 +5,7 @@
 from frappe.model.document import Document
 
 
-class WooCommerceSettings(Document):
+class WooCommerceServerItemField(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -14,9 +14,11 @@ class WooCommerceSettings(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		fetch_variations: DF.Check
-		max_variations: DF.Int
-		variation_batch_size: DF.Int
-		wc_last_sync_date_items: DF.Datetime | None
-	# end: auto-generated types
+		erpnext_field_name: DF.Literal[None]  # type: ignore
+		parent: DF.Data
+		parentfield: DF.Data
+		parenttype: DF.Data
+		woocommerce_field_name: DF.Data
+		# end: auto-generated types
+		erpnext_field_name: str
 	pass

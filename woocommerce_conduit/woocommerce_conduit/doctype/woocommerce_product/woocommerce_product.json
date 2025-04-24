@@ -68,15 +68,18 @@
   "misc_tab",
   "slug",
   "permalink",
-  "date_created",
-  "date_modified",
+  "woocommerce_date_created",
+  "woocommerce_date_modified",
   "column_break_romq",
   "reviews_allowed",
   "average_rating",
   "rating_count",
   "featured",
   "parent_id",
-  "catalog_visibility"
+  "catalog_visibility",
+  "extra_fields_section",
+  "images",
+  "attributes"
  ],
  "fields": [
   {
@@ -90,7 +93,8 @@
    "fieldtype": "Data",
    "in_filter": 1,
    "label": "WooCommerce Server",
-   "read_only": 1
+   "read_only": 1,
+   "reqd": 1
   },
   {
    "fieldname": "column_break_kjjq",
@@ -219,7 +223,7 @@
    "label": "Low Stock Ammount"
   },
   {
-   "depends_on": "eval: doc.manage_stock==false",
+   "depends_on": "eval:!doc.manage_stock",
    "fieldname": "section_break_biqj",
    "fieldtype": "Section Break"
   },
@@ -231,7 +235,7 @@
   },
   {
    "collapsible": 1,
-   "depends_on": "eval: doc.virtual==false",
+   "depends_on": "eval:!doc.virtual",
    "fieldname": "shipping_section",
    "fieldtype": "Section Break",
    "label": "Shipping"
@@ -305,7 +309,8 @@
    "fieldname": "woocommerce_name",
    "fieldtype": "Data",
    "in_filter": 1,
-   "label": "Item Name"
+   "label": "Item Name",
+   "reqd": 1
   },
   {
    "fieldname": "column_break_oxfv",
@@ -424,18 +429,6 @@
    "read_only": 1
   },
   {
-   "fieldname": "date_created",
-   "fieldtype": "Datetime",
-   "label": "Date Created",
-   "read_only": 1
-  },
-  {
-   "fieldname": "date_modified",
-   "fieldtype": "Datetime",
-   "label": "Date Modified",
-   "read_only": 1
-  },
-  {
    "fieldname": "column_break_romq",
    "fieldtype": "Column Break"
   },
@@ -479,7 +472,8 @@
    "fieldtype": "Data",
    "in_filter": 1,
    "label": "WooCommerce Product ID",
-   "read_only": 1
+   "read_only": 1,
+   "reqd": 1
   },
   {
    "fieldname": "image",
@@ -487,6 +481,41 @@
    "hidden": 1,
    "label": "Image Source",
    "read_only": 1
+  },
+  {
+   "fieldname": "woocommerce_date_created",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Date Created",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "woocommerce_date_modified",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Date Modified",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "extra_fields_section",
+   "fieldtype": "Section Break",
+   "label": "Extra Fields",
+   "read_only": 1
+  },
+  {
+   "fieldname": "images",
+   "fieldtype": "JSON",
+   "label": "Images",
+   "reqd": 1
+  },
+  {
+   "fieldname": "attributes",
+   "fieldtype": "JSON",
+   "label": "Attributes",
+   "reqd": 1
   }
  ],
  "grid_page_length": 50,
@@ -495,7 +524,7 @@
  "index_web_pages_for_search": 1,
  "is_virtual": 1,
  "links": [],
- "modified": "2025-04-24 01:21:08.788587",
+ "modified": "2025-04-24 12:17:16.273892",
  "modified_by": "Administrator",
  "module": "Woocommerce Conduit",
  "name": "WooCommerce Product",

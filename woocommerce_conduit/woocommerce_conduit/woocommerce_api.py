@@ -76,6 +76,26 @@ class WooCommerceDocument(Document):
 
 		return wc_api_list
 
+	def __getitem__(self, key):
+		"""
+		Allow for dict-like behaviour when using jsonpath-ng
+		"""
+		return self.get(key)
+
+	def __setitem__(self, key, value):
+		"""
+		Allow for dict-like behaviour when using jsonpath-ng
+		"""
+		self.set(key, value)
+
+	def __contains__(self, key):
+		"""
+		Allow for dict-like behaviour when using jsonpath-ng
+		"""
+		fields = [field.fieldname for field in self.meta.fields]
+		fields.append("name")
+		return key in fields
+
 	def init_api(self):
 		"""
 		Initialise the WooCommerce API
@@ -101,7 +121,7 @@ class WooCommerceDocument(Document):
 		# Optimize fields selection for specific doctypes
 		if self.doctype == "WooCommerce Product":
 			params["_fields"] = (
-				"name,id,purchasable,virtual,downloadable,status,type,description,short_description,downloads,download_limit,download_expiry,price,regular_price,sale_price,tax_status,tax_class,date_on_sale_from,date_on_sale_to,on_sale,total_sales,sku,manage_stock,sold_individually,stock_quantity,backorders,backorders_allowed,backordered,low_stock_amount,stock_status,weight,dimensions,shipping_required,shipping_taxable,shipping_class,shipping_class_id,upsell_ids,cross_sell_ids,related_ids,slug,permalink,date_created,date_modified,reviews_allowed,average_rating,rating_count,featured,parent_id,catalog_visibility,images"
+				"name,id,purchasable,virtual,downloadable,status,type,description,short_description,downloads,download_limit,download_expiry,price,regular_price,sale_price,tax_status,tax_class,date_on_sale_from,date_on_sale_to,on_sale,total_sales,sku,manage_stock,sold_individually,stock_quantity,backorders,backorders_allowed,backordered,low_stock_amount,stock_status,weight,dimensions,shipping_required,shipping_taxable,shipping_class,shipping_class_id,upsell_ids,cross_sell_ids,related_ids,slug,permalink,date_created,date_modified,reviews_allowed,average_rating,rating_count,featured,parent_id,catalog_visibility,images,attributes"
 			)
 
 		# Select the relevant WooCommerce server
@@ -157,6 +177,11 @@ class WooCommerceDocument(Document):
 		Returns:
 			List: WooCommerce records processed for Frappe
 		"""
+		# Validate required args
+		if not isinstance(args, dict) or not args.get("doctype"):
+			frappe.log_error("WooCommerce API Error", "Invalid arguments for get_list_of_records")
+			return []
+
 		# Initialise the WC API
 		try:
 			wc_api_list = cls._init_api()
@@ -166,143 +191,130 @@ class WooCommerceDocument(Document):
 			)
 			return []
 		except Exception as e:
-			frappe.log_error(f"Failed to initialize WooCommerce API: {e!s}", "WooCommerce API Error")
+			frappe.log_error("WooCommerce API Error", f"Failed to initialize WooCommerce API: {e!s}")
 			return []
 
 		cls.doctype = args["doctype"]
 
-		if len(wc_api_list) > 0:
-			wc_records_per_page_limit = 100
+		if not wc_api_list:
+			return []
 
-			# Map Frappe query parameters to WooCommerce query parameters
-			params = {}
+		cls.doctype = args["doctype"]
 
-			# Optimize fields selection for specific doctypes
-			if cls.doctype == "WooCommerce Product":
-				params["_fields"] = (
-					"name,id,date_created,date_modified,parent_id,type,sku,status,price,regular_price,sale_price,stock_status"
-				)
+		# Get configuration settings
+		wc_records_per_page_limit = 100
 
-			# Handle pagination
-			per_page = min(int(args.get("page_length", wc_records_per_page_limit)), wc_records_per_page_limit)
-			offset = int(args.get("start", 0))
-			params["per_page"] = min(per_page + offset, wc_records_per_page_limit)
+		# Map Frappe query parameters to WooCommerce query parameters
+		params = {}
 
-			# Map Frappe filters to WooCommerce parameters
-			if args.get("filters"):
-				try:
-					updated_params = map_frappe_filters_to_wc_params(args["filters"])
-					params.update(updated_params)
-				except Exception as e:
-					frappe.log_error(f"Error mapping filters: {e!s}", "WooCommerce Filter Error")
+		# Optimize fields selection for specific doctypes
+		if cls.doctype == "WooCommerce Product":
+			params["_fields"] = "name,id,date_created,date_modified,type,sku,status"
 
-			# Initialize required variables
-			all_results = []
-			total_processed = 0
+		# Handle pagination
+		requested = int(args.get("page_length", wc_records_per_page_limit))
+		per_page = min(requested, wc_records_per_page_limit)
+		offset = int(args.get("offset", 0))
+		params["per_page"] = per_page
 
-			for wc_server in wc_api_list:
-				# Skip this API call if one or more servers were specified
-				if args.get("servers") and wc_server.woocommerce_server not in args["servers"]:
-					continue
+		# Map Frappe filters to WooCommerce parameters
+		if args.get("filters"):
+			try:
+				updated_params = map_frappe_filters_to_wc_params(args["filters"])
+				params.update(updated_params)
+			except Exception as e:
+				frappe.log_error(f"Error mapping filters: {e!s}", "WooCommerce Filter Error")
 
-				current_offset = 0
+		# Initialize required variables
+		all_results = []
+		total_processed = 0
+		max_results = args.get("max_results", 1000)  # Limit maximum records to prevent runaway queries
 
-				# Get WooCommerce Records
-				params["offset"] = current_offset
+		# Filter servers if specified
+		selected_servers = []
+		if args.get("servers"):
+			selected_servers = [
+				wc_server for wc_server in wc_api_list if wc_server.woocommerce_server in args["servers"]
+			]
+		else:
+			selected_servers = wc_api_list
 
-				try:
-					endpoint = args.get("endpoint", cls.resource)
-					response = wc_server.get(endpoint, params=params)
+		if not selected_servers:
+			return []
 
-					if response.status_code != 200:
-						frappe.log_error(
-							f"WooCommerce API error: {response.status_code} - {response.text}",
-							"WooCommerce API Error",
-						)
-						continue
+		for wc_server in selected_servers:
+			endpoint = args.get("endpoint", cls.resource)
+			server_offset = max(0, offset - total_processed)
 
-				except Exception as err:
+			if server_offset > 0:
+				params["offset"] = server_offset
+			else:
+				params.pop("offset", None)  # Remove offset if not needed
+
+			try:
+				# Fetch records from this server
+				response = wc_server.get(endpoint, params=params)
+
+				if response.status_code != 200:
 					frappe.log_error(
-						f"Error fetching WooCommerce records: {err!s}\nEndpoint: {endpoint}\nParams: {params}",
+						f"WooCommerce API error: {response.status_code} - {response.text}",
 						"WooCommerce API Error",
 					)
 					continue
 
-				# Store the count of total records in this API
-				try:
-					if "x-wp-total" in response.headers:
-						count_of_total_records_in_api = int(response.headers["x-wp-total"])
-					else:
-						count_of_total_records_in_api = len(response.json())
-				except Exception:
-					frappe.log_error("Could not determine total record count", "WooCommerce API Error")
-					count_of_total_records_in_api = 0
-
-				# Skip this API if all its records fall before the required offset
-				if count_of_total_records_in_api <= offset - total_processed:
-					total_processed += count_of_total_records_in_api
-					continue
-
 				# Parse the response
-				try:
-					results = response.json()
-				except ValueError:
-					frappe.log_error(f"Invalid JSON response: {response.text}", "WooCommerce API Error")
+				results = response.json()
+				if not results:
 					continue
+			except Exception as err:
+				frappe.log_error(
+					f"Error fetching WooCommerce records: {err!s}\nEndpoint: {endpoint}\nParams: {params}",
+					"WooCommerce API Error",
+				)
+				continue
 
-				# Process the results
-				records_needed = per_page - len(all_results)
+			# Get total count from headers if available
+			total_records_in_server = 0
+			if "x-wp-total" in response.headers:
+				total_records_in_server = int(response.headers["x-wp-total"])
+			else:
+				total_records_in_server = len(results)  # Fallback estimate
 
-				# Process records within the current batch
-				while results and records_needed > 0:
-					# Adjust indices based on remaining offset and records to collect
-					start = max(0, offset - total_processed)
-					end = min(len(results), records_needed + start)
+			# Process the results
+			records_needed = min(requested - len(all_results), max_results - total_processed)
 
-					# Process slice of records
-					batch = results[start:end]
-					records_needed -= len(batch)
-
-					# Add frappe fields to records
-					processed_batch = []
-					for record in batch:
-						try:
-							record = cls.pre_init_document(
-								record=record, woocommerce_server_url=wc_server.url
-							)
-							record = cls.during_get_list_of_records(record, args)
-							processed_batch.append(record)
-						except Exception as e:
-							frappe.log_error(
-								f"Error processing record {record.get('id', 'unknown')}: {e!s}",
-								"WooCommerce Record Error",
-							)
-
-					all_results.extend(processed_batch)
-					total_processed += len(results)
-
-					# All records processed from current batch
-					if records_needed <= 0:
-						break
-
-					# Check if there are no more records available
-					if len(results) < per_page:
-						break
-
-					# Fetch next batch
-					current_offset += params["per_page"]
-					params["offset"] = current_offset
-
+			while results:
+				# Process this batch of records
+				processed_batch = []
+				for record in results:
 					try:
-						response = wc_server.get(endpoint, params=params)
-						if response.status_code != 200:
-							break
-						results = response.json()
-					except Exception:
+						record = cls.pre_init_document(record=record, woocommerce_server_url=wc_server.url)
+						record = cls.during_get_list_of_records(record, args)
+						processed_batch.append(record)
+					except Exception as e:
+						frappe.log_error(
+							f"Error processing record {record.get('id', 'unknown')}: {e!s}",
+							"WooCommerce Record Error",
+						)
+
+				records_needed -= len(results)
+				all_results.extend(processed_batch)
+				total_processed += min(total_records_in_server, len(processed_batch))
+
+				if records_needed <= 0 or len(results) < params["per_page"]:
+					break
+
+				try:
+					batch_params = params.copy()
+					batch_params["per_page"] = min(records_needed, params["per_page"])
+					response = wc_server.get(endpoint, params=batch_params)
+
+					if response.status_code != 200:
 						break
 
-				# If we have all the results we need, break out of the server loop
-				if len(all_results) >= per_page:
+					# Parse the response
+					results = response.json()
+				except Exception:
 					break
 
 			# Return the records as requested
@@ -310,7 +322,7 @@ class WooCommerceDocument(Document):
 				try:
 					return [frappe.get_doc(record) for record in all_results]
 				except Exception as e:
-					frappe.log_error(f"Error converting to Frappe docs: {e!s}", "WooCommerce Format Error")
+					frappe.log_error("WooCommerce Format Error", f"Error converting to Frappe docs: {e!s}")
 					return []
 			else:
 				return all_results
@@ -379,6 +391,14 @@ class WooCommerceDocument(Document):
 		"""Serialize complex fields (dict, list) to JSON strings"""
 		return cls.serialize_attributes_of_type_dict_or_list(record)
 
+	def to_dict(self):
+		"""
+		Convert this Document to a dict
+		"""
+		doc_dict = {field.fieldname: self.get(field.fieldname) for field in self.meta.fields}
+		doc_dict["name"] = self.name  # name field is not in meta.fields
+		return doc_dict
+
 	@classmethod
 	def serialize_attributes_of_type_dict_or_list(cls, obj):
 		"""
@@ -391,6 +411,20 @@ class WooCommerceDocument(Document):
 		for field in json_fields:
 			if field.fieldname in obj:
 				obj[field.fieldname] = json.dumps(obj[field.fieldname])
+		return obj
+
+	@classmethod
+	def deserialize_attributes_of_type_dict_or_list(cls, obj):
+		"""
+		Deserializes the dictionary and list attributes of a given object from JSON format.
+
+		This function iterates over the fields of the input object that are expected to be in JSON format,
+		and if the field is present in the object, it transforms the field's value from a JSON-formatted string.
+		"""
+		json_fields = cls.get_json_fields()
+		for field in json_fields:
+			if obj.get(field.fieldname):
+				obj[field.fieldname] = json.loads(obj[field.fieldname])
 		return obj
 
 	@classmethod
@@ -456,7 +490,7 @@ class WooCommerceDocument(Document):
 
 
 def generate_woocommerce_record_name_from_domain_and_id(
-	domain: str, resource_id: str, delimiter: str = WC_RESOURCE_DELIMITER
+	domain: str, resource_id: str | int, delimiter: str = WC_RESOURCE_DELIMITER
 ) -> str:
 	"""
 	Generate a name for a woocommerce resource, based on domain and resource_id.

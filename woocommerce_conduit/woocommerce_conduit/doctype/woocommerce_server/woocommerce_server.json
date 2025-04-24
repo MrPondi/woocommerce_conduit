@@ -6,13 +6,25 @@
  "engine": "InnoDB",
  "field_order": [
   "enabled",
+  "enabled_sync",
   "woocommerce_server_url",
   "column_break_meqy",
   "api_consumer_key",
   "api_consumer_secret",
-  "defaults_section",
+  "server_defaults_section",
   "creation_user",
-  "last_sync_time"
+  "last_sync_time",
+  "sales_orders_tab",
+  "sales_defaults_section",
+  "uom",
+  "item_group",
+  "items_tab",
+  "name_by",
+  "enable_image_sync",
+  "item_field_map",
+  "price_list_tab",
+  "enabled_price_list",
+  "price_list"
  ],
  "fields": [
   {
@@ -47,11 +59,6 @@
    "reqd": 1
   },
   {
-   "fieldname": "defaults_section",
-   "fieldtype": "Section Break",
-   "label": "Defaults"
-  },
-  {
    "description": "The user that will be used to create Customers, Items and Sales Orders. This user should have the relevant permissions.",
    "fieldname": "creation_user",
    "fieldtype": "Link",
@@ -67,12 +74,93 @@
    "in_list_view": 1,
    "label": "Last Sync Time",
    "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Set the WooCommerce Product's first image's URL as the Image for the ERPNext Item",
+   "fieldname": "enable_image_sync",
+   "fieldtype": "Check",
+   "label": "Enable Image Sync"
+  },
+  {
+   "fieldname": "items_tab",
+   "fieldtype": "Tab Break",
+   "label": "Items"
+  },
+  {
+   "fieldname": "item_field_map",
+   "fieldtype": "Table",
+   "label": "Fields Mapping",
+   "options": "WooCommerce Server Item Field"
+  },
+  {
+   "fieldname": "server_defaults_section",
+   "fieldtype": "Section Break",
+   "label": "Defaults"
+  },
+  {
+   "fieldname": "sales_orders_tab",
+   "fieldtype": "Tab Break",
+   "label": "Sales Orders"
+  },
+  {
+   "fieldname": "sales_defaults_section",
+   "fieldtype": "Section Break",
+   "label": "Defaults"
+  },
+  {
+   "description": "This is the default UOM used for items and Sales orders. The fallback UOM is \"Nos\".",
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "label": "UOM",
+   "options": "UOM"
+  },
+  {
+   "description": "This is the default Item Group used for newly created items.",
+   "fieldname": "item_group",
+   "fieldtype": "Link",
+   "label": "Item Group",
+   "options": "Item Group",
+   "reqd": 1
+  },
+  {
+   "default": "WooCommerce ID",
+   "description": "How the item code should be determined when an item is created",
+   "fieldname": "name_by",
+   "fieldtype": "Select",
+   "label": "Default Item Code Naming Basis",
+   "options": "WooCommerce ID\nProduct SKU"
+  },
+  {
+   "fieldname": "price_list_tab",
+   "fieldtype": "Tab Break",
+   "label": "Price List"
+  },
+  {
+   "default": "0",
+   "fieldname": "enabled_price_list",
+   "fieldtype": "Check",
+   "label": "Enable Price List Sync"
+  },
+  {
+   "fieldname": "price_list",
+   "fieldtype": "Link",
+   "label": "Price List",
+   "mandatory_depends_on": "eval: enabled_price_list",
+   "options": "Price List",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "enabled_sync",
+   "fieldtype": "Check",
+   "label": "Update on Woocommerce"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-04-23 03:36:03.397176",
+ "modified": "2025-04-24 20:17:32.402028",
  "modified_by": "Administrator",
  "module": "Woocommerce Conduit",
  "name": "WooCommerce Server",

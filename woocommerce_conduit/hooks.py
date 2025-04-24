@@ -148,23 +148,29 @@ app_license = "gpl-3.0"
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"woocommerce_conduit.tasks.all"
-# 	],
-# 	"daily": [
-# 		"woocommerce_conduit.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"woocommerce_conduit.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"woocommerce_conduit.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"woocommerce_conduit.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	# 	"all": [
+	# 		"woocommerce_conduit.tasks.all"
+	# 	],
+	# 	"daily": [
+	# 		"woocommerce_conduit.tasks.daily"
+	# 	],
+	"daily_long": [
+		"woocommerce_conduit.tasks.sync_item_prices.run_item_price_sync_in_background",
+	],
+	# 	"hourly": [
+	# 		"woocommerce_conduit.tasks.hourly"
+	# 	],
+	"hourly_long": [
+		"woocommerce_conduit.tasks.sync_items.sync_woocommerce_products_modified_since",
+	],
+	# 	"weekly": [
+	# 		"woocommerce_conduit.tasks.weekly"
+	# 	],
+	# 	"monthly": [
+	# 		"woocommerce_conduit.tasks.monthly"
+	# 	],
+}
 
 # Testing
 # -------
@@ -242,3 +248,20 @@ export_python_type_annotations = True
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
 
+# Fixtrues
+# --------------------------------
+fixtures = [
+	{
+		"dt": "Custom Field",
+		"filters": [
+			[
+				"name",
+				"in",
+				(
+					"Item-woocommerce_tab",
+					"Item-woocommerce_servers",
+				),
+			]
+		],
+	}
+]
