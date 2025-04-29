@@ -83,8 +83,7 @@ def sync_woocommerce_orders_modified_since(date_time_from=None):
 	if not date_time_from:
 		date_time_from = getattr(settings, "wc_last_sync_date_orders", None)
 
-	wc_orders = get_list_of_wc_orders(date_time_from=date_time_from, status="processing")
-	# wc_orders += get_list_of_wc_orders(date_time_from=date_time_from, status="trash")
+	wc_orders = get_list_of_wc_orders(date_time_from=date_time_from, status="pending,processing,on-hold,completed,cancelled")
 	for wc_order in wc_orders:
 		try:
 			run_sales_order_sync(woocommerce_order=wc_order, enqueue=True)
@@ -621,7 +620,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 					(
 						rule
 						for rule in wc_server.shipping_rule_map
-						if rule.wc_shipping_method_id == shipping_lines[0]["method_title"]
+						if rule.wc_shipping_method_id == shipping_lines[0]["method_id"]
 					),
 				)
 				new_sales_order.shipping_rule = shipping_rule_mapping.shipping_rule
@@ -1044,7 +1043,7 @@ def get_list_of_wc_orders(
 				"as_doc": True,
 				# Let the API handle pagination efficiently
 				# Set a reasonable limit for maximum records
-				"page_length": 1 if sales_order else 10,
+				"page_length": 1 if sales_order else 1000,
 			}
 		)
 

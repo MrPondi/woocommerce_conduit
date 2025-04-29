@@ -1,6 +1,5 @@
 {
  "actions": [],
- "allow_rename": 1,
  "creation": "2025-04-23 00:47:35.086465",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -327,7 +326,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-04-27 23:39:30.467833",
+ "modified": "2025-04-29 21:26:32.463778",
  "modified_by": "Administrator",
  "module": "Woocommerce Conduit",
  "name": "WooCommerce Server",

@@ -60,14 +60,18 @@ class WooCommerceServer(Document):
 		use_actual_tax_type: DF.Check
 		warehouse: DF.Link
 		woocommerce_server_url: DF.Data
-
 	# end: auto-generated types
 	def autoname(self):
 		"""
 		Set name from woocommerce_server_url field
 		"""
-		self.name = urlparse(self.woocommerce_server_url).netloc
+		parsed_url = urlparse(self.woocommerce_server_url)
 
+		if not parsed_url.netloc and not parsed_url.scheme:
+			parsed_url = urlparse(f"https://{self.woocommerce_server_url}")
+
+		if parsed_url.netloc:
+			self.name = parsed_url.netloc
 	def validate(self):
 		parsed_url = urlparse(self.woocommerce_server_url)
 
