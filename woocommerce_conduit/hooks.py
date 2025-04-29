@@ -137,13 +137,20 @@ app_license = "gpl-3.0"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	# 	"*": {
+	# 		"on_update": "method",
+	# 		"on_cancel": "method",
+	# 		"on_trash": "method"
+	# 	}
+	"Sales Order": {
+		"on_submit": "woocommerce_conduit.tasks.sync_sales_orders.run_sales_order_sync_from_hook"
+	},
+	"Item": {
+		"on_update": "woocommerce_conduit.tasks.sync_items.run_item_sync_from_hook",
+		"after_insert": "woocommerce_conduit.tasks.sync_items.run_item_sync_from_hook",
+	},
+}
 
 # Scheduled Tasks
 # ---------------
@@ -162,6 +169,7 @@ scheduler_events = {
 	# 		"woocommerce_conduit.tasks.hourly"
 	# 	],
 	"hourly_long": [
+		"woocommerce_conduit.tasks.sync_sales_orders.sync_woocommerce_orders_modified_since",
 		"woocommerce_conduit.tasks.sync_items.sync_woocommerce_products_modified_since",
 	],
 	# 	"weekly": [

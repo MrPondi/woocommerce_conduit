@@ -5,7 +5,7 @@
 from frappe.model.document import Document
 
 
-class WooCommerceSettings(Document):
+class WooCommerceServerShippingRule(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -14,11 +14,10 @@ class WooCommerceSettings(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		fetch_variations: DF.Check
-		max_variations: DF.Int
-		minimum_creation_date: DF.Datetime
-		variation_batch_size: DF.Int
-		wc_last_sync_date_items: DF.Datetime | None
-		wc_last_sync_date_orders: DF.Datetime | None
+		parent: DF.Data
+		parentfield: DF.Data
+		parenttype: DF.Data
+		shipping_rule: DF.Link
+		wc_shipping_method_id: DF.Data
 	# end: auto-generated types
 	pass

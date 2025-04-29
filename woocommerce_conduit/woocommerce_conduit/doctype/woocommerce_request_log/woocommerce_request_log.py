@@ -5,7 +5,7 @@
 from frappe.model.document import Document
 
 
-class WooCommerceSettings(Document):
+class WooCommerceRequestLog(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -14,11 +14,16 @@ class WooCommerceSettings(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		fetch_variations: DF.Check
-		max_variations: DF.Int
-		minimum_creation_date: DF.Datetime
-		variation_batch_size: DF.Int
-		wc_last_sync_date_items: DF.Datetime | None
-		wc_last_sync_date_orders: DF.Datetime | None
+		data: DF.JSON | None
+		endpoint: DF.Data | None
+		error: DF.Code | None
+		method: DF.Data | None
+		params: DF.JSON | None
+		response: DF.Text | None
+		seen: DF.Check
+		status: DF.Literal["Success", "Error"]
+		traceback: DF.Code | None
+		url: DF.SmallText | None
+		user: DF.Link | None
 	# end: auto-generated types
 	pass

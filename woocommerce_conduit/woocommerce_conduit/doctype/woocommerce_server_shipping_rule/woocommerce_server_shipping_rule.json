@@ -1,0 +1,44 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-04-27 23:34:31.134867",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "wc_shipping_method_id",
+  "shipping_rule"
+ ],
+ "fields": [
+  {
+   "description": "<code>method_title</code> in <i>WooCommerce Order<i> &gt; <i>Shipping Lines</i></i></i>",
+   "fieldname": "wc_shipping_method_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "WooCommerce Shipping Method Title",
+   "reqd": 1
+  },
+  {
+   "fieldname": "shipping_rule",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Shipping Rule",
+   "options": "Shipping Rule",
+   "reqd": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-04-27 23:35:18.448942",
+ "modified_by": "Administrator",
+ "module": "Woocommerce Conduit",
+ "name": "WooCommerce Server Shipping Rule",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

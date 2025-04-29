@@ -12,6 +12,11 @@ bench get-app $URL_OF_THIS_REPO --branch develop
 bench install-app woocommerce_conduit
 ```
 
+### TODO:
+
+- [ ] Migrate woocomemrce fields from static to args.fields
+- [ ] Add suport for args.order_by
+
 ### Contributing
 
 This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:

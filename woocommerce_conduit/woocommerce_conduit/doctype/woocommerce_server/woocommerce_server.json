@@ -18,6 +18,28 @@
   "sales_defaults_section",
   "uom",
   "item_group",
+  "company",
+  "warehouse",
+  "column_break_velv",
+  "delivery_after_days",
+  "submit_sales_orders",
+  "sync_so_items_to_wc",
+  "accounting_details_section",
+  "use_actual_tax_type",
+  "tax_account",
+  "sales_taxes_and_charges_template",
+  "column_break_fjij",
+  "freight_and_forwarding_account",
+  "payment_sync_section",
+  "enabled_payments_sync",
+  "payment_method_bank_account_mapping",
+  "payment_method_gl_account_mapping",
+  "shipping_methods_sync_section",
+  "enabled_shipping_methods",
+  "shipping_rule_map",
+  "sales_order_status_sync_section",
+  "enabled_order_status",
+  "sales_order_status_map",
   "items_tab",
   "name_by",
   "enable_image_sync",
@@ -109,11 +131,13 @@
    "label": "Defaults"
   },
   {
+   "default": "Nos",
    "description": "This is the default UOM used for items and Sales orders. The fallback UOM is \"Nos\".",
    "fieldname": "uom",
    "fieldtype": "Link",
    "label": "UOM",
-   "options": "UOM"
+   "options": "UOM",
+   "reqd": 1
   },
   {
    "description": "This is the default Item Group used for newly created items.",
@@ -146,7 +170,7 @@
    "fieldname": "price_list",
    "fieldtype": "Link",
    "label": "Price List",
-   "mandatory_depends_on": "eval: enabled_price_list",
+   "mandatory_depends_on": "eval: doc.enabled_price_list",
    "options": "Price List",
    "reqd": 1
   },
@@ -155,12 +179,155 @@
    "fieldname": "enabled_sync",
    "fieldtype": "Check",
    "label": "Update on Woocommerce"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "payment_sync_section",
+   "fieldtype": "Section Break",
+   "label": "Payment Sync"
+  },
+  {
+   "default": "0",
+   "fieldname": "enabled_payments_sync",
+   "fieldtype": "Check",
+   "label": "Enable Payments Sync"
+  },
+  {
+   "default": "{}",
+   "depends_on": "eval: doc.enabled_payments_sync",
+   "fieldname": "payment_method_bank_account_mapping",
+   "fieldtype": "JSON",
+   "label": "Map Bank Accounts to Payment Methods",
+   "reqd": 1
+  },
+  {
+   "default": "{}",
+   "depends_on": "eval: doc.enabled_payments_sync",
+   "fieldname": "payment_method_gl_account_mapping",
+   "fieldtype": "JSON",
+   "label": "Map GL Accounts to Payment Methods",
+   "reqd": 1
+  },
+  {
+   "description": "This company will be used to create Sales Orders.",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Warehouse",
+   "options": "Warehouse",
+   "reqd": 1
+  },
+  {
+   "fieldname": "delivery_after_days",
+   "fieldtype": "Duration",
+   "hide_seconds": 1,
+   "label": "Delivery After"
+  },
+  {
+   "fieldname": "accounting_details_section",
+   "fieldtype": "Section Break",
+   "label": "Accounting Details"
+  },
+  {
+   "depends_on": "eval: doc.use_actual_tax_type",
+   "fieldname": "tax_account",
+   "fieldtype": "Link",
+   "label": "Tax account",
+   "mandatory_depends_on": "eval: doc.use_actual_tax_type",
+   "options": "Account"
+  },
+  {
+   "default": "1",
+   "description": "If checked, a 'Sales Taxes and Charges' line of type 'Actual' will be added for every WooCommerce Line Item with tax",
+   "fieldname": "use_actual_tax_type",
+   "fieldtype": "Check",
+   "label": "Use 'Actual' Tax Type"
+  },
+  {
+   "fieldname": "freight_and_forwarding_account",
+   "fieldtype": "Link",
+   "label": "Freight and Forwarding Account",
+   "options": "Account",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval: !doc.use_actual_tax_type",
+   "fieldname": "sales_taxes_and_charges_template",
+   "fieldtype": "Link",
+   "label": "Sales Taxes and Charges Template",
+   "mandatory_depends_on": "eval: !doc.use_actual_tax_type",
+   "options": "Sales Taxes and Charges Template"
+  },
+  {
+   "fieldname": "column_break_fjij",
+   "fieldtype": "Column Break"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "shipping_methods_sync_section",
+   "fieldtype": "Section Break",
+   "label": "Shipping Methods Sync"
+  },
+  {
+   "default": "0",
+   "fieldname": "enabled_shipping_methods",
+   "fieldtype": "Check",
+   "label": "Enable Shipping Methods Sync"
+  },
+  {
+   "depends_on": "eval: doc.enabled_shipping_methods",
+   "fieldname": "shipping_rule_map",
+   "fieldtype": "Table",
+   "label": "Map WooCommerce Shipping Methods to ERPNext Shipping Rules",
+   "options": "WooCommerce Server Shipping Rule"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "sales_order_status_sync_section",
+   "fieldtype": "Section Break",
+   "label": "Sales Order Status Sync"
+  },
+  {
+   "default": "0",
+   "fieldname": "enabled_order_status",
+   "fieldtype": "Check",
+   "label": "Keep the Status of ERPNext Sales Orders and WooCommerce Orders in sync"
+  },
+  {
+   "depends_on": "eval: doc.enabled_order_status",
+   "description": "For example, if you map the ERPNext status \"To Deliver\" to the WooCommerce status \"Processing\", as soon as the ERPNext Sales Order's status changes, an attempt will be made to update the linked WooCommerce Order status to \"Processing\"",
+   "fieldname": "sales_order_status_map",
+   "fieldtype": "Table",
+   "label": "Sales Order Status Map",
+   "options": "WooCommerce Server Order Status"
+  },
+  {
+   "default": "1",
+   "fieldname": "submit_sales_orders",
+   "fieldtype": "Check",
+   "label": "Submit Sales Orders during Synchronisation"
+  },
+  {
+   "fieldname": "column_break_velv",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "sync_so_items_to_wc",
+   "fieldtype": "Check",
+   "label": "Synchronise Sales Order Line changes back"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-04-24 20:17:32.402028",
+ "modified": "2025-04-27 23:39:30.467833",
  "modified_by": "Administrator",
  "module": "Woocommerce Conduit",
  "name": "WooCommerce Server",

@@ -5,7 +5,7 @@
 from frappe.model.document import Document
 
 
-class WooCommerceSettings(Document):
+class WooCommerceServerOrderStatus(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -14,11 +14,10 @@ class WooCommerceSettings(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		fetch_variations: DF.Check
-		max_variations: DF.Int
-		minimum_creation_date: DF.Datetime
-		variation_batch_size: DF.Int
-		wc_last_sync_date_items: DF.Datetime | None
-		wc_last_sync_date_orders: DF.Datetime | None
+		erpnext_sales_order_status: DF.Literal["Draft", "On Hold", "To Deliver and Bill", "To Bill", "To Deliver", "Completed", "Cancelled", "Closed"]
+		parent: DF.Data
+		parentfield: DF.Data
+		parenttype: DF.Data
+		woocommerce_sales_order_status: DF.Literal[None]
 	# end: auto-generated types
 	pass

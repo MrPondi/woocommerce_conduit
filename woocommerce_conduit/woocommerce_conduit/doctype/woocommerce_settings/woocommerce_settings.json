@@ -8,7 +8,9 @@
   "fetch_variations",
   "variation_batch_size",
   "max_variations",
-  "wc_last_sync_date_items"
+  "wc_last_sync_date_items",
+  "wc_last_sync_date_orders",
+  "minimum_creation_date"
  ],
  "fields": [
   {
@@ -35,13 +37,25 @@
    "fieldname": "wc_last_sync_date_items",
    "fieldtype": "Datetime",
    "label": "Last Items Syncronisation Date"
+  },
+  {
+   "fieldname": "minimum_creation_date",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Minimum Order Creation Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "wc_last_sync_date_orders",
+   "fieldtype": "Datetime",
+   "label": "Last Orders Syncronisation Date"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-04-24 15:11:39.131506",
+ "modified": "2025-04-29 00:16:09.286450",
  "modified_by": "Administrator",
  "module": "Woocommerce Conduit",
  "name": "WooCommerce Settings",

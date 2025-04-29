@@ -1,0 +1,413 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-04-26 13:17:53.807136",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "server_info_section",
+  "woocommerce_server",
+  "column_break_uhol",
+  "woocommerce_id",
+  "parent_id",
+  "section_break_jagi",
+  "number",
+  "created_via",
+  "version",
+  "status",
+  "column_break_ngmb",
+  "order_key",
+  "customer_note",
+  "customer_tab",
+  "customer_id",
+  "customer_ip_address",
+  "customer_user_agent",
+  "billing",
+  "shipping",
+  "order_lines_tab",
+  "cart_hash",
+  "line_items",
+  "shipping_lines",
+  "refunds",
+  "payment_tab",
+  "payment_method_title",
+  "payment_method",
+  "transaction_id",
+  "date_paid",
+  "payment_url",
+  "section_break_nidm",
+  "tax_lines",
+  "fee_lines",
+  "coupon_lines",
+  "totals_tab",
+  "discount_total",
+  "shipping_total",
+  "total",
+  "prices_include_tax",
+  "column_break_nugf",
+  "discount_tax",
+  "shipping_tax",
+  "total_tax",
+  "cart_tax",
+  "misc_tab",
+  "woocommerce_date_created",
+  "woocommerce_date_modified",
+  "currency",
+  "_links"
+ ],
+ "fields": [
+  {
+   "collapsible": 1,
+   "fieldname": "server_info_section",
+   "fieldtype": "Section Break",
+   "label": "Server Info"
+  },
+  {
+   "fieldname": "woocommerce_server",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "label": "WooCommerce Server",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_uhol",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "woocommerce_id",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "in_list_view": 1,
+   "label": "WooCommerce Order ID",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "parent_id",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "label": "WooCommerce Parent ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_jagi",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "number",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "in_list_view": 1,
+   "label": "WooCommerce Order Number",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "created_via",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "in_list_view": 1,
+   "label": "Created via",
+   "read_only": 1
+  },
+  {
+   "fieldname": "version",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "label": "Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "pending\non-hold\nfailed\ncancelled\nprocessing\nrefunded\ncompleted\nready-pickup\npickup\ndelivered\nprocessing-lp\ncheckout-draft\ngplsquote-req\ntrash",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_ngmb",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "order_key",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "label": "WooCommerce Order Key",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "customer_note",
+   "fieldtype": "Small Text",
+   "label": "Customer note",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer_tab",
+   "fieldtype": "Tab Break",
+   "label": "Customer"
+  },
+  {
+   "fieldname": "customer_id",
+   "fieldtype": "Data",
+   "label": "ID",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "customer_ip_address",
+   "fieldtype": "Data",
+   "label": "IP Address",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer_user_agent",
+   "fieldtype": "Small Text",
+   "label": "User Agent",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing",
+   "fieldtype": "JSON",
+   "label": "Billing data",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "shipping",
+   "fieldtype": "JSON",
+   "label": "Shipping data",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "order_lines_tab",
+   "fieldtype": "Tab Break",
+   "label": "Order lines"
+  },
+  {
+   "description": "MD5 hash of cart items to ensure orders are not modified.",
+   "fieldname": "cart_hash",
+   "fieldtype": "Data",
+   "label": "Cart hash",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval: doc.line_items != \"[]\"",
+   "fieldname": "line_items",
+   "fieldtype": "JSON",
+   "label": "Line items",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval: doc.shipping_lines != \"[]\"",
+   "fieldname": "shipping_lines",
+   "fieldtype": "JSON",
+   "label": "Shipping lines",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval: doc.refunds != \"[]\"",
+   "fieldname": "refunds",
+   "fieldtype": "JSON",
+   "label": "Refunds",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payment_tab",
+   "fieldtype": "Tab Break",
+   "label": "Payment"
+  },
+  {
+   "fieldname": "payment_method_title",
+   "fieldtype": "Small Text",
+   "label": "Payment Method Title",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payment_method",
+   "fieldtype": "Data",
+   "label": "Payment Method",
+   "read_only": 1
+  },
+  {
+   "fieldname": "transaction_id",
+   "fieldtype": "Data",
+   "label": "Transaction ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "date_paid",
+   "fieldtype": "Datetime",
+   "label": "Date Paid",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payment_url",
+   "fieldtype": "Small Text",
+   "label": "Payment url",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_nidm",
+   "fieldtype": "Section Break"
+  },
+  {
+   "depends_on": "eval: doc.tax_lines != \"[]\"",
+   "fieldname": "tax_lines",
+   "fieldtype": "JSON",
+   "label": "Tax lines",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval: doc.fee_lines != \"[]\"",
+   "fieldname": "fee_lines",
+   "fieldtype": "JSON",
+   "label": "Fee lines",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval: doc.coupon_lines != \"[]\"",
+   "fieldname": "coupon_lines",
+   "fieldtype": "JSON",
+   "label": "Coupon lines",
+   "read_only": 1
+  },
+  {
+   "fieldname": "totals_tab",
+   "fieldtype": "Tab Break",
+   "label": "Totals",
+   "read_only": 1
+  },
+  {
+   "fieldname": "discount_total",
+   "fieldtype": "Currency",
+   "label": "Discount Total",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_total",
+   "fieldtype": "Currency",
+   "label": "Shipping Total",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total",
+   "fieldtype": "Currency",
+   "label": "Total",
+   "non_negative": 1,
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "prices_include_tax",
+   "fieldtype": "Check",
+   "label": "Prices Include Tax",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval: doc.total_tax != 0",
+   "fieldname": "discount_tax",
+   "fieldtype": "Currency",
+   "label": "Discount Tax",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval: doc.total_tax != 0",
+   "fieldname": "shipping_tax",
+   "fieldtype": "Currency",
+   "label": "Shipping Tax",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval: doc.total_tax != 0",
+   "fieldname": "total_tax",
+   "fieldtype": "Currency",
+   "label": "Total Tax",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval: doc.total_tax != 0",
+   "fieldname": "cart_tax",
+   "fieldtype": "Currency",
+   "label": "Cart Tax",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "misc_tab",
+   "fieldtype": "Tab Break",
+   "label": "Misc"
+  },
+  {
+   "fieldname": "woocommerce_date_created",
+   "fieldtype": "Datetime",
+   "label": "Date Created",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "woocommerce_date_modified",
+   "fieldtype": "Datetime",
+   "label": "Date Modified",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_nugf",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Data",
+   "label": "Currency",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "{}",
+   "fieldname": "_links",
+   "fieldtype": "JSON",
+   "hidden": 1,
+   "label": "Links",
+   "read_only": 1,
+   "reqd": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "is_virtual": 1,
+ "links": [],
+ "modified": "2025-04-28 20:52:20.258384",
+ "modified_by": "Administrator",
+ "module": "Woocommerce Conduit",
+ "name": "WooCommerce Order",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

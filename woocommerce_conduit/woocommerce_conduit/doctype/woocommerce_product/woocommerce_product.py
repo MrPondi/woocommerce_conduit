@@ -20,7 +20,7 @@ class WooCommerceProduct(WooCommerceDocument):
 		from frappe.types import DF
 
 		attributes: DF.JSON
-		average_rating: DF.Float
+		average_rating: DF.Rating
 		backordered: DF.Check
 		backorders: DF.Literal["no", "notify", "yes"]
 		backorders_allowed: DF.Check
@@ -84,8 +84,8 @@ class WooCommerceProduct(WooCommerceDocument):
 	def db_insert(self, *args, **kwargs):
 		pass
 
-	def db_update(self):
-		pass
+	def load_from_db(self):
+		return super().load_from_db()
 
 	def after_load_from_db(self, product: dict):
 		images = json.loads(product["images"])
@@ -94,12 +94,19 @@ class WooCommerceProduct(WooCommerceDocument):
 		product["length"] = product["dimensions"]["length"]
 		product["width"] = product["dimensions"]["width"]
 		product["height"] = product["dimensions"]["height"]
+		product["average_rating"] = round(float(product["average_rating"]) * 0.2, 1)
 		attributes = json.loads(product["attributes"])
 		for attribute in attributes:
 			if attribute["slug"] == "pa_producent":
 				product["brand"] = attribute["options"][0]
 				break
 		return product
+
+	def db_update(self):
+		pass
+
+	def delete(self):
+		return super().delete()
 
 	@staticmethod
 	def get_list(args) -> list[Document] | None:
@@ -184,7 +191,9 @@ class WooCommerceProduct(WooCommerceDocument):
 				if not skip_cache:
 					try:
 						frappe.cache().set_value(
-							cache_key, json.dumps(products), expires_in_sec=cache_timeout
+							cache_key,
+							products,
+							expires_in_sec=cache_timeout,
 						)
 					except Exception as e:
 						frappe.log_error(

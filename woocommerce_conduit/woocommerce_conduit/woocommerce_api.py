@@ -1,4 +1,5 @@
 import json
+import traceback
 from urllib.parse import urlparse
 
 import frappe
@@ -13,6 +14,39 @@ WC_RESOURCE_DELIMITER = "~"
 
 
 class WooCommerceAPI(API):
+	"""WooCommerce API with Request Logging."""
+
+	def _API__request(self, method, endpoint, data, params=None, **kwargs):
+		"""Override _request method to also create a 'WooCommerce Request Log'"""
+		result = None
+		try:
+			result = super()._API__request(method, endpoint, data, params, **kwargs)  # type: ignore
+			if not frappe.flags.in_test:
+				frappe.enqueue(
+					"woocommerce_conduit.tasks.utils.log_woocommerce_request",
+					url=self.url,
+					endpoint=endpoint,
+					request_method=method,
+					params=params,
+					data=data,
+					res=result,
+					traceback="".join(traceback.format_stack(limit=8)),
+				)
+			return result
+		except Exception as e:
+			if not frappe.flags.in_test:
+				frappe.enqueue(
+					"woocommerce_conduit.tasks.utils.log_woocommerce_request",
+					url=self.url,
+					endpoint=endpoint,
+					request_method=method,
+					params=params,
+					data=data,
+					res=result,
+					traceback="".join(traceback.format_stack(limit=8)),
+				)
+			raise e
+
 	woocommerce_server_url: str
 	woocommerce_server: str
 
@@ -123,10 +157,16 @@ class WooCommerceDocument(Document):
 			params["_fields"] = (
 				"name,id,purchasable,virtual,downloadable,status,type,description,short_description,downloads,download_limit,download_expiry,price,regular_price,sale_price,tax_status,tax_class,date_on_sale_from,date_on_sale_to,on_sale,total_sales,sku,manage_stock,sold_individually,stock_quantity,backorders,backorders_allowed,backordered,low_stock_amount,stock_status,weight,dimensions,shipping_required,shipping_taxable,shipping_class,shipping_class_id,upsell_ids,cross_sell_ids,related_ids,slug,permalink,date_created,date_modified,reviews_allowed,average_rating,rating_count,featured,parent_id,catalog_visibility,images,attributes"
 			)
+		elif self.doctype == "WooCommerce Order":
+			params["_fields"] = (
+				"id,parent_id,number,created_via,version,status,order_key,customer_note,customer_id,customer_ip_address,customer_user_agent,currency,billing,shipping,cart_hash,line_items,shipping_lines,refunds,payment_method_title,payment_method,transaction_id,date_paid,payment_url,tax_lines,fee_lines,coupon_lines,discount_total,shipping_total,total,prices_include_tax,discount_tax,shipping_tax,total_tax,cart_tax,date_created,date_modified,_links"
+			)
 
 		# Select the relevant WooCommerce server
 		try:
-			self.current_wc_api = next(api for api in self.wc_api_list if wc_server_domain in api.url)
+			self.current_wc_api = next(
+				api for api in self.wc_api_list if wc_server_domain in api.woocommerce_server_url
+			)
 		except StopIteration:
 			log_and_raise_error(error_text=f"No WooCommerce server found for domain {wc_server_domain}")
 
@@ -155,7 +195,9 @@ class WooCommerceDocument(Document):
 				error_text=f"Invalid record format: WooCommerce {self.resource} #{record_id}\nResponse: {record!s}"
 			)
 
-		record = self.pre_init_document(record, woocommerce_server_url=self.current_wc_api.url)
+		record = self.pre_init_document(
+			record, woocommerce_server_url=self.current_wc_api.woocommerce_server_url
+		)
 		record = self.after_load_from_db(record)
 
 		super(Document, self).__init__(record)
@@ -210,11 +252,13 @@ class WooCommerceDocument(Document):
 		# Optimize fields selection for specific doctypes
 		if cls.doctype == "WooCommerce Product":
 			params["_fields"] = "name,id,date_created,date_modified,type,sku,status"
+		elif cls.doctype == "WooCommerce Order":
+			params["_fields"] = "id,number,date_created,date_modified,status"
 
 		# Handle pagination
 		requested = int(args.get("page_length", wc_records_per_page_limit))
 		per_page = min(requested, wc_records_per_page_limit)
-		offset = int(args.get("offset", 0))
+		offset = int(args.get("start", 0))
 		params["per_page"] = per_page
 
 		# Map Frappe filters to WooCommerce parameters
@@ -288,7 +332,9 @@ class WooCommerceDocument(Document):
 				processed_batch = []
 				for record in results:
 					try:
-						record = cls.pre_init_document(record=record, woocommerce_server_url=wc_server.url)
+						record = cls.pre_init_document(
+							record=record, woocommerce_server_url=wc_server.woocommerce_server_url
+						)
 						record = cls.during_get_list_of_records(record, args)
 						processed_batch.append(record)
 					except Exception as e:
@@ -298,6 +344,7 @@ class WooCommerceDocument(Document):
 						)
 
 				records_needed -= len(results)
+				server_offset += len(results)
 				all_results.extend(processed_batch)
 				total_processed += min(total_records_in_server, len(processed_batch))
 
@@ -307,6 +354,7 @@ class WooCommerceDocument(Document):
 				try:
 					batch_params = params.copy()
 					batch_params["per_page"] = min(records_needed, params["per_page"])
+					batch_params["offset"] = server_offset
 					response = wc_server.get(endpoint, params=batch_params)
 
 					if response.status_code != 200:
@@ -391,6 +439,9 @@ class WooCommerceDocument(Document):
 		"""Serialize complex fields (dict, list) to JSON strings"""
 		return cls.serialize_attributes_of_type_dict_or_list(record)
 
+	def delete(self):
+		frappe.throw(_("Deleting resources have not been implemented yet"))
+
 	def to_dict(self):
 		"""
 		Convert this Document to a dict
@@ -440,8 +491,6 @@ class WooCommerceDocument(Document):
 
 		return fields
 
-	# use "args" despite frappe-semgrep-rules.rules.overusing-args, following convention in ERPNext
-	# nosemgrep
 	@classmethod
 	def get_count_of_records(cls, args) -> int:
 		"""
@@ -470,7 +519,7 @@ class WooCommerceDocument(Document):
 		# Get counts from each server
 		for wc_server in wc_api_list:
 			try:
-				response = wc_server.get(cls.resource, params={"per_page": 1, "_fields": "name"})
+				response = wc_server.get(cls.resource, params={"per_page": 1, "_fields": "id"})
 
 				if response.status_code != 200:
 					frappe.log_error(
@@ -484,9 +533,23 @@ class WooCommerceDocument(Document):
 
 			except Exception as err:
 				frappe.log_error(
-					f"Error getting count from {wc_server.url}: {err!s}", "WooCommerce Count Error"
+					f"Error getting count from {wc_server.woocommerce_server_url}: {err!s}",
+					"WooCommerce Count Error",
 				)
 		return total_count
+
+	@classmethod
+	def get_api_response(cls, server: str, endpoint: str, **kwargs):
+		# Initialise the WC API
+		try:
+			wc_api_list = cls._init_api()
+		except SyncDisabledError:
+			frappe.msgprint(
+				_("WooCommerce synchronization is disabled. Please enable at least one WooCommerce server.")
+			)
+
+		wcapi = next(api for api in wc_api_list if server in api.woocommerce_server_url)
+		return wcapi.get(endpoint, **kwargs).json()
 
 
 def generate_woocommerce_record_name_from_domain_and_id(
@@ -596,6 +659,10 @@ def map_frappe_filters_to_wc_params(filters):
 			params["search"] = value.strip("%")
 		elif field == "woocommerce_id" and operator == "=":
 			params["include"] = [value]
+		elif field == "woocommerce_id" and operator == "in":
+			params["include"] = ",".join(value)
+		elif field == "status" and operator == "=":
+			params["status"] = [value]
 		else:
 			frappe.throw(f"Unsupported operator '{operator}' for field '{field}'")
 
