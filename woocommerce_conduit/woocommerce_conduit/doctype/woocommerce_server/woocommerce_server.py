@@ -7,7 +7,11 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils.caching import redis_cache
+from jsonpath_ng.ext import parse
 
+from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_order.woocommerce_order import (
+	WC_ORDER_STATUS_MAPPING,
+)
 from woocommerce_conduit.woocommerce_conduit.woocommerce_api import WooCommerceAPI
 
 
@@ -34,7 +38,7 @@ class WooCommerceServer(Document):
 		api_consumer_secret: DF.Data
 		company: DF.Link
 		creation_user: DF.Link
-		delivery_after_days: DF.Duration | None
+		delivery_after_days: DF.Int
 		enable_image_sync: DF.Check
 		enabled: DF.Check
 		enabled_order_status: DF.Check
@@ -60,6 +64,7 @@ class WooCommerceServer(Document):
 		use_actual_tax_type: DF.Check
 		warehouse: DF.Link
 		woocommerce_server_url: DF.Data
+
 	# end: auto-generated types
 	def autoname(self):
 		"""
@@ -72,7 +77,26 @@ class WooCommerceServer(Document):
 
 		if parsed_url.netloc:
 			self.name = parsed_url.netloc
+
 	def validate(self):
+		self.validate_woocommerce_url()
+		self.test_api_credentials()
+		self.validate_so_status_map()
+		self.validate_item_map()
+
+	def test_api_credentials(self):
+		wcapi = WooCommerceAPI(
+			url=self.woocommerce_server_url,
+			consumer_key=self.api_consumer_key,
+			consumer_secret=self.api_consumer_secret,
+			version="wc/v3",
+		)
+		res = wcapi.get("system_status", params={"_fields": "environment"})
+
+		if res.status_code != 200:
+			frappe.throw(_("WooCommerce API credentials are not valid"))
+
+	def validate_woocommerce_url(self):
 		parsed_url = urlparse(self.woocommerce_server_url)
 
 		if not parsed_url.netloc:
@@ -85,22 +109,43 @@ class WooCommerceServer(Document):
 		url_scheme = parsed_url.scheme if parsed_url.scheme in ["http", "https"] else "https"
 		self.woocommerce_server_url = urlunparse((url_scheme, parsed_url.netloc, "", "", "", ""))
 
-		if not self.test_api_credentials():
-			frappe.throw(_("WooCommerce API credentials are not valid"))
+	def validate_so_status_map(self):
+		"""
+		Validate Sales Order Status Map to have unique mappings
+		"""
+		erpnext_so_statuses = [map.erpnext_sales_order_status for map in self.sales_order_status_map]
+		if len(erpnext_so_statuses) != len(set(erpnext_so_statuses)):
+			frappe.throw(_("Duplicate ERPNext Sales Order Statuses found in Sales Order Status Map"))
 
-	def test_api_credentials(self) -> bool:
-		wcapi = WooCommerceAPI(
-			url=self.woocommerce_server_url,
-			consumer_key=self.api_consumer_key,
-			consumer_secret=self.api_consumer_secret,
-			version="wc/v3",
-		)
-		res = wcapi.get("system_status", params={"_fields": "environment"})
+		wc_so_statuses = [map.woocommerce_sales_order_status for map in self.sales_order_status_map]
+		if len(wc_so_statuses) != len(set(wc_so_statuses)):
+			frappe.throw(_("Duplicate WooCommerce Sales Order Statuses found in Sales Order Status Map"))
 
-		if res.status_code == 200:
-			return True
-		else:
-			return False
+	def validate_item_map(self):
+		"""
+		Validate Item Map to have valid JSONPath expressions
+		"""
+		disallowed_fields = ["attributes"]
+
+		# If the built-in image sync is enabled, disallow the image field in the item field map to avoid unexpected behavior
+		if self.enable_image_sync:
+			disallowed_fields.append("images")
+
+		if self.item_field_map:
+			for map in self.item_field_map:
+				jsonpath_expr = map.woocommerce_field_name
+				try:
+					parse(jsonpath_expr)
+				except Exception as e:
+					frappe.throw(
+						_("Invalid JSONPath syntax in Item Field Map Row {0}:<br><br><pre>{1}</pre>").format(
+							map.idx, e
+						)
+					)
+
+				for field in disallowed_fields:
+					if field in jsonpath_expr:
+						frappe.throw(_("Field '{0}' is not allowed in JSONPath expression").format(field))
 
 	@frappe.whitelist()
 	@redis_cache(ttl=600)
@@ -129,3 +174,11 @@ class WooCommerceServer(Document):
 			filters=[["fieldtype", "not in", invalid_field_types], ["dt", "=", "Item"]],
 		)
 		return docfields + custom_fields
+
+	@frappe.whitelist()
+	@redis_cache(ttl=86400)
+	def get_woocommerce_order_status_list(self) -> list[str]:
+		"""
+		Retrieve list of WooCommerce Order Statuses
+		"""
+		return [key for key in WC_ORDER_STATUS_MAPPING.keys()]

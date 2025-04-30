@@ -52,8 +52,8 @@ class SyncedOrder(SalesOrder):
 		woocommerce_last_sync_hash: datetime
 		woocommerce_status: str
 		woocommerce_payment_method: str
-		woocommerce_customer_note: str
 		woocommerce_payment_entry: str
+		woocommerce_customer_note: str
 		items: DF.Table[SyncedOrderItem]
 
 
@@ -83,7 +83,9 @@ def sync_woocommerce_orders_modified_since(date_time_from=None):
 	if not date_time_from:
 		date_time_from = getattr(settings, "wc_last_sync_date_orders", None)
 
-	wc_orders = get_list_of_wc_orders(date_time_from=date_time_from, status="pending,processing,on-hold,completed,cancelled")
+	wc_orders = get_list_of_wc_orders(
+		date_time_from=date_time_from, status="pending,processing,on-hold,completed,cancelled"
+	)
 	for wc_order in wc_orders:
 		try:
 			run_sales_order_sync(woocommerce_order=wc_order, enqueue=True)

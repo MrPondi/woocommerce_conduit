@@ -15,7 +15,7 @@
    "fieldname": "wc_shipping_method_id",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "WooCommerce Shipping Method Title",
+   "label": "WooCommerce Shipping Method ID",
    "reqd": 1
   },
   {
@@ -31,7 +31,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2025-04-27 23:35:18.448942",
+ "modified": "2025-04-29 22:12:44.661043",
  "modified_by": "Administrator",
  "module": "Woocommerce Conduit",
  "name": "WooCommerce Server Shipping Rule",

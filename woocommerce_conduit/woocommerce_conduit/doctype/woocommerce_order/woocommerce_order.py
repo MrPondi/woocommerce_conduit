@@ -17,7 +17,7 @@ WC_ORDER_STATUS_MAPPING = {
 	"Cancelled": "cancelled",
 	"Processing": "processing",
 	"Refunded": "refunded",
-	"Shipped": "completed",
+	"Completed": "completed",
 	"Ready for Pickup": "ready-pickup",
 	"Picked up": "pickup",
 	"Delivered": "delivered",

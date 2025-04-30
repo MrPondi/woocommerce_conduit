@@ -33,5 +33,44 @@ frappe.ui.form.on("WooCommerce Server", {
             }
         });
 
+		// Only list enabled warehouses
+		frm.fields_dict.warehouses.get_query = function (doc) {
+			return {
+				filters: {
+					disabled: 0,
+					is_group: 0
+				}
+			};
+		}
+
+		if (frm.doc.enabled_order_status && !frm.fields_dict.sales_order_status_map.grid.get_docfield("woocommerce_sales_order_status").options) {
+			frm.trigger('get_woocommerce_order_status_list');
+		}
+
     },
+	// Handle click of 'Keep the Status of ERPNext Sales Orders and WooCommerce Orders in sync'
+	enabled_order_status: function(frm){
+		if (frm.doc.enabled_order_status && !frm.fields_dict.sales_order_status_map.grid.get_docfield("woocommerce_sales_order_status").options){
+			frm.trigger('get_woocommerce_order_status_list');
+		}
+	},
+
+	// Retrieve WooCommerce order statuses
+	get_woocommerce_order_status_list: function(frm){
+		frappe.call({
+			method: "get_woocommerce_order_status_list",
+			doc: frm.doc,
+			callback: function(r) {
+				// Join the strings with newline characters to create the final string
+				const options = r.message.join('\n');
+
+				// Set the Options property
+				frm.fields_dict.sales_order_status_map.grid.update_docfield_property(
+					"woocommerce_sales_order_status",
+					"options",
+					options
+				);
+			}
+		});
+	},
 });

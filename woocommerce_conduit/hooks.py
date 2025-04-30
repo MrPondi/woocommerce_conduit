@@ -268,6 +268,15 @@ fixtures = [
 				(
 					"Item-woocommerce_tab",
 					"Item-woocommerce_servers",
+					"Customer-woocommerce_identifier",
+					"Sales Order-woocommerce_id",
+					"Sales Order-woocommerce_server",
+					"Sales Order-woocommerce_status",
+					"Sales Order-woocommerce_payment_method",
+					"Sales Order-woocommerce_payment_entry",
+					"Sales Order-woocommerce_last_sync_hash",
+					"Sales Order-woocommerce_customer_note",
+					"Sales Order-custom_woocommerce_sync",
 				),
 			]
 		],

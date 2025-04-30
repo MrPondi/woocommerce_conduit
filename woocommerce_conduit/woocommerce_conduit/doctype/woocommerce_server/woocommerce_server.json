@@ -223,10 +223,12 @@
    "reqd": 1
   },
   {
+   "default": "7",
    "fieldname": "delivery_after_days",
-   "fieldtype": "Duration",
+   "fieldtype": "Int",
    "hide_seconds": 1,
-   "label": "Delivery After"
+   "label": "Delivery After (Days)",
+   "non_negative": 1
   },
   {
    "fieldname": "accounting_details_section",
@@ -326,7 +328,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-04-29 21:26:32.463778",
+ "modified": "2025-04-29 22:18:09.868542",
  "modified_by": "Administrator",
  "module": "Woocommerce Conduit",
  "name": "WooCommerce Server",
