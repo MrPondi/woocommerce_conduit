@@ -672,8 +672,8 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			shipping_data = json.loads(self.woocommerce_order.shipping)
 			customer_data = billing_data
 
-		first_name = customer_data.get("first_name", "").strip()
-		last_name = customer_data.get("last_name", "").strip()
+		first_name = billing_data.get("first_name", "").strip()
+		last_name = billing_data.get("last_name", "").strip()
 		company_name = billing_data.get("company", "").strip()
 		email = customer_data.get("email", "").strip()
 		individual_name = f"{first_name} {last_name}".strip()
@@ -689,6 +689,8 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		# Use order ID for guest users, otherwise use email
 		if not is_customer:
 			customer_identifier = f"Guest-{self.woocommerce_order.woocommerce_id}"
+		elif "username" in customer_data and customer_data.get("username", "").strip():
+			customer_identifier = customer_data.get("username", "").strip()
 		elif company_name:
 			customer_identifier = f"{email}-{company_name}"
 		else:
