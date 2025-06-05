@@ -47,13 +47,13 @@ class SyncedOrder(SalesOrder):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		woocommerce_server: str
-		woocommerce_id: str
-		woocommerce_last_sync_hash: datetime
-		woocommerce_status: str
-		woocommerce_payment_method: str
-		woocommerce_payment_entry: str
-		woocommerce_customer_note: str
+		woocommerce_server: DF.Data
+		woocommerce_id: DF.Data
+		woocommerce_last_sync_hash: DF.Datetime
+		woocommerce_status: DF.Data
+		woocommerce_payment_method: DF.Data
+		woocommerce_payment_entry: DF.Data
+		woocommerce_customer_note: DF.Data
 		items: DF.Table[SyncedOrderItem]
 
 
@@ -158,9 +158,11 @@ def run_sales_order_sync(
 
 			# If any of these fields are missing or None, we need to reload
 			if isinstance(wc_order, dict):
-				load_full_order = any(not wc_order.get(field) for field in required_full_fields)
+				load_full_order = any(wc_order.get(field) is None for field in required_full_fields)
 			else:
-				load_full_order = any(not getattr(wc_order, field, None) for field in required_full_fields)
+				load_full_order = any(
+					getattr(wc_order, field, None) is None for field in required_full_fields
+				)
 
 		if load_full_order:
 			try:
@@ -335,10 +337,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		"""
 		Syncronise Sales Order between ERPNext and WooCommerce
 		"""
-		if self.sales_order and not self.woocommerce_order:
-			# create missing order in WooCommerce
-			pass
-		elif self.woocommerce_order and not self.sales_order:
+		if self.woocommerce_order and not self.sales_order:
 			# create missing order in ERPNext
 			self.create_sales_order()
 		elif self.sales_order and self.woocommerce_order:
@@ -347,14 +346,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 				self.woocommerce_order.woocommerce_date_modified
 				!= self.sales_order.woocommerce_last_sync_hash
 			):
-				if get_datetime(self.woocommerce_order.woocommerce_date_modified) > get_datetime(
-					self.sales_order.modified
-				):  # type: ignore
-					self.update_sales_order()
-				if get_datetime(self.woocommerce_order.woocommerce_date_modified) < get_datetime(
-					self.sales_order.modified
-				):  # type: ignore
-					self.update_woocommerce_order()
+				self.update_sales_order()
 
 			# If the Sales Order exists and has been submitted in the mean time, sync Payment Entries
 			if self.sales_order.docstatus == 1 and not self.sales_order.woocommerce_payment_entry:
@@ -368,6 +360,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		"""
 		if not self.woocommerce_order or not self.sales_order:
 			return
+
 		# Ignore cancelled Sales Orders
 		if self.sales_order.docstatus != 2:
 			so_dirty = False
@@ -406,6 +399,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 					so_dirty = True
 
 			if so_dirty:
+				self.sales_order.woocommerce_last_sync_hash = self.woocommerce_order.woocommerce_date_modified
 				self.sales_order.flags.created_by_sync = True
 				self.sales_order.save()
 
@@ -495,78 +489,6 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			return True
 		return False
 
-	def update_woocommerce_order(self) -> None:
-		"""
-		Update the WooCommerce Order with fields from it's corresponding ERPNext Sales Order
-		"""
-		if not self.woocommerce_order or not self.sales_order:
-			return
-
-		wc_order_dirty = False
-
-		# Update the woocommerce_status field if necessary
-		sales_order_wc_status = (
-			WC_ORDER_STATUS_MAPPING[self.sales_order.woocommerce_status]
-			if self.sales_order.woocommerce_status
-			else None
-		)
-		if sales_order_wc_status and sales_order_wc_status != self.woocommerce_order.status:
-			self.woocommerce_order.status = sales_order_wc_status  # type: ignore
-			wc_order_dirty = True
-
-		# Get the Item WooCommerce ID's
-		for so_item in self.sales_order.items:
-			so_item.woocommerce_id = frappe.get_value(
-				"Item WooCommerce Server",
-				filters={
-					"parent": so_item.item_code,
-					"woocommerce_server": self.woocommerce_order.woocommerce_server,
-				},
-				fieldname="woocommerce_id",
-			)  # type: ignore
-
-		# Update the line_items field if necessary
-		wc_server: WooCommerceServer = frappe.get_cached_doc(
-			"WooCommerce Server", self.woocommerce_order.woocommerce_server
-		)  # type: ignore
-		if wc_server.sync_so_items_to_wc:
-			sales_order_items_changed = False
-			line_items = json.loads(self.woocommerce_order.line_items)
-			# Check if count of line items are different
-			if len(line_items) != len(self.sales_order.items):
-				sales_order_items_changed = True
-			# Check if any line item properties changed
-			else:
-				for i, so_item in enumerate(self.sales_order.items):
-					if not so_item.woocommerce_id:
-						break
-					elif (
-						int(so_item.woocommerce_id) != line_items[i]["product_id"]
-						or so_item.qty != line_items[i]["quantity"]
-						or so_item.rate != get_tax_inc_price_for_woocommerce_line_item(line_items[i])
-					):
-						sales_order_items_changed = True
-						break
-
-			if sales_order_items_changed:
-				# Set the product_id for existing lines to null, to clear the line items for the WooCommerce order
-				replacement_line_items = [
-					{"id": line_item["id"], "product_id": None}
-					for line_item in json.loads(self.woocommerce_order.line_items)
-				]
-				# Add the correct lines
-				replacement_line_items.extend(
-					[
-						{"product_id": so_item.woocommerce_id, "quantity": so_item.qty, "price": so_item.rate}
-						for so_item in self.sales_order.items
-					]
-				)
-				self.woocommerce_order.line_items = json.dumps(replacement_line_items)
-				wc_order_dirty = True
-
-		if wc_order_dirty:
-			self.woocommerce_order.save()
-
 	def create_sales_order(self) -> None:
 		"""
 		Create an ERPNext Sales Order from the given WooCommerce Order
@@ -576,6 +498,10 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 		customer_docname = self.create_or_link_customer_and_address()
 		if not customer_docname:
+			frappe.log_error(
+				"WooCommerce Sync",
+				f"Failed to create/link customer for WC Order {self.woocommerce_order.woocommerce_id} ({self.woocommerce_order.name}). Aborting Sales Order creation.",
+			)
 			return
 		self.create_missing_items()
 
@@ -606,9 +532,8 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			new_sales_order.woocommerce_payment_method = payment_method
 		created_date = str(self.woocommerce_order.woocommerce_date_created).split("T", 1)
 		new_sales_order.transaction_date = created_date[0]
-		if True or wc_server.delivery_after_days:
-			delivery_after = wc_server.delivery_after_days or 7
-			new_sales_order.delivery_date = frappe.utils.add_days(created_date[0], delivery_after)
+		delivery_after = wc_server.delivery_after_days or 7
+		new_sales_order.delivery_date = frappe.utils.add_days(created_date[0], delivery_after)
 		new_sales_order.company = wc_server.company
 		new_sales_order.currency = self.woocommerce_order.currency
 
@@ -628,6 +553,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 				new_sales_order.shipping_rule = shipping_rule_mapping.shipping_rule
 
 		self.set_items_in_sales_order(new_sales_order)
+		new_sales_order.woocommerce_last_sync_hash = self.woocommerce_order.woocommerce_date_modified
 		new_sales_order.flags.ignore_mandatory = True
 		new_sales_order.flags.created_by_sync = True
 		new_sales_order.insert()
@@ -638,7 +564,10 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		self.create_and_link_payment_entry(self.woocommerce_order, new_sales_order)
 
 		try:
-			new_sales_order.save()
+			if self.woocommerce_order.status == "cancelled":
+				new_sales_order.cancel()
+			else:
+				new_sales_order.save()
 		except Exception:
 			error_message = f"{frappe.get_traceback()}\n\nSales Order Data{new_sales_order.as_dict()!s}"
 			frappe.log_error("WooCommerce Error", error_message)
@@ -953,7 +882,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		address.address_line1 = raw_data.get("address_1", "Not Provided")
 		address.address_line2 = raw_data.get("address_2", "Not Provided")
 		address.city = raw_data.get("city", "Not Provided")
-		address.country = frappe.get_value("Country", {"code": raw_data.get("country", "IN").lower()})  # type: ignore
+		address.country = frappe.get_value("Country", {"code": raw_data.get("country", "PL").upper()})  # type: ignore
 		address.state = raw_data.get("state")
 		address.pincode = raw_data.get("postcode")
 		address.phone = raw_data.get("phone")
@@ -979,7 +908,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		address.address_line1 = raw_data.get("address_1", "Not Provided")
 		address.address_line2 = raw_data.get("address_2", "Not Provided")
 		address.city = raw_data.get("city", "Not Provided")
-		address.country = frappe.get_value("Country", {"code": raw_data.get("country", "IN").lower()})  # type: ignore
+		address.country = frappe.get_value("Country", {"code": raw_data.get("country", "PL").upper()})  # type: ignore
 		address.state = raw_data.get("state")
 		address.pincode = raw_data.get("postcode")
 		address.phone = raw_data.get("phone")
@@ -1080,7 +1009,6 @@ def create_contact(data, billing_address, customer):
 	contact.first_name = data.get("first_name")
 	contact.last_name = data.get("last_name")
 	contact.is_primary_contact = 1
-	contact.is_billing_contact = 1  # type: ignore
 	contact.address = billing_address
 
 	if phone:

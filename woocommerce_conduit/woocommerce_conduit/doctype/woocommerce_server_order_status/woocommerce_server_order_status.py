@@ -14,7 +14,16 @@ class WooCommerceServerOrderStatus(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		erpnext_sales_order_status: DF.Literal["Draft", "On Hold", "To Deliver and Bill", "To Bill", "To Deliver", "Completed", "Cancelled", "Closed"]
+		erpnext_sales_order_status: DF.Literal[
+			"Draft",
+			"On Hold",
+			"To Deliver and Bill",
+			"To Bill",
+			"To Deliver",
+			"Completed",
+			"Cancelled",
+			"Closed",
+		]
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data

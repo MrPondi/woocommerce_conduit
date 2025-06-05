@@ -810,11 +810,11 @@ def clear_sync_hash_and_run_item_sync(item_code: str):
 	and it does not update the modified timestamp (by using the update_modified parameter)
 	"""
 
-	iws = frappe.qb.DocType("Item WooCommerce Server")
+	iws: ItemWooCommerceServer = frappe.qb.DocType("Item WooCommerce Server")  # type: ignore
 
-	iwss = (frappe.qb.from_(iws).where(iws.enabled == 1).where(iws.parent == item_code).select(iws.name)).run(
-		as_dict=True
-	)
+	iwss = (
+		frappe.qb.from_(iws).where(iws.enable_sync == 1).where(iws.parent == item_code).select(iws.name)
+	).run(as_dict=True)
 
 	for iws in iwss:
 		frappe.db.set_value(
