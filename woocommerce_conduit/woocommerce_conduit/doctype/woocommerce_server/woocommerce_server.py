@@ -56,6 +56,7 @@ class WooCommerceServer(Document):
 		price_list: DF.Link
 		sales_order_status_map: DF.Table[WooCommerceServerOrderStatus]
 		sales_taxes_and_charges_template: DF.Link | None
+		secret: DF.SmallText | None
 		shipping_rule_map: DF.Table[WooCommerceServerShippingRule]
 		submit_sales_orders: DF.Check
 		sync_so_items_to_wc: DF.Check
@@ -83,6 +84,9 @@ class WooCommerceServer(Document):
 		self.test_api_credentials()
 		self.validate_so_status_map()
 		self.validate_item_map()
+
+		if not self.secret:
+			self.secret = frappe.generate_hash()
 
 	def test_api_credentials(self):
 		wcapi = WooCommerceAPI(

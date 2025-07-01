@@ -13,6 +13,9 @@
   "server_defaults_section",
   "creation_user",
   "last_sync_time",
+  "endpoint_section",
+  "secret",
+  "view_webhook_config",
   "sales_orders_tab",
   "sales_defaults_section",
   "uom",
@@ -323,12 +326,28 @@
    "fieldname": "sync_so_items_to_wc",
    "fieldtype": "Check",
    "label": "Synchronise Sales Order Line changes back"
+  },
+  {
+   "fieldname": "endpoint_section",
+   "fieldtype": "Section Break",
+   "label": "Endpoint"
+  },
+  {
+   "fieldname": "secret",
+   "fieldtype": "Small Text",
+   "label": "Secret",
+   "read_only": 1
+  },
+  {
+   "fieldname": "view_webhook_config",
+   "fieldtype": "Button",
+   "label": "View WooCommerce Webhook Configuration"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-04-29 22:18:09.868542",
+ "modified": "2025-06-06 11:32:12.054974",
  "modified_by": "Administrator",
  "module": "Woocommerce Conduit",
  "name": "WooCommerce Server",

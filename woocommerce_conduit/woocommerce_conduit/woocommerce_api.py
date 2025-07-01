@@ -421,7 +421,7 @@ class WooCommerceDocument(Document):
 	@classmethod
 	def _set_server_info(cls, record: dict, woocommerce_server_url: str) -> dict:
 		"""Set server information on the record"""
-		server_domain = urlparse(woocommerce_server_url).netloc
+		server_domain = parse_domain_from_url(woocommerce_server_url)
 		record["woocommerce_server"] = server_domain
 		return record
 
@@ -613,6 +613,13 @@ def log_and_raise_error(exception=None, error_text=None, response=None):
 	# Re-raise original exception if provided
 	if exception:
 		raise exception
+
+
+def parse_domain_from_url(url: str):
+	domain = urlparse(url).netloc
+	if not domain:
+		raise ValueError(_("Invalid server URL"))
+	return domain
 
 
 def get_domain_and_id_from_woocommerce_record_name(
