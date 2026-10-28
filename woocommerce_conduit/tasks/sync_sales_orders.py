@@ -24,6 +24,7 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order
 	WC_ORDER_STATUS_MAPPING,
 	WC_ORDER_STATUS_MAPPING_REVERSE,
 	WooCommerceOrder,
+	get_address_data,
 )
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	WooCommerceServer,
@@ -155,7 +156,7 @@ def run_sales_order_sync(
 			# Check for essential fields that would only exist in a full order
 			# List view orders typically only have name, id, date_created, date_modified, status, number
 			# Full orders have many more fields like created_via, customer_id, billing, etc.
-			required_full_fields = ["created_via", "customer_id", "billing", "shipping", "line_items"]
+			required_full_fields = ["created_via", "customer_id", "billing_first_name", "shipping_first_name", "line_items"]
 
 			# If any of these fields are missing or None, we need to reload
 			if isinstance(wc_order, dict):
@@ -597,8 +598,8 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			billing_data = customer_data["billing"]
 			shipping_data = customer_data["shipping"]
 		else:
-			billing_data = json.loads(self.woocommerce_order.billing)
-			shipping_data = json.loads(self.woocommerce_order.shipping)
+			billing_data = get_address_data(self.woocommerce_order, "billing")
+			shipping_data = get_address_data(self.woocommerce_order, "shipping")
 			customer_data = billing_data
 
 		first_name = billing_data.get("first_name", "").strip()

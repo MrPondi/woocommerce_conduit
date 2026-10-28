@@ -1,6 +1,6 @@
 {
  "actions": [],
- "allow_rename": 1,
+ "autoname": "hash",
  "creation": "2025-04-26 13:17:53.807136",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -9,7 +9,6 @@
   "woocommerce_server",
   "column_break_uhol",
   "woocommerce_id",
-  "parent_id",
   "section_break_jagi",
   "number",
   "created_via",
@@ -19,13 +18,40 @@
   "order_key",
   "customer_note",
   "customer_tab",
+  "billing_data_section",
+  "billing_first_name",
+  "billing_last_name",
+  "billing_company",
+  "billing_email",
+  "billing_phone",
+  "column_break_erhf",
+  "billing_address_1",
+  "billing_address_2",
+  "billing_city",
+  "billing_state",
+  "billing_postcode",
+  "billing_country",
+  "shipping_data_section",
+  "shipping_first_name",
+  "shipping_last_name",
+  "shipping_company",
+  "shipping_phone",
+  "column_break_mgrz",
+  "shipping_address_1",
+  "shipping_address_2",
+  "shipping_city",
+  "shipping_state",
+  "shipping_postcode",
+  "shipping_country",
+  "maps_section",
+  "billing_map",
+  "column_break_gyon",
+  "shipping_map",
+  "section_break_jnkf",
   "customer_id",
   "customer_ip_address",
   "customer_user_agent",
-  "billing",
-  "shipping",
   "order_lines_tab",
-  "cart_hash",
   "line_items",
   "shipping_lines",
   "refunds",
@@ -34,7 +60,6 @@
   "payment_method",
   "transaction_id",
   "date_paid",
-  "payment_url",
   "section_break_nidm",
   "tax_lines",
   "fee_lines",
@@ -50,6 +75,7 @@
   "total_tax",
   "cart_tax",
   "misc_tab",
+  "parent_id",
   "woocommerce_date_created",
   "woocommerce_date_modified",
   "currency",
@@ -77,18 +103,9 @@
   {
    "fieldname": "woocommerce_id",
    "fieldtype": "Data",
-   "in_filter": 1,
-   "in_list_view": 1,
    "label": "WooCommerce Order ID",
    "read_only": 1,
    "reqd": 1
-  },
-  {
-   "fieldname": "parent_id",
-   "fieldtype": "Data",
-   "in_filter": 1,
-   "label": "WooCommerce Parent ID",
-   "read_only": 1
   },
   {
    "fieldname": "section_break_jagi",
@@ -106,23 +123,22 @@
   {
    "fieldname": "created_via",
    "fieldtype": "Data",
-   "in_filter": 1,
-   "in_list_view": 1,
    "label": "Created via",
    "read_only": 1
   },
   {
    "fieldname": "version",
    "fieldtype": "Data",
-   "in_filter": 1,
    "label": "Version",
    "read_only": 1
   },
   {
    "fieldname": "status",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Status",
    "options": "pending\non-hold\nfailed\ncancelled\nprocessing\nrefunded\ncompleted\nready-pickup\npickup\ndelivered\nprocessing-lp\ncheckout-draft\ngplsquote-req\ntrash",
+   "read_only": 1,
    "reqd": 1
   },
   {
@@ -168,30 +184,9 @@
    "read_only": 1
   },
   {
-   "fieldname": "billing",
-   "fieldtype": "JSON",
-   "label": "Billing data",
-   "read_only": 1,
-   "reqd": 1
-  },
-  {
-   "fieldname": "shipping",
-   "fieldtype": "JSON",
-   "label": "Shipping data",
-   "read_only": 1,
-   "reqd": 1
-  },
-  {
    "fieldname": "order_lines_tab",
    "fieldtype": "Tab Break",
    "label": "Order lines"
-  },
-  {
-   "description": "MD5 hash of cart items to ensure orders are not modified.",
-   "fieldname": "cart_hash",
-   "fieldtype": "Data",
-   "label": "Cart hash",
-   "read_only": 1
   },
   {
    "depends_on": "eval: doc.line_items != \"[]\"",
@@ -246,12 +241,6 @@
    "read_only": 1
   },
   {
-   "fieldname": "payment_url",
-   "fieldtype": "Small Text",
-   "label": "Payment url",
-   "read_only": 1
-  },
-  {
    "collapsible": 1,
    "fieldname": "section_break_nidm",
    "fieldtype": "Section Break"
@@ -299,10 +288,9 @@
   {
    "fieldname": "total",
    "fieldtype": "Currency",
+   "in_list_view": 1,
    "label": "Total",
-   "non_negative": 1,
-   "read_only": 1,
-   "reqd": 1
+   "read_only": 1
   },
   {
    "default": "0",
@@ -381,16 +369,194 @@
    "label": "Links",
    "read_only": 1,
    "reqd": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "billing_data_section",
+   "fieldtype": "Section Break",
+   "label": "Billing data"
+  },
+  {
+   "fieldname": "billing_first_name",
+   "fieldtype": "Data",
+   "label": "First name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing_last_name",
+   "fieldtype": "Data",
+   "label": "Last Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing_company",
+   "fieldtype": "Data",
+   "label": "Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing_email",
+   "fieldtype": "Data",
+   "label": "Email",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing_phone",
+   "fieldtype": "Data",
+   "label": "Phone",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_erhf",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "billing_address_1",
+   "fieldtype": "Data",
+   "label": "Address 1",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing_address_2",
+   "fieldtype": "Data",
+   "label": "Address 2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing_city",
+   "fieldtype": "Data",
+   "label": "City",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing_state",
+   "fieldtype": "Data",
+   "label": "State",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing_postcode",
+   "fieldtype": "Data",
+   "label": "Postcode",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing_country",
+   "fieldtype": "Data",
+   "label": "Country",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "shipping_data_section",
+   "fieldtype": "Section Break",
+   "label": "Shipping data"
+  },
+  {
+   "fieldname": "shipping_first_name",
+   "fieldtype": "Data",
+   "label": "First name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_last_name",
+   "fieldtype": "Data",
+   "label": "Last name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_company",
+   "fieldtype": "Data",
+   "label": "Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_phone",
+   "fieldtype": "Data",
+   "label": "Phone",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_mgrz",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "shipping_address_1",
+   "fieldtype": "Data",
+   "label": "Address 1",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_address_2",
+   "fieldtype": "Data",
+   "label": "Address 2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_city",
+   "fieldtype": "Data",
+   "label": "City",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_state",
+   "fieldtype": "Data",
+   "label": "State",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_postcode",
+   "fieldtype": "Data",
+   "label": "Postcode",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_country",
+   "fieldtype": "Data",
+   "label": "Country",
+   "read_only": 1
+  },
+  {
+   "fieldname": "maps_section",
+   "fieldtype": "Section Break",
+   "label": "Maps"
+  },
+  {
+   "fieldname": "billing_map",
+   "fieldtype": "Geolocation",
+   "label": "Billing",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_gyon",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "shipping_map",
+   "fieldtype": "Geolocation",
+   "label": "Shipping",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_jnkf",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "parent_id",
+   "fieldtype": "Data",
+   "label": "Parent ID",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_virtual": 1,
  "links": [],
- "modified": "2026-10-28 18:34:40.873416",
+ "modified": "2026-10-29 00:54:05.829253",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Order",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {
@@ -409,5 +575,6 @@
  "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "title_field": "order_key"
 }

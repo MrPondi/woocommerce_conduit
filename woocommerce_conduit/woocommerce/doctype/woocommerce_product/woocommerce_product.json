@@ -273,6 +273,7 @@
   {
    "fieldname": "price",
    "fieldtype": "Currency",
+   "in_list_view": 1,
    "label": "Price",
    "read_only": 1
   },
@@ -357,7 +358,6 @@
   {
    "fieldname": "woocommerce_date_created",
    "fieldtype": "Datetime",
-   "in_list_view": 1,
    "label": "Date Created",
    "read_only": 1,
    "reqd": 1
@@ -381,12 +381,14 @@
    "fieldname": "images",
    "fieldtype": "JSON",
    "label": "Images",
+   "read_only": 1,
    "reqd": 1
   },
   {
    "fieldname": "attributes",
    "fieldtype": "JSON",
    "label": "Attributes",
+   "read_only": 1,
    "reqd": 1
   },
   {
@@ -428,7 +430,7 @@
  "index_web_pages_for_search": 1,
  "is_virtual": 1,
  "links": [],
- "modified": "2026-10-28 23:21:40.313690",
+ "modified": "2026-10-29 00:55:28.880546",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Product",
