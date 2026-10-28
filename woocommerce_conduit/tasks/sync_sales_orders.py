@@ -20,18 +20,18 @@ from frappe.utils.data import cstr, now
 from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce
 from woocommerce_conduit.tasks.sync_items import run_item_sync
-from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_order.woocommerce_order import (
+from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import (
 	WC_ORDER_STATUS_MAPPING,
 	WC_ORDER_STATUS_MAPPING_REVERSE,
 	WooCommerceOrder,
 )
-from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_server.woocommerce_server import (
+from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	WooCommerceServer,
 )
-from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_settings.woocommerce_settings import (
+from woocommerce_conduit.woocommerce.doctype.woocommerce_settings.woocommerce_settings import (
 	WooCommerceSettings,
 )
-from woocommerce_conduit.woocommerce_conduit.woocommerce_api import (
+from woocommerce_conduit.woocommerce.woocommerce_api import (
 	WooCommerceDocument,
 	generate_woocommerce_record_name_from_domain_and_id,
 )
@@ -558,8 +558,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		new_sales_order.flags.ignore_mandatory = True
 		new_sales_order.flags.created_by_sync = True
 		new_sales_order.insert()
-		if wc_server.submit_sales_orders:
-			new_sales_order.submit()
+		new_sales_order.submit()
 
 		new_sales_order.reload()
 		self.create_and_link_payment_entry(self.woocommerce_order, new_sales_order)

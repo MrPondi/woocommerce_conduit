@@ -5,7 +5,7 @@
 from frappe.model.document import Document
 
 
-class ItemWooCommerceServer(Document):
+class WooCommerceSettings(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -14,12 +14,12 @@ class ItemWooCommerceServer(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		enable_sync: DF.Check
-		parent: DF.Data
-		parentfield: DF.Data
-		parenttype: DF.Data
-		woocommerce_id: DF.Data
-		woocommerce_last_sync_hash: DF.Datetime | None
-		woocommerce_server: DF.Link
+		fetch_variations: DF.Check
+		max_variations: DF.Int
+		minimum_creation_date: DF.Datetime
+		variation_batch_size: DF.Int
+		wc_last_sync_date_items: DF.Datetime | None
+		wc_last_sync_date_orders: DF.Datetime | None
 	# end: auto-generated types
+
 	pass

@@ -10,10 +10,10 @@ from frappe.utils import cstr
 from frappe.utils.caching import redis_cache
 from jsonpath_ng.ext import parse
 
-from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_order.woocommerce_order import (
+from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import (
 	WC_ORDER_STATUS_MAPPING,
 )
-from woocommerce_conduit.woocommerce_conduit.woocommerce_api import WooCommerceAPI
+from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceAPI
 
 
 class WooCommerceServer(Document):
@@ -25,28 +25,28 @@ class WooCommerceServer(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_server_item_field.woocommerce_server_item_field import (
+		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_item_field.woocommerce_server_item_field import (
 			WooCommerceServerItemField,
 		)
-		from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
+		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 			WooCommerceServerOrderStatus,
 		)
-		from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_server_shipping_rule.woocommerce_server_shipping_rule import (
+		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_shipping_rule.woocommerce_server_shipping_rule import (
 			WooCommerceServerShippingRule,
 		)
 
-		api_consumer_key: DF.Data
-		api_consumer_secret: DF.Data
+		api_consumer_key: DF.Password
+		api_consumer_secret: DF.Password
 		company: DF.Link
 		creation_user: DF.Link
 		delivery_after_days: DF.Int
 		enable_image_sync: DF.Check
+		enable_price_list_sync: DF.Check
+		enable_sales_price_list_sync: DF.Check
 		enabled: DF.Check
 		enabled_order_status: DF.Check
 		enabled_payments_sync: DF.Check
-		enabled_price_list: DF.Check
 		enabled_shipping_methods: DF.Check
-		enabled_sync: DF.Check
 		freight_and_forwarding_account: DF.Link
 		item_field_map: DF.Table[WooCommerceServerItemField]
 		item_group: DF.Link
@@ -54,20 +54,21 @@ class WooCommerceServer(Document):
 		name_by: DF.Literal["WooCommerce ID", "Product SKU"]
 		payment_method_bank_account_mapping: DF.JSON
 		payment_method_gl_account_mapping: DF.JSON
-		price_list: DF.Link
+		price_list: DF.Link | None
 		sales_order_status_map: DF.Table[WooCommerceServerOrderStatus]
+		sales_price_list: DF.Link | None
 		sales_taxes_and_charges_template: DF.Link | None
 		secret: DF.SmallText | None
 		shipping_rule_map: DF.Table[WooCommerceServerShippingRule]
-		submit_sales_orders: DF.Check
+		sync_prices_for_disabled_items: DF.Check
 		sync_so_items_to_wc: DF.Check
 		tax_account: DF.Link | None
 		uom: DF.Link
 		use_actual_tax_type: DF.Check
 		warehouse: DF.Link
 		woocommerce_server_url: DF.Data
-
 	# end: auto-generated types
+
 	def autoname(self):
 		"""
 		Set name from woocommerce_server_url field
@@ -96,7 +97,12 @@ class WooCommerceServer(Document):
 		"""
 		return any(
 			self.has_value_changed(field)
-			for field in ("enabled", "woocommerce_server_url", "api_consumer_key", "api_consumer_secret")
+			for field in (
+				"enabled",
+				"woocommerce_server_url",
+				"api_consumer_key",
+				"api_consumer_secret",
+			)
 		)
 
 	def _credential(self, fieldname: str) -> str:
@@ -190,7 +196,10 @@ class WooCommerceServer(Document):
 		docfields = frappe.get_all(
 			"DocField",
 			fields=["label", "name", "fieldname"],
-			filters=[["fieldtype", "not in", invalid_field_types], ["parent", "=", "Item"]],
+			filters=[
+				["fieldtype", "not in", invalid_field_types],
+				["parent", "=", "Item"],
+			],
 		)
 		custom_fields = frappe.get_all(
 			"Custom Field",

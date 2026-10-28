@@ -11,19 +11,19 @@ from jsonpath_ng.ext import parse
 
 from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce
-from woocommerce_conduit.woocommerce_conduit.doctype.item_woocommerce_server.item_woocommerce_server import (
+from woocommerce_conduit.woocommerce.doctype.item_woocommerce_server.item_woocommerce_server import (
 	ItemWooCommerceServer,
 )
-from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_product.woocommerce_product import (
+from woocommerce_conduit.woocommerce.doctype.woocommerce_product.woocommerce_product import (
 	WooCommerceProduct,
 )
-from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_server.woocommerce_server import (
+from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	WooCommerceServer,
 )
-from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_settings.woocommerce_settings import (
+from woocommerce_conduit.woocommerce.doctype.woocommerce_settings.woocommerce_settings import (
 	WooCommerceSettings,
 )
-from woocommerce_conduit.woocommerce_conduit.woocommerce_api import (
+from woocommerce_conduit.woocommerce.woocommerce_api import (
 	generate_woocommerce_record_name_from_domain_and_id,
 )
 

@@ -17,7 +17,7 @@ add_to_apps_screen = [
 	{
 		"name": app_name,
 		"logo": "/assets/woocommerce_conduit/images/woocommerce-logo.svg",
-		"title": "WooCommerce Conduit",
+		"title": "WooCommerce",
 		"route": app_home,
 	}
 ]

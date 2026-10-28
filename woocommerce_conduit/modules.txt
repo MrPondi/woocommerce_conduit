@@ -1,1 +1,1 @@
-Woocommerce Conduit
+WooCommerce

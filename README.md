@@ -14,7 +14,6 @@ bench install-app woocommerce_conduit
 
 ### TODO:
 
-- [ ] Migrate woocomemrce fields from static to args.fields
 - [ ] Add suport for args.order_by
 - [ ] Migrate woocomerce server secret key to password
 - [ ] Woocommerce webhooks

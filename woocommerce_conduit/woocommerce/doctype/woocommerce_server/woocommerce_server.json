@@ -5,7 +5,6 @@
  "engine": "InnoDB",
  "field_order": [
   "enabled",
-  "enabled_sync",
   "woocommerce_server_url",
   "column_break_meqy",
   "api_consumer_key",
@@ -24,7 +23,6 @@
   "warehouse",
   "column_break_velv",
   "delivery_after_days",
-  "submit_sales_orders",
   "sync_so_items_to_wc",
   "accounting_details_section",
   "use_actual_tax_type",
@@ -47,8 +45,13 @@
   "enable_image_sync",
   "item_field_map",
   "price_list_tab",
-  "enabled_price_list",
-  "price_list"
+  "enable_price_list_sync",
+  "price_list",
+  "column_break_nvjd",
+  "enable_sales_price_list_sync",
+  "sales_price_list",
+  "section_break_mdvy",
+  "sync_prices_for_disabled_items"
  ],
  "fields": [
   {
@@ -70,14 +73,14 @@
   },
   {
    "fieldname": "api_consumer_key",
-   "fieldtype": "Data",
+   "fieldtype": "Password",
    "label": "API consumer key",
    "placeholder": "ck_xxxxxxxxxxxxxxxxx",
    "reqd": 1
   },
   {
    "fieldname": "api_consumer_secret",
-   "fieldtype": "Data",
+   "fieldtype": "Password",
    "label": "API consumer secret",
    "placeholder": "cs_xxxxxxxxxxxxxxxxx",
    "reqd": 1
@@ -163,24 +166,11 @@
    "label": "Price List"
   },
   {
-   "default": "0",
-   "fieldname": "enabled_price_list",
-   "fieldtype": "Check",
-   "label": "Enable Price List Sync"
-  },
-  {
    "fieldname": "price_list",
    "fieldtype": "Link",
    "label": "Price List",
-   "mandatory_depends_on": "eval: doc.enabled_price_list",
-   "options": "Price List",
-   "reqd": 1
-  },
-  {
-   "default": "0",
-   "fieldname": "enabled_sync",
-   "fieldtype": "Check",
-   "label": "Update on Woocommerce"
+   "mandatory_depends_on": "eval: doc.enable_price_list_sync",
+   "options": "Price List"
   },
   {
    "collapsible": 1,
@@ -204,7 +194,7 @@
   },
   {
    "default": "{}",
-   "depends_on": "eval: doc.enabled_payments_sync",
+   "depends_on": "eval: doc.enabled_payments_sync;",
    "fieldname": "payment_method_gl_account_mapping",
    "fieldtype": "JSON",
    "label": "Map GL Accounts to Payment Methods",
@@ -312,17 +302,12 @@
    "options": "WooCommerce Server Order Status"
   },
   {
-   "default": "1",
-   "fieldname": "submit_sales_orders",
-   "fieldtype": "Check",
-   "label": "Submit Sales Orders during Synchronisation"
-  },
-  {
    "fieldname": "column_break_velv",
    "fieldtype": "Column Break"
   },
   {
    "default": "0",
+   "description": "When set, adding/removing/changing Sales Order Lines will be synchronised back to the WooCommerce Order",
    "fieldname": "sync_so_items_to_wc",
    "fieldtype": "Check",
    "label": "Synchronise Sales Order Line changes back"
@@ -342,14 +327,50 @@
    "fieldname": "view_webhook_config",
    "fieldtype": "Button",
    "label": "View WooCommerce Webhook Configuration"
+  },
+  {
+   "default": "0",
+   "fieldname": "enable_sales_price_list_sync",
+   "fieldtype": "Check",
+   "label": "Enable Sales Price List Sync"
+  },
+  {
+   "fieldname": "sales_price_list",
+   "fieldtype": "Link",
+   "label": "Sales Price List",
+   "mandatory_depends_on": "eval: doc.enable_sales_price_list_sync",
+   "options": "Price List"
+  },
+  {
+   "default": "0",
+   "fieldname": "enable_price_list_sync",
+   "fieldtype": "Check",
+   "label": "Enable Price List Sync"
+  },
+  {
+   "depends_on": "eval: doc.enable_price_list_sync",
+   "fieldname": "column_break_nvjd",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_mdvy",
+   "fieldtype": "Section Break"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval: doc.enable_price_list_sync",
+   "description": "Keeps synchronising prices for disabled Items. Without this, a disabled Item's WooCommerce Product keeps the price of its last synchronization.",
+   "fieldname": "sync_prices_for_disabled_items",
+   "fieldtype": "Check",
+   "label": "Sync Prices for Disabled Items"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-06-06 11:32:12.054974",
+ "modified": "2026-10-28 18:34:44.274995",
  "modified_by": "Administrator",
- "module": "Woocommerce Conduit",
+ "module": "WooCommerce",
  "name": "WooCommerce Server",
  "owner": "Administrator",
  "permissions": [

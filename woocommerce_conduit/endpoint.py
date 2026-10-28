@@ -9,10 +9,10 @@ from frappe import _
 from werkzeug.wrappers import Response
 
 from woocommerce_conduit.tasks.sync_sales_orders import run_sales_order_sync
-from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_server.woocommerce_server import (
+from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	WooCommerceServer,
 )
-from woocommerce_conduit.woocommerce_conduit.woocommerce_api import (
+from woocommerce_conduit.woocommerce.woocommerce_api import (
 	WC_RESOURCE_DELIMITER,
 	parse_domain_from_url,
 )

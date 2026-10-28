@@ -527,9 +527,9 @@
  "index_web_pages_for_search": 1,
  "is_virtual": 1,
  "links": [],
- "modified": "2025-04-26 15:15:42.954274",
+ "modified": "2026-10-28 18:34:43.916238",
  "modified_by": "Administrator",
- "module": "Woocommerce Conduit",
+ "module": "WooCommerce",
  "name": "WooCommerce Product",
  "owner": "Administrator",
  "permissions": [

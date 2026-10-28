@@ -7,7 +7,7 @@ import frappe
 import frappe.utils
 from frappe.model.document import Document
 
-from woocommerce_conduit.woocommerce_conduit.woocommerce_api import WooCommerceDocument
+from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceDocument
 
 
 class WooCommerceProduct(WooCommerceDocument):
@@ -80,6 +80,20 @@ class WooCommerceProduct(WooCommerceDocument):
 	doctype = "WooCommerce Product"
 	resource = "products"
 	field_setter_map = {"woocommerce_name": "name", "woocommerce_id": "id"}  # noqa: RUF012
+	field_getter_map = {  # noqa: RUF012
+		"image": ["images"],
+		"length": ["dimensions"],
+		"width": ["dimensions"],
+		"height": ["dimensions"],
+		"brand": ["attributes"],
+	}
+	orderby_map = {  # noqa: RUF012
+		"price": "price",
+		"average_rating": "rating",
+		"total_sales": "popularity",
+	}
+	# The name and type are used to find and name variations, the parent_id to relate them
+	mandatory_wc_fields = ["id", "name", "type", "parent_id", "date_created", "date_modified"]  # noqa: RUF012
 
 	def db_insert(self, *args, **kwargs):
 		pass
@@ -221,6 +235,8 @@ class WooCommerceProduct(WooCommerceDocument):
 				variation_args["endpoint"] = f"products/{product_id}/variations"
 				variation_args["metadata"] = {"parent_woocommerce_name": wc_name}
 				variation_args["skip_cache"] = True  # Don't cache intermediate results
+				# Needed to build the variation name
+				variation_args["extra_wc_fields"] = ["attributes"]
 
 				# Use more efficient pagination with a single request if possible
 				variation_args["page_length"] = min(variation_batch_size, max_variations)
@@ -286,9 +302,9 @@ class WooCommerceProduct(WooCommerceDocument):
 		return None
 
 	@staticmethod
-	def get_count(*args) -> int:
+	def get_count(args) -> int:
 		return WooCommerceProduct.get_count_of_records(args)
 
 	@staticmethod
-	def get_stats(*args):
+	def get_stats(args):
 		pass

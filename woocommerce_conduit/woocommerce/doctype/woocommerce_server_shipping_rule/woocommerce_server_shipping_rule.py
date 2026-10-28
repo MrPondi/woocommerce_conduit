@@ -5,7 +5,7 @@
 from frappe.model.document import Document
 
 
-class WooCommerceRequestLog(Document):
+class WooCommerceServerShippingRule(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -14,16 +14,11 @@ class WooCommerceRequestLog(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		data: DF.JSON | None
-		endpoint: DF.Data | None
-		error: DF.Code | None
-		method: DF.Data | None
-		params: DF.JSON | None
-		response: DF.Text | None
-		seen: DF.Check
-		status: DF.Literal["Success", "Error"]
-		traceback: DF.Code | None
-		url: DF.SmallText | None
-		user: DF.Link | None
+		parent: DF.Data
+		parentfield: DF.Data
+		parenttype: DF.Data
+		shipping_rule: DF.Link
+		wc_shipping_method_id: DF.Data
 	# end: auto-generated types
+
 	pass

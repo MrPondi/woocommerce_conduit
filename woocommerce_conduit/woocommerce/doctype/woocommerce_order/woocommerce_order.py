@@ -8,7 +8,7 @@ import frappe.utils
 from frappe import _dict
 from frappe.model.document import Document
 
-from woocommerce_conduit.woocommerce_conduit.woocommerce_api import WooCommerceDocument
+from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceDocument
 
 WC_ORDER_STATUS_MAPPING = {
 	"Pending Payment": "pending",

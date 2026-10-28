@@ -5,7 +5,7 @@
 from frappe.model.document import Document
 
 
-class WooCommerceServerShippingRule(Document):
+class WooCommerceServerOrderStatus(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -14,10 +14,20 @@ class WooCommerceServerShippingRule(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		erpnext_sales_order_status: DF.Literal[
+			"Draft",
+			"On Hold",
+			"To Deliver and Bill",
+			"To Bill",
+			"To Deliver",
+			"Completed",
+			"Cancelled",
+			"Closed",
+		]
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
-		shipping_rule: DF.Link
-		wc_shipping_method_id: DF.Data
+		woocommerce_sales_order_status: DF.Literal[None]
 	# end: auto-generated types
+
 	pass

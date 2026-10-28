@@ -387,9 +387,9 @@
  "index_web_pages_for_search": 1,
  "is_virtual": 1,
  "links": [],
- "modified": "2025-04-28 20:52:20.258384",
+ "modified": "2026-10-28 18:34:40.873416",
  "modified_by": "Administrator",
- "module": "Woocommerce Conduit",
+ "module": "WooCommerce",
  "name": "WooCommerce Order",
  "owner": "Administrator",
  "permissions": [

@@ -53,6 +53,7 @@ frappe.ui.form.on("WooCommerce Server", {
 			frm.trigger("get_woocommerce_order_status_list");
 		}
 	},
+
 	// Handle click of 'Keep the Status of ERPNext Sales Orders and WooCommerce Orders in sync'
 	enabled_order_status: function (frm) {
 		if (
@@ -83,6 +84,7 @@ frappe.ui.form.on("WooCommerce Server", {
 			},
 		});
 	},
+	
 	// View WooCommerce Webhook Configuration
 	view_webhook_config: function(frm) {
 		let d = new frappe.ui.Dialog({

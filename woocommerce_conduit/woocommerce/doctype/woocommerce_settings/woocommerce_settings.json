@@ -1,6 +1,5 @@
 {
  "actions": [],
- "allow_rename": 1,
  "creation": "2025-04-23 23:09:07.620788",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -55,9 +54,9 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-04-29 00:16:09.286450",
+ "modified": "2026-10-28 18:34:43.726299",
  "modified_by": "Administrator",
- "module": "Woocommerce Conduit",
+ "module": "WooCommerce",
  "name": "WooCommerce Settings",
  "owner": "Administrator",
  "permissions": [

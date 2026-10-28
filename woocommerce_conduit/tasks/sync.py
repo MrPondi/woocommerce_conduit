@@ -1,7 +1,7 @@
 import frappe
 from frappe import _, _dict
 
-from woocommerce_conduit.woocommerce_conduit.doctype.woocommerce_server.woocommerce_server import (
+from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	WooCommerceServer,
 )
 

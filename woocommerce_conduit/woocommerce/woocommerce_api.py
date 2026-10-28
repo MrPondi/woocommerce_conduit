@@ -1,4 +1,5 @@
 import json
+import re
 import traceback
 from typing import NoReturn, Self
 from urllib.parse import urlparse
@@ -6,6 +7,7 @@ from urllib.parse import urlparse
 import frappe
 import frappe.utils
 from frappe import _
+from frappe.model import no_value_fields
 from frappe.model.document import Document
 from frappe.utils.password import get_decrypted_password
 from woocommerce import API
@@ -53,9 +55,102 @@ class WooCommerceAPI(API):
 	woocommerce_server: str
 
 
+# Frappe fields that are derived on our side, so there is nothing to request from WooCommerce for them
+NON_WOOCOMMERCE_FIELDS = {
+	"woocommerce_server",
+	"owner",
+	"modified_by",
+	"docstatus",
+	"idx",
+	"doctype",
+	"_user_tags",
+	"_comments",
+	"_assign",
+	"_liked_by",
+}
+
+# Frappe fieldname -> the WooCommerce fields needed to fill it
+COMMON_FIELD_GETTER_MAP = {
+	"name": ["id"],
+	"woocommerce_id": ["id"],
+	"woocommerce_name": ["name"],
+	"woocommerce_date_created": ["date_created"],
+	"woocommerce_date_modified": ["date_modified"],
+	"creation": ["date_created"],
+	"modified": ["date_modified"],
+}
+
+
+# Frappe fieldname -> `orderby` supported by the WooCommerce REST API
+COMMON_ORDERBY_MAP = {
+	"name": "id",
+	"woocommerce_id": "id",
+	"woocommerce_name": "title",
+	"slug": "slug",
+	"creation": "date",
+	"woocommerce_date_created": "date",
+}
+
+
+def parse_order_by(order_by: str | None) -> list[tuple[str, bool]]:
+	"""
+	Parse a Frappe order_by, for example "`tabWooCommerce Product`.`modified` desc, sku asc",
+	into [(fieldname, descending), ...]
+	"""
+	clauses = []
+	for clause in (order_by or "").split(","):
+		# The table name in "`tabWooCommerce Product`.`modified`" contains a space, so only look at the end
+		match = re.match(r"^(.+?)(?:\s+(asc|desc))?$", clause.strip(), flags=re.IGNORECASE)
+		if not match or not (fieldname := parse_frappe_field(match.group(1))):
+			continue
+		clauses.append((fieldname, (match.group(2) or "").lower() == "desc"))
+	return clauses
+
+
+def sort_records(records: list[dict], order_by: list[tuple[str, bool]]) -> list[dict]:
+	"""
+	Order records on the fields of a parsed order_by. A stable sort per clause, last clause first, so
+	the first clause wins. Fields the records don't carry are left alone.
+	"""
+
+	def sort_key(fieldname: str):
+		def key(record: dict):
+			value = record.get(fieldname)
+			if value is None:
+				return (1, 0, "")
+			try:
+				return (0, float(value), "")
+			except (TypeError, ValueError):
+				return (0, 0, str(value))
+
+		return key
+
+	for fieldname, descending in reversed(order_by):
+		if any(fieldname in record for record in records):
+			records = sorted(records, key=sort_key(fieldname), reverse=descending)
+	return records
+
+
+def parse_frappe_field(field: str) -> str | None:
+	"""
+	Extract the fieldname from a field as requested by Frappe, for example
+	"`tabWooCommerce Product`.`sku` as code" -> "sku". Returns None for aggregates and other expressions.
+	"""
+	field = re.split(r"\s+as\s+", field.strip(), flags=re.IGNORECASE)[0]
+	if "(" in field:
+		return None
+	return field.split(".")[-1].strip('`" ') or None
+
+
 class WooCommerceDocument(Document):
 	resource: str
 	field_setter_map: dict
+	# Fieldnames that don't map one-to-one onto a WooCommerce field
+	field_getter_map: dict[str, list[str]] = {}  # noqa: RUF012
+	# Always requested, as the document identity and sorting depend on them
+	mandatory_wc_fields: list[str] = ["id", "date_created", "date_modified"]  # noqa: RUF012
+	# Fieldnames WooCommerce can order by, as the `orderby` it expects
+	orderby_map: dict[str, str] = {}  # noqa: RUF012
 
 	def __init__(self, *args, **kwargs):
 		self.init_api()
@@ -148,15 +243,8 @@ class WooCommerceDocument(Document):
 		# Map Frappe query parameters to WooCommerce query parameters
 		params = {}
 
-		# Optimize fields selection for specific doctypes
-		if self.doctype == "WooCommerce Product":
-			params["_fields"] = (
-				"name,id,purchasable,virtual,downloadable,status,type,description,short_description,downloads,download_limit,download_expiry,price,regular_price,sale_price,tax_status,tax_class,date_on_sale_from,date_on_sale_to,on_sale,total_sales,sku,manage_stock,sold_individually,stock_quantity,backorders,backorders_allowed,backordered,low_stock_amount,stock_status,weight,dimensions,shipping_required,shipping_taxable,shipping_class,shipping_class_id,upsell_ids,cross_sell_ids,related_ids,slug,permalink,date_created,date_modified,reviews_allowed,average_rating,rating_count,featured,parent_id,catalog_visibility,images,attributes"
-			)
-		elif self.doctype == "WooCommerce Order":
-			params["_fields"] = (
-				"id,parent_id,number,created_via,version,status,order_key,customer_note,customer_id,customer_ip_address,customer_user_agent,currency,billing,shipping,cart_hash,line_items,shipping_lines,refunds,payment_method_title,payment_method,transaction_id,date_paid,payment_url,tax_lines,fee_lines,coupon_lines,discount_total,shipping_total,total,prices_include_tax,discount_tax,shipping_tax,total_tax,cart_tax,date_created,date_modified,_links"
-			)
+		# Request the fields of the DocType
+		params["_fields"] = self.get_wc_fields()
 
 		# Select the relevant WooCommerce server
 		try:
@@ -203,6 +291,47 @@ class WooCommerceDocument(Document):
 		return record
 
 	@classmethod
+	def get_wc_fields(
+		cls, frappe_fields: list[str] | str | None = None, extra: list[str] | None = None
+	) -> str:
+		"""
+		Build the WooCommerce `_fields` parameter for the Frappe fields that were requested
+
+		Args:
+			frappe_fields: Fields as passed by Frappe. All fields of the DocType when empty or "*"
+			extra: Additional WooCommerce fields to request
+
+		Returns:
+			Comma separated WooCommerce field names
+		"""
+		meta = frappe.get_meta(cls.doctype)
+		all_fieldnames = [df.fieldname for df in meta.fields if df.fieldtype not in no_value_fields]
+
+		if isinstance(frappe_fields, str):
+			frappe_fields = [frappe_fields]
+		requested = [parse_frappe_field(field) for field in frappe_fields or []]
+		fieldnames = all_fieldnames if not requested or "*" in requested else requested
+
+		getter_map = {**COMMON_FIELD_GETTER_MAP, **cls.field_getter_map}
+		wc_fields = list(cls.mandatory_wc_fields) + list(extra or [])
+		for fieldname in fieldnames:
+			if not fieldname or fieldname in NON_WOOCOMMERCE_FIELDS:
+				continue
+			if fieldname in getter_map:
+				wc_fields.extend(getter_map[fieldname])
+			elif fieldname in all_fieldnames:
+				wc_fields.append(fieldname)
+
+		return ",".join(dict.fromkeys(wc_fields))
+
+	@classmethod
+	def get_wc_orderby(cls, fieldname: str) -> str | None:
+		"""
+		The WooCommerce `orderby` for a Frappe fieldname, or None if WooCommerce can't order by it
+		"""
+		return {**COMMON_ORDERBY_MAP, **cls.orderby_map}.get(fieldname)
+
+	@classmethod
 	def get_list_of_records(cls, args):
 		"""
 		Returns List of WooCommerce Records (List view and Report view).
@@ -246,17 +375,22 @@ class WooCommerceDocument(Document):
 		# Map Frappe query parameters to WooCommerce query parameters
 		params = {}
 
-		# Optimize fields selection for specific doctypes
-		if cls.doctype == "WooCommerce Product":
-			params["_fields"] = "name,id,date_created,date_modified,type,sku,status"
-		elif cls.doctype == "WooCommerce Order":
-			params["_fields"] = "id,number,date_created,date_modified,status"
+		# Only request the fields that Frappe asked for
+		params["_fields"] = cls.get_wc_fields(args.get("fields"), args.get("extra_wc_fields"))
 
 		# Handle pagination
 		requested = int(args.get("page_length", wc_records_per_page_limit))
 		per_page = min(requested, wc_records_per_page_limit)
 		offset = int(args.get("start", 0))
 		params["per_page"] = per_page
+
+		# Order on the WooCommerce side where it supports the field, so the right page is returned
+		order_by = parse_order_by(args.get("order_by"))
+		if order_by:
+			field, descending = order_by[0]
+			if wc_orderby := cls.get_wc_orderby(field):
+				params["orderby"] = wc_orderby
+				params["order"] = "desc" if descending else "asc"
 
 		# Map Frappe filters to WooCommerce parameters
 		if args.get("filters"):
@@ -362,17 +496,17 @@ class WooCommerceDocument(Document):
 				except Exception:
 					break
 
-			# Return the records as requested
-			if args.get("as_doc"):
-				try:
-					return [frappe.get_doc(record) for record in all_results]
-				except Exception as e:
-					frappe.log_error("WooCommerce Format Error", f"Error converting to Frappe docs: {e!s}")
-					return []
-			else:
-				return all_results
+		# Every server was ordered on its own, so order the combined list again
+		all_results = sort_records(all_results, order_by)
 
-		return []
+		# Return the records as requested
+		if args.get("as_doc"):
+			try:
+				return [frappe.get_doc(record) for record in all_results]
+			except Exception as e:
+				frappe.log_error("WooCommerce Format Error", f"Error converting to Frappe docs: {e!s}")
+				return []
+		return all_results
 
 	@classmethod
 	def during_get_list_of_records(cls, record: dict, args):
