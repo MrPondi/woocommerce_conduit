@@ -20,39 +20,25 @@ class WooCommerceProduct(WooCommerceDocument):
 		from frappe.types import DF
 
 		attributes: DF.JSON
-		average_rating: DF.Rating
-		backordered: DF.Check
 		backorders: DF.Literal["no", "notify", "yes"]
-		backorders_allowed: DF.Check
-		brand: DF.Data | None
-		catalog_visibility: DF.Literal["visible", "catalog", "search", "hidden"]
 		cross_sell_ids: DF.JSON | None
 		date_on_sale_from: DF.Datetime | None
 		date_on_sale_to: DF.Datetime | None
 		description: DF.TextEditor | None
-		download_expiry: DF.Int
-		download_limit: DF.Int
 		downloadable: DF.Check
-		downloads: DF.JSON | None
-		featured: DF.Check
-		height: DF.Int
+		height: DF.Float
 		image: DF.AttachImage | None
 		images: DF.JSON
-		length: DF.Int
-		low_stock_amount: DF.Int
+		length: DF.Float
 		manage_stock: DF.Check
 		on_sale: DF.Check
 		parent_id: DF.Int
 		permalink: DF.SmallText | None
 		price: DF.Currency
-		purchasable: DF.Check
-		rating_count: DF.Int
 		regular_price: DF.Currency
 		related_ids: DF.JSON | None
-		reviews_allowed: DF.Check
 		sale_price: DF.Currency
 		shipping_class: DF.Data | None
-		shipping_class_id: DF.Data | None
 		shipping_required: DF.Check
 		shipping_taxable: DF.Check
 		short_description: DF.TextEditor | None
@@ -60,16 +46,13 @@ class WooCommerceProduct(WooCommerceDocument):
 		slug: DF.Data | None
 		sold_individually: DF.Check
 		status: DF.Literal["draft", "pending", "private", "publish", "trash"]
-		stock_quantity: DF.Data | None
+		stock_quantity: DF.Int
 		stock_status: DF.Literal["instock", "outofstock", "onbackorder"]
-		tax_class: DF.Data | None
-		tax_status: DF.Literal["taxable", "shipping", "none"]
 		total_sales: DF.Int
-		type: DF.Literal["simple", "grouped", "external", "variable", "variation", "pw-gift-card"]
 		upsell_ids: DF.JSON | None
 		virtual: DF.Check
 		weight: DF.Float
-		width: DF.Int
+		width: DF.Float
 		woocommerce_date_created: DF.Datetime
 		woocommerce_date_modified: DF.Datetime
 		woocommerce_id: DF.Data
@@ -89,7 +72,6 @@ class WooCommerceProduct(WooCommerceDocument):
 	}
 	orderby_map = {  # noqa: RUF012
 		"price": "price",
-		"average_rating": "rating",
 		"total_sales": "popularity",
 	}
 	# The name and type are used to find and name variations, the parent_id to relate them
@@ -105,18 +87,19 @@ class WooCommerceProduct(WooCommerceDocument):
 		images = json.loads(record["images"])
 		if len(images) > 0:
 			record["image"] = images[0]["src"]
+		# Indent the JSON fields so they are readable in the form
+		for fieldname in ("images", "attributes"):
+			if isinstance(record.get(fieldname), str):
+				record[fieldname] = json.dumps(json.loads(record[fieldname]), indent=2, ensure_ascii=False)
 		record["length"] = record["dimensions"]["length"]
 		record["width"] = record["dimensions"]["width"]
 		record["height"] = record["dimensions"]["height"]
-		record["average_rating"] = round(float(record["average_rating"]) * 0.2, 1)
-		attributes = json.loads(record["attributes"])
-		for attribute in attributes:
-			if attribute["slug"] == "pa_producent":
-				record["brand"] = attribute["options"][0]
-				break
 		return record
 
 	def db_update(self):
+		pass
+
+	def delete(self, *args, **kwargs):
 		pass
 
 	@staticmethod
