@@ -1,11 +1,13 @@
 import json
 import traceback
+from typing import NoReturn, Self
 from urllib.parse import urlparse
 
 import frappe
 import frappe.utils
 from frappe import _
 from frappe.model.document import Document
+from frappe.utils.password import get_decrypted_password
 from woocommerce import API
 
 from woocommerce_conduit.exceptions import SyncDisabledError
@@ -33,7 +35,7 @@ class WooCommerceAPI(API):
 					traceback="".join(traceback.format_stack(limit=8)),
 				)
 			return result
-		except Exception as e:
+		except Exception:
 			if not frappe.flags.in_test:
 				frappe.enqueue(
 					"woocommerce_conduit.tasks.utils.log_woocommerce_request",
@@ -45,7 +47,7 @@ class WooCommerceAPI(API):
 					res=result,
 					traceback="".join(traceback.format_stack(limit=8)),
 				)
-			raise e
+			raise
 
 	woocommerce_server_url: str
 	woocommerce_server: str
@@ -53,7 +55,6 @@ class WooCommerceAPI(API):
 
 class WooCommerceDocument(Document):
 	resource: str
-	name: str
 	field_setter_map: dict
 
 	def __init__(self, *args, **kwargs):
@@ -72,20 +73,11 @@ class WooCommerceDocument(Document):
 			SyncDisabledError: If no enabled WooCommerce servers are found
 		"""
 		# Get all WooCommerce servers in a single query and then filter
-		wc_servers = [
-			server
-			for server in frappe.get_all(
-				"WooCommerce Server",
-				fields=[
-					"name",
-					"woocommerce_server_url",
-					"api_consumer_key",
-					"api_consumer_secret",
-					"enabled",
-				],
-				filters={"enabled": 1},
-			)
-		]
+		wc_servers = frappe.get_all(
+			"WooCommerce Server",
+			fields=["name", "woocommerce_server_url"],
+			filters={"enabled": 1},
+		)
 
 		# Create API instances for enabled servers
 		wc_api_list = []
@@ -93,8 +85,12 @@ class WooCommerceDocument(Document):
 			try:
 				wc_api = WooCommerceAPI(
 					url=server.woocommerce_server_url,
-					consumer_key=server.api_consumer_key,
-					consumer_secret=server.api_consumer_secret,
+					consumer_key=get_decrypted_password(
+						"WooCommerce Server", server.name, "api_consumer_key", raise_exception=False
+					),
+					consumer_secret=get_decrypted_password(
+						"WooCommerce Server", server.name, "api_consumer_secret", raise_exception=False
+					),
 					version="wc/v3",
 					timeout=40,
 				)
@@ -136,7 +132,7 @@ class WooCommerceDocument(Document):
 		"""
 		self.wc_api_list = self._init_api()
 
-	def load_from_db(self):
+	def load_from_db(self) -> Self:
 		"""
 		Returns a single WooCommerce Record (Form view)
 
@@ -147,7 +143,7 @@ class WooCommerceDocument(Document):
 			ValueError: If the response cannot be parsed as JSON
 		"""
 		# Parse the server domain and record_id from the Document name
-		wc_server_domain, record_id = get_domain_and_id_from_woocommerce_record_name(self.name)
+		wc_server_domain, record_id = get_domain_and_id_from_woocommerce_record_name(str(self.name))
 
 		# Map Frappe query parameters to WooCommerce query parameters
 		params = {}
@@ -201,6 +197,7 @@ class WooCommerceDocument(Document):
 		record = self.after_load_from_db(record)
 
 		super(Document, self).__init__(record)
+		return self
 
 	def after_load_from_db(self, record: dict):
 		return record
@@ -439,7 +436,7 @@ class WooCommerceDocument(Document):
 		"""Serialize complex fields (dict, list) to JSON strings"""
 		return cls.serialize_attributes_of_type_dict_or_list(record)
 
-	def delete(self):
+	def delete(self, ignore_permissions=False, force=False, *, delete_permanently=False):
 		frappe.throw(_("Deleting resources have not been implemented yet"))
 
 	def to_dict(self):
@@ -547,6 +544,7 @@ class WooCommerceDocument(Document):
 			frappe.msgprint(
 				_("WooCommerce synchronization is disabled. Please enable at least one WooCommerce server.")
 			)
+			return {}
 
 		wcapi = next(api for api in wc_api_list if server in api.woocommerce_server_url)
 		return wcapi.get(endpoint, **kwargs).json()
@@ -569,7 +567,7 @@ def generate_woocommerce_record_name_from_domain_and_id(
 	return f"{domain}{delimiter}{resource_id}"
 
 
-def log_and_raise_error(exception=None, error_text=None, response=None):
+def log_and_raise_error(exception=None, error_text=None, response=None) -> NoReturn:
 	"""
 	Create an "Error Log" and raise error
 
@@ -610,9 +608,8 @@ def log_and_raise_error(exception=None, error_text=None, response=None):
 		title=_("WooCommerce Error"),
 	)
 
-	# Re-raise original exception if provided
-	if exception:
-		raise exception
+	# frappe.throw always raises, this only tells the type checker so
+	raise AssertionError("unreachable")
 
 
 def parse_domain_from_url(url: str):
@@ -654,7 +651,7 @@ def map_frappe_filters_to_wc_params(filters):
 	}
 
 	for filter in filters:
-		doctype, field, operator, value = filter
+		_doctype, field, operator, value = filter
 
 		# Handle standard mappings
 		if field in standard_mappings and operator in standard_mappings[field]:

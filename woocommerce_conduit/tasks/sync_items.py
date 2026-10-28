@@ -114,6 +114,7 @@ def run_item_sync(
 	if woocommerce_product_name or wc_product:
 		# Check if we need to load the product from the database
 		load_full_product = False
+		lookup_name = None
 
 		# If only name provided, we need to load the product
 		if not wc_product and woocommerce_product_name:
@@ -304,15 +305,15 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		if not all([self.woocommerce_product.woocommerce_server, self.woocommerce_product.woocommerce_id]):
 			raise ValueError("Both woocommerce_server and woocommerce_id required")
 
-		iws: ItemWooCommerceServer = frappe.qb.DocType("Item WooCommerce Server")  # type: ignore
-		itm: Item = frappe.qb.DocType("Item")  # type: ignore
+		iws = frappe.qb.DocType("Item WooCommerce Server")
+		itm = frappe.qb.DocType("Item")
 
 		and_conditions = [
 			iws.woocommerce_server == self.woocommerce_product.woocommerce_server,
 			iws.woocommerce_id == self.woocommerce_product.woocommerce_id,
 		]
 
-		item_codes = (
+		item_codes = (  # pyright: ignore[reportCallIssue]
 			frappe.qb.from_(iws)
 			.join(itm)
 			.on(iws.parent == itm.name)
@@ -434,7 +435,7 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		self._set_core_item_fields(item, wc_server)
 
 		# Set mapped fields from WooCommerce
-		modified, item = self.set_item_fields(item=item)
+		_modified, item = self.set_item_fields(item=item)
 
 		# Set item flags and insert
 		item.flags.created_by_sync = True
@@ -499,7 +500,7 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		woocommerce_product_name = generate_woocommerce_record_name_from_domain_and_id(
 			self.woocommerce_product.woocommerce_server, self.woocommerce_product.parent_id
 		)
-		parent_item, parent_wc_product = run_item_sync(woocommerce_product_name=woocommerce_product_name)
+		parent_item, _parent_wc_product = run_item_sync(woocommerce_product_name=woocommerce_product_name)
 		return parent_item
 
 	def _set_core_item_fields(self, item: SyncedItem, wc_server: WooCommerceServer):
@@ -736,9 +737,12 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		"""
 		if not self.woocommerce_product or not self.item:
 			return
+		iws_name = self.item.item_woocommerce_server.name
+		if not iws_name:
+			return
 		frappe.db.set_value(
 			"Item WooCommerce Server",
-			self.item.item_woocommerce_server.name,
+			iws_name,
 			"woocommerce_last_sync_hash",
 			self.woocommerce_product.woocommerce_date_modified,
 			update_modified=False,
@@ -810,16 +814,16 @@ def clear_sync_hash_and_run_item_sync(item_code: str):
 	and it does not update the modified timestamp (by using the update_modified parameter)
 	"""
 
-	iws: ItemWooCommerceServer = frappe.qb.DocType("Item WooCommerce Server")  # type: ignore
+	iws = frappe.qb.DocType("Item WooCommerce Server")
 
-	iwss = (
+	iwss = (  # pyright: ignore[reportCallIssue]
 		frappe.qb.from_(iws).where(iws.enable_sync == 1).where(iws.parent == item_code).select(iws.name)
 	).run(as_dict=True)
 
-	for iws in iwss:
+	for iws_row in iwss:
 		frappe.db.set_value(
 			"Item WooCommerce Server",
-			iws.name,
+			iws_row.name,
 			"woocommerce_last_sync_hash",
 			None,
 			update_modified=False,
@@ -833,5 +837,5 @@ def clear_sync_hash_and_run_item_sync(item_code: str):
 			queue="long",  # Use appropriate queue
 			timeout=1500,  # Set appropriate timeout
 			job_name=f"Sync Item {item_code}",  # Provide useful job name
-			now=frappe.flags.in_test,  # Run immediately in tests
+			now=bool(frappe.flags.in_test),  # Run immediately in tests
 		)

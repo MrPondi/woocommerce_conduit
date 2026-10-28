@@ -4,6 +4,8 @@ app_publisher = "Karol Parzonka"
 app_description = "Connect your woocomemrce site to frappe"
 app_email = "me@pondi.dev"
 app_license = "gpl-3.0"
+app_logo_url = "/assets/woocommerce_conduit/images/woocommerce-logo.svg"
+app_home = "/desk/woocommerce-server"
 
 # Apps
 # ------------------
@@ -11,15 +13,14 @@ app_license = "gpl-3.0"
 required_apps = ["erpnext"]
 
 # Each item in the list will be shown as an app in the apps page
-# add_to_apps_screen = [
-# 	{
-# 		"name": "woocommerce_conduit",
-# 		"logo": "/assets/woocommerce_conduit/logo.png",
-# 		"title": "Woocommerce Conduit",
-# 		"route": "/woocommerce_conduit",
-# 		"has_permission": "woocommerce_conduit.api.permission.has_app_permission"
-# 	}
-# ]
+add_to_apps_screen = [
+	{
+		"name": app_name,
+		"logo": "/assets/woocommerce_conduit/images/woocommerce-logo.svg",
+		"title": "WooCommerce Conduit",
+		"route": app_home,
+	}
+]
 
 # Includes in <head>
 # ------------------

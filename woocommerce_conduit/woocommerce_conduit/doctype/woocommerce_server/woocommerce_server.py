@@ -6,6 +6,7 @@ from urllib.parse import urlparse, urlunparse
 import frappe
 from frappe import _
 from frappe.model.document import Document
+from frappe.utils import cstr
 from frappe.utils.caching import redis_cache
 from jsonpath_ng.ext import parse
 
@@ -81,18 +82,37 @@ class WooCommerceServer(Document):
 
 	def validate(self):
 		self.validate_woocommerce_url()
-		self.test_api_credentials()
+		if self.enabled and self.credentials_need_testing():
+			self.test_api_credentials()
 		self.validate_so_status_map()
 		self.validate_item_map()
 
 		if not self.secret:
 			self.secret = frappe.generate_hash()
 
+	def credentials_need_testing(self) -> bool:
+		"""
+		Only call the WooCommerce API when something it depends on has changed
+		"""
+		return any(
+			self.has_value_changed(field)
+			for field in ("enabled", "woocommerce_server_url", "api_consumer_key", "api_consumer_secret")
+		)
+
+	def _credential(self, fieldname: str) -> str:
+		"""
+		A Password field holds the plaintext only while it is being changed, otherwise it is masked
+		and the stored value has to be read back
+		"""
+		if self.has_value_changed(fieldname):
+			return cstr(self.get(fieldname))
+		return cstr(self.get_password(fieldname, raise_exception=False))
+
 	def test_api_credentials(self):
 		wcapi = WooCommerceAPI(
 			url=self.woocommerce_server_url,
-			consumer_key=self.api_consumer_key,
-			consumer_secret=self.api_consumer_secret,
+			consumer_key=self._credential("api_consumer_key"),
+			consumer_secret=self._credential("api_consumer_secret"),
 			version="wc/v3",
 		)
 		res = wcapi.get("system_status", params={"_fields": "environment"})

@@ -86,7 +86,7 @@ class SynchroniseItemPrice(SynchroniseWooCommerce):
 			if self.item_code:
 				and_conditions.append(ip.item_code == self.item_code)
 
-			self.item_price_list = (
+			self.item_price_list = (  # pyright: ignore[reportCallIssue]
 				qb.from_(ip)
 				.inner_join(iwc)
 				.on(iwc.parent == ip.item_code)

@@ -54,7 +54,7 @@ class SyncedOrder(SalesOrder):
 		woocommerce_payment_method: DF.Data
 		woocommerce_payment_entry: DF.Data
 		woocommerce_customer_note: DF.Data
-		items: DF.Table[SyncedOrderItem]
+		items: DF.Table[SyncedOrderItem]  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 class WooCustomer(Customer):
@@ -143,6 +143,7 @@ def run_sales_order_sync(
 	if woocommerce_order_name or wc_order:
 		# Check if we need to load the order from the database
 		load_full_order = False
+		lookup_name = None
 
 		# If only name provided, we need to load the order
 		if not wc_order and woocommerce_order_name:
@@ -712,7 +713,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			else:
 				iws = frappe.qb.DocType("Item WooCommerce Server")
 				itm = frappe.qb.DocType("Item")
-				item_codes = (
+				item_codes = (  # pyright: ignore[reportCallIssue]
 					frappe.qb.from_(iws)
 					.join(itm)
 					.on(iws.parent == itm.name)
@@ -730,8 +731,9 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			if found_item:
 				# If we are applying a Sales Taxes and Charges Template (as opposed to Actual Tax), then we need to
 				# determine if the item price should include tax or not
+				tax_template: SalesTaxesandChargesTemplate | None = None
 				if not wc_server.use_actual_tax_type:
-					tax_template: SalesTaxesandChargesTemplate = frappe.get_cached_doc(
+					tax_template = frappe.get_cached_doc(
 						"Sales Taxes and Charges Template", wc_server.sales_taxes_and_charges_template
 					)  # type: ignore
 
@@ -741,7 +743,8 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 					"description": found_item.item_name,
 					"qty": item.get("quantity"),
 					"rate": item.get("price")
-					if wc_server.use_actual_tax_type or not tax_template.taxes[0].included_in_print_rate
+					if wc_server.use_actual_tax_type
+					or (tax_template and not tax_template.taxes[0].included_in_print_rate)
 					else get_tax_inc_price_for_woocommerce_line_item(item),
 					"warehouse": wc_server.warehouse,
 					"discount_percentage": 100 if item.get("price") == 0 else 0,

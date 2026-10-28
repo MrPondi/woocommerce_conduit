@@ -107,9 +107,6 @@ class WooCommerceOrder(WooCommerceDocument):
 	def db_update(self):
 		pass
 
-	def delete(self):
-		return super().delete()
-
 	@staticmethod
 	def get_list(args) -> list[_dict | Document] | None:
 		"""
@@ -142,7 +139,9 @@ class WooCommerceOrder(WooCommerceDocument):
 			skip_cache = True
 
 		# Generate a cache key based on args, excluding non-serializable items
-		if not skip_cache:
+		cache = None if skip_cache else frappe.cache
+		cache_key: str | None = None
+		if cache:
 			try:
 				args_for_cache = {
 					k: v
@@ -164,7 +163,7 @@ class WooCommerceOrder(WooCommerceDocument):
 				cache_key = f"wc_orders_{frappe.utils.cstr(frappe.generate_hash(str(args_for_cache), 16))}"
 
 				# Try to get cached data
-				cached_data = frappe.cache().get_value(cache_key)
+				cached_data = cache.get_value(cache_key)
 				if cached_data:
 					cached_orders = json.loads(cached_data)
 
@@ -185,9 +184,9 @@ class WooCommerceOrder(WooCommerceDocument):
 				return []
 
 			# Cache the results before returning (if caching is enabled)
-			if not skip_cache:
+			if cache and cache_key:
 				try:
-					frappe.cache().set_value(cache_key, orders, expires_in_sec=cache_timeout)
+					cache.set_value(cache_key, json.dumps(orders), expires_in_sec=cache_timeout)
 				except Exception as e:
 					frappe.log_error(
 						f"WooCommerce Cache ErrorWooCommerce cache set error: {e!s}",

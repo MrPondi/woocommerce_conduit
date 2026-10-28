@@ -30,7 +30,7 @@ def validate_request() -> tuple[bool, Response | None]:
 
 	# Validate secret
 	sig = base64.b64encode(
-		hmac.new(wc_server.secret.encode("utf8"), frappe.request.data, hashlib.sha256).digest()
+		hmac.new((wc_server.secret or "").encode("utf8"), frappe.request.data, hashlib.sha256).digest()
 	)
 	if frappe.request.data and not sig == frappe.get_request_header("x-wc-webhook-signature", "").encode():  # type: ignore
 		return False, Response(response=_("Unauthorized"), status=HTTPStatus.UNAUTHORIZED)

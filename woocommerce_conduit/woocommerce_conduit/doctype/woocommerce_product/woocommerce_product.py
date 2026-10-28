@@ -87,26 +87,23 @@ class WooCommerceProduct(WooCommerceDocument):
 	def load_from_db(self):
 		return super().load_from_db()
 
-	def after_load_from_db(self, product: dict):
-		images = json.loads(product["images"])
+	def after_load_from_db(self, record: dict):
+		images = json.loads(record["images"])
 		if len(images) > 0:
-			product["image"] = images[0]["src"]
-		product["length"] = product["dimensions"]["length"]
-		product["width"] = product["dimensions"]["width"]
-		product["height"] = product["dimensions"]["height"]
-		product["average_rating"] = round(float(product["average_rating"]) * 0.2, 1)
-		attributes = json.loads(product["attributes"])
+			record["image"] = images[0]["src"]
+		record["length"] = record["dimensions"]["length"]
+		record["width"] = record["dimensions"]["width"]
+		record["height"] = record["dimensions"]["height"]
+		record["average_rating"] = round(float(record["average_rating"]) * 0.2, 1)
+		attributes = json.loads(record["attributes"])
 		for attribute in attributes:
 			if attribute["slug"] == "pa_producent":
-				product["brand"] = attribute["options"][0]
+				record["brand"] = attribute["options"][0]
 				break
-		return product
+		return record
 
 	def db_update(self):
 		pass
-
-	def delete(self):
-		return super().delete()
 
 	@staticmethod
 	def get_list(args) -> list[Document] | None:
@@ -143,7 +140,9 @@ class WooCommerceProduct(WooCommerceDocument):
 			skip_cache = True
 
 		# Generate a cache key based on args, excluding non-serializable items
-		if not skip_cache:
+		cache = None if skip_cache else frappe.cache
+		cache_key: str | None = None
+		if cache:
 			try:
 				args_for_cache = {
 					k: v
@@ -165,7 +164,7 @@ class WooCommerceProduct(WooCommerceDocument):
 				cache_key = f"wc_products_{frappe.utils.cstr(frappe.generate_hash(str(args_for_cache), 16))}"
 
 				# Try to get cached data
-				cached_data = frappe.cache().get_value(cache_key)
+				cached_data = cache.get_value(cache_key)
 				if cached_data:
 					cached_products = json.loads(cached_data)
 
@@ -188,11 +187,11 @@ class WooCommerceProduct(WooCommerceDocument):
 			# If variations not needed, cache and return early
 			if not fetch_variations:
 				# Cache the results before returning (if caching is enabled)
-				if not skip_cache:
+				if cache and cache_key:
 					try:
-						frappe.cache().set_value(
+						cache.set_value(
 							cache_key,
-							products,
+							json.dumps(products),
 							expires_in_sec=cache_timeout,
 						)
 					except Exception as e:
@@ -242,9 +241,9 @@ class WooCommerceProduct(WooCommerceDocument):
 			products.extend(all_variations)
 
 			# Cache the results before returning (if caching is enabled)
-			if not skip_cache:
+			if cache and cache_key:
 				try:
-					frappe.cache().set_value(cache_key, json.dumps(products), expires_in_sec=cache_timeout)
+					cache.set_value(cache_key, json.dumps(products), expires_in_sec=cache_timeout)
 				except Exception as e:
 					frappe.log_error(
 						f"WooCommerce Cache ErrorWooCommerce cache set error: {e!s}",
@@ -260,17 +259,17 @@ class WooCommerceProduct(WooCommerceDocument):
 			return []
 
 	@classmethod
-	def during_get_list_of_records(cls, product: dict, args):
+	def during_get_list_of_records(cls, record: dict, args):
 		# In the case of variations
-		if product.get("parent_id"):
+		if record.get("parent_id"):
 			# Woocommerce product variantions endpoint results doesn't return the type, so set it manually
-			product["type"] = "variation"
+			record["type"] = "variation"
 
-			if variation_name := cls.get_variation_name(product, args):
+			if variation_name := cls.get_variation_name(record, args):
 				# Override the woocommerce_name field
-				product["woocommerce_name"] = variation_name
+				record["woocommerce_name"] = variation_name
 
-		return product
+		return record
 
 	@staticmethod
 	def get_variation_name(product: dict, args):
