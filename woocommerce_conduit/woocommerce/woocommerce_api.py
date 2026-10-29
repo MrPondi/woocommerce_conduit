@@ -290,6 +290,89 @@ class WooCommerceDocument(Document):
 	def after_load_from_db(self, record: dict):
 		return record
 
+	def db_update(self):
+		"""
+		Write the fields that changed since the record was loaded back to WooCommerce. The subclass's
+		before_db_update decides which fields may be written at all.
+
+		`Document.save` loads the current WooCommerce record into `_doc_before_save` (and `check_if_latest`
+		rejects the save if it was modified in WooCommerce since this copy was loaded), so only the
+		difference against that is sent.
+		"""
+		changes = self.get_changed_values()
+		if not changes:
+			return
+
+		changes = self.before_db_update(changes)
+		if not changes:
+			return
+
+		wc_server_domain, record_id = get_domain_and_id_from_woocommerce_record_name(str(self.name))
+		try:
+			self.current_wc_api = next(
+				api for api in self.wc_api_list if wc_server_domain in api.woocommerce_server_url
+			)
+		except StopIteration:
+			log_and_raise_error(error_text=f"No WooCommerce server found for domain {wc_server_domain}")
+
+		endpoint = self.get_update_endpoint(record_id)
+		try:
+			response = self.current_wc_api.put(endpoint, changes, params={"_fields": "id,date_modified"})
+		except Exception as err:
+			log_and_raise_error(exception=err, error_text=f"db_update failed ({endpoint})")
+		if response.status_code != 200:
+			log_and_raise_error(error_text=f"db_update failed ({endpoint})", response=response)
+
+		# Keep the new modified date, so the sync hash written after this save matches WooCommerce
+		date_modified = response.json().get("date_modified")
+		if date_modified:
+			self.woocommerce_date_modified = date_modified
+			self.modified = date_modified
+
+	# save() runs these before db_update. The record lives in WooCommerce and isn't stored here, so there are
+	# no column lengths to respect and WooCommerce decides which values are valid. Otherwise a name over 140
+	# characters or a "future" status would stop a price update. Images in the description must not turn
+	# into ERPNext Files either.
+	def _validate_length(self):
+		pass
+
+	def _validate_selects(self):
+		pass
+
+	def _extract_images_from_text_editor(self):
+		pass
+
+	def get_changed_values(self) -> dict:
+		"""
+		The fields whose value differs from `_doc_before_save`, with JSON fields deserialised and numbers
+		compared by value, so "10" and 10.0 or an indented and a compact JSON string are not a change
+		"""
+		before = getattr(self, "_doc_before_save", None)
+		before_values = self.deserialize_attributes_of_type_dict_or_list(before.to_dict()) if before else {}
+		values = self.deserialize_attributes_of_type_dict_or_list(self.to_dict())
+
+		changes = {}
+		for df in self.meta.fields:
+			if df.fieldtype in no_value_fields or df.fieldname not in values:
+				continue
+			value, old_value = values.get(df.fieldname), before_values.get(df.fieldname)
+			if df.fieldtype in ("Currency", "Float", "Int", "Percent", "Check"):
+				if frappe.utils.flt(value) == frappe.utils.flt(old_value):
+					continue
+			elif value == old_value or (value or None) == (old_value or None):
+				continue
+			changes[df.fieldname] = value
+		return changes
+
+	def before_db_update(self, changes: dict) -> dict:
+		"""
+		Convert the changed Frappe fields into the WooCommerce request body
+		"""
+		return {self.field_setter_map.get(key, key): value for key, value in changes.items()}
+
+	def get_update_endpoint(self, record_id: int) -> str:
+		return f"{self.resource}/{record_id}"
+
 	@classmethod
 	def get_wc_fields(
 		cls, frappe_fields: list[str] | str | None = None, extra: list[str] | None = None
@@ -605,8 +688,8 @@ class WooCommerceDocument(Document):
 		"""
 		json_fields = cls.get_json_fields()
 		for field in json_fields:
-			if obj.get(field.fieldname):
-				obj[field.fieldname] = json.loads(obj[field.fieldname])
+			if isinstance(value := obj.get(field.fieldname), str) and value:
+				obj[field.fieldname] = json.loads(value)
 		return obj
 
 	@classmethod

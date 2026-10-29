@@ -6,7 +6,7 @@ import frappe
 from erpnext.stock.doctype.item.item import Item
 from frappe import ValidationError, _, _dict
 from frappe.query_builder import Criterion
-from frappe.utils import get_datetime, now
+from frappe.utils import convert_utc_to_system_timezone, get_datetime, now
 from jsonpath_ng.ext import parse
 
 from woocommerce_conduit.exceptions import SyncDisabledError
@@ -27,22 +27,40 @@ from woocommerce_conduit.woocommerce.woocommerce_api import (
 	generate_woocommerce_record_name_from_domain_and_id,
 )
 
+# Item.item_name is a Data field without a length set, so it has the default length
+ITEM_NAME_LENGTH = 140
+
 
 class SyncedItem(Item):
 	woocommerce_servers: list[ItemWooCommerceServer]
 
 
-def run_item_sync_from_hook(doc, method):
+def validate_primary_connection(doc, method=None):
 	"""
-	Intended to be triggered by a Document Controller hook from Item
+	Intended to be triggered by a Document Controller hook from Item. An Item has one primary WooCommerce
+	connection, the first one unless another is marked.
 	"""
-	if doc.doctype == "Item" and not doc.flags.get("created_by_sync", None) and doc.woocommerce_servers:
-		frappe.msgprint(
-			_("Background sync to WooCommerce triggered for {0} {1}").format(frappe.bold(doc.name), method),
-			indicator="blue",
-			alert=True,
+	connections = doc.get("woocommerce_servers") or []
+	primaries = [row for row in connections if row.is_primary]
+	if len(primaries) > 1:
+		frappe.throw(
+			_("Only one WooCommerce connection can be Primary, but rows {0} are").format(
+				", ".join(str(row.idx) for row in primaries)
+			)
 		)
-		frappe.enqueue(clear_sync_hash_and_run_item_sync, item_code=doc.name)
+	if connections and not primaries:
+		connections[0].is_primary = 1
+
+
+def get_primary_connection(item) -> ItemWooCommerceServer | None:
+	"""
+	The connection whose WooCommerce Product the Item takes its fields from. Items saved before the Primary
+	flag existed have none set, so fall back to the first row, as validate_primary_connection does.
+	"""
+	connections = item.get("woocommerce_servers") or []
+	return next(
+		(row for row in connections if row.get("is_primary")), connections[0] if connections else None
+	)
 
 
 def sync_woocommerce_products_modified_since(date_time_from=None):
@@ -54,23 +72,43 @@ def sync_woocommerce_products_modified_since(date_time_from=None):
 	if not date_time_from:
 		date_time_from = getattr(settings, "wc_last_sync_date_items", None)
 
+	# Take the cursor before fetching, so products modified while this runs are picked up next time
+	sync_started_at = now()
 	wc_products = get_list_of_wc_products(date_time_from=date_time_from)
 
 	for wc_product in wc_products:
 		try:
-			run_item_sync(woocommerce_product=wc_product, enqueue=True)
+			run_item_sync(woocommerce_product_name=wc_product["name"], enqueue=True)
 		# Skip items with errors, as these exceptions will be logged
 		except Exception as e:
 			frappe.log_error("Item sync error", f"There was an exception when syncing an item: {e!s}")
-			break
 
 	settings.reload()
-	settings.wc_last_sync_date_items = now()
+	settings.wc_last_sync_date_items = sync_started_at
 	settings.flags.ignore_mandatory = True
 	settings.save()
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
+def sync_woocommerce_product(woocommerce_product_name: str):
+	"""
+	Sync one WooCommerce Product with its ERPNext Item, from the WooCommerce Product form
+	"""
+	frappe.has_permission("Item", "write", throw=True)
+	run_item_sync(woocommerce_product_name=woocommerce_product_name)
+
+
+def load_wc_product(woocommerce_product_name: str) -> WooCommerceProduct:
+	"""
+	Load a WooCommerce Product with all its fields
+	"""
+	wc_product: WooCommerceProduct = frappe.get_doc(
+		{"doctype": "WooCommerce Product", "name": woocommerce_product_name}
+	)  # type: ignore
+	wc_product.load_from_db()
+	return wc_product
+
+
 def run_item_sync(
 	item_code: str | None = None,
 	item: SyncedItem | None = None,
@@ -99,111 +137,63 @@ def run_item_sync(
 	    ValueError: If no valid input parameters are provided
 	    ValidationError: If no WooCommerce Servers are defined for the item
 	"""
-	# Initialize sync object reference
-	sync = None
-	erpnext_item = item  # type: ignore
-	wc_product = woocommerce_product
-
-	# Validate inputs - at least one parameter should be provided
-	if not any([item_code, erpnext_item, woocommerce_product_name, wc_product]):
+	if not any([item_code, item, woocommerce_product_name, woocommerce_product]):
 		raise ValueError(
 			"At least one of item_code, item, woocommerce_product_name, or woocommerce_product parameters is required"
 		)
+	if enqueue:
+		# Only pass names, documents (and the API clients they hold) don't belong in a job payload.
+		# The job loads the product again, which also gives it every field and not just the list's.
+		if woocommerce_product_name or woocommerce_product:
+			kwargs = {"woocommerce_product_name": woocommerce_product_name or woocommerce_product.name}  # type: ignore
+		else:
+			kwargs = {"item_code": item_code or item.name}  # type: ignore
+		frappe.enqueue(run_item_sync, queue="long", timeout=300, now=bool(frappe.flags.in_test), **kwargs)
+		return None, None
+
+	sync = None
+	erpnext_item = item
 
 	# Case 1: Sync initiated from WooCommerce side
-	if woocommerce_product_name or wc_product:
-		# Check if we need to load the product from the database
-		load_full_product = False
-		lookup_name = None
+	if woocommerce_product_name or woocommerce_product:
+		wc_product = woocommerce_product
+		if not wc_product:
+			wc_product = load_wc_product(woocommerce_product_name)  # type: ignore
 
-		# If only name provided, we need to load the product
-		if not wc_product and woocommerce_product_name:
-			load_full_product = True
-			lookup_name = woocommerce_product_name
-		# If product provided but might be a partial/list view product
-		elif wc_product:
-			lookup_name = wc_product.get("name")
-			# Check for essential fields that would only exist in a full product
-			# List view products typically only have name, id, date_created, date_modified, type, sku, status
-			# Full products have many more fields like description, price, stock_quantity, etc.
-			required_full_fields = ["description", "price", "regular_price", "stock_status"]
-
-			# If any of these fields are missing or None, we need to reload
-			if isinstance(wc_product, dict):
-				load_full_product = any(not wc_product.get(field) for field in required_full_fields)
-			else:
-				load_full_product = any(
-					not getattr(wc_product, field, None) for field in required_full_fields
-				)
-
-		if load_full_product:
-			try:
-				# Load the full product with all fields from the database
-				full_wc_product: WooCommerceProduct = frappe.get_doc(
-					{"doctype": "WooCommerce Product", "name": lookup_name}
-				)  # type: ignore
-				full_wc_product.load_from_db()
-
-				# Validate WooCommerce product has required fields
-				if not full_wc_product.woocommerce_server or not full_wc_product.woocommerce_id:
-					raise ValueError(
-						f"WooCommerce Product {full_wc_product.name} is missing required fields: "
-						f"server={full_wc_product.woocommerce_server}, id={full_wc_product.woocommerce_id}"
-					)
-
-				wc_product = full_wc_product
-
-			except frappe.DoesNotExistError:
-				frappe.throw(_(f"WooCommerce Product {lookup_name} not found"))
-
-		# Initialize synchronization
 		sync = SynchroniseItem(woocommerce_product=wc_product)
-
-		# Execute sync now or in background
-		if enqueue:
-			frappe.enqueue(sync.run, queue="long", timeout=300, job_name=f"Sync WC Product {wc_product.name}")  # type: ignore
-		else:
-			sync.run()
+		sync.run()
 
 	# Case 2: Sync initiated from ERPNext side
 	elif item_code or erpnext_item:
-		# Load item if only the code was provided
-		if not erpnext_item and item_code:
-			try:
-				erpnext_item: SyncedItem = frappe.get_doc("Item", item_code)  # type: ignore
-			except frappe.DoesNotExistError:
-				frappe.throw(_(f"Item {item_code} not found"))
+		if not erpnext_item:
+			erpnext_item: SyncedItem = frappe.get_doc("Item", item_code)  # type: ignore
 
-		# Validate item has WooCommerce servers configured
 		if not erpnext_item.woocommerce_servers:
-			frappe.throw(_(f"No WooCommerce Servers defined for Item {erpnext_item.name or item_code}"))
+			frappe.throw(_("No WooCommerce Servers defined for Item {0}").format(erpnext_item.name))
 
-		# Sync with each linked WooCommerce server
-		for idx, wc_server in enumerate(erpnext_item.woocommerce_servers):
-			# Validate server entry has required fields
+		# Sync with each linked WooCommerce server. run() logs its own errors, so carry on with the other
+		# servers and raise afterwards.
+		errors = []
+		for wc_server in erpnext_item.woocommerce_servers:
 			if not wc_server.woocommerce_server:
 				frappe.msgprint(
-					_(f"WooCommerce Server not specified for entry #{idx + 1} in Item {erpnext_item.name}"),
+					_("WooCommerce Server not specified for entry #{0} in Item {1}").format(
+						wc_server.idx, erpnext_item.name
+					),
 					indicator="red",
 					alert=True,
 				)
 				continue
 
-			# Initialize synchronization for this server
 			sync = SynchroniseItem(
 				item=ERPNextItemToSync(item=erpnext_item, item_woocommerce_server_idx=wc_server.idx)
 			)
-
-			# Execute sync now or in background
-			if enqueue:
-				frappe.enqueue(
-					sync.run,
-					queue="long",
-					timeout=300,
-					job_name=f"Sync Item {erpnext_item.name} with {wc_server.woocommerce_server}",
-				)
-			else:
+			try:
 				sync.run()
+			except Exception as err:
+				errors.append(err)
+		if errors:
+			raise errors[0]
 
 	# Return the synchronized item and product
 	# If multiple servers were synced, returns the last one processed
@@ -226,6 +216,11 @@ class ERPNextItemToSync:
 	@property
 	def item_woocommerce_server(self):
 		return self.item.woocommerce_servers[self.item_woocommerce_server_idx - 1]
+
+	@property
+	def is_primary(self) -> bool:
+		primary = get_primary_connection(self.item)
+		return bool(primary) and primary.idx == self.item_woocommerce_server_idx
 
 
 class SynchroniseItem(SynchroniseWooCommerce):
@@ -283,15 +278,12 @@ class SynchroniseItem(SynchroniseWooCommerce):
 			if not wc_server.enabled:
 				raise SyncDisabledError(wc_server)
 
-			wc_products = get_list_of_wc_products(item=self.item)
-			if not wc_products:
-				raise ValueError(
-					f"No WooCommerce Product found with ID {self.item.item_woocommerce_server.woocommerce_id} on {self.item.item_woocommerce_server.woocommerce_server}"
+			# The WooCommerce Server is named after its domain, as the WooCommerce Product names are
+			self.woocommerce_product = load_wc_product(
+				generate_woocommerce_record_name_from_domain_and_id(
+					wc_server.name, self.item.item_woocommerce_server.woocommerce_id
 				)
-			self.woocommerce_product: WooCommerceProduct = frappe.get_doc(
-				{"doctype": "WooCommerce Product", "name": wc_products[0]["name"]}  # type: ignore
 			)
-			self.woocommerce_product.load_from_db()
 
 		if self.woocommerce_product and not self.item:
 			self.get_erpnext_item()
@@ -335,28 +327,32 @@ class SynchroniseItem(SynchroniseWooCommerce):
 
 	def sync_wc_product_with_erpnext_item(self):
 		"""
-		Syncronise Item between ERPNext and WooCommerce
+		Syncronise an ERPNext Item from its WooCommerce Product
 		"""
-		if self.item and not self.woocommerce_product:
-			# create missing item in WooCommerce
-			pass
-		elif self.woocommerce_product and not self.item:
+		if self.woocommerce_product and not self.item:
 			# create missing item in ERPNext
 			self.create_item()
 		elif self.item and self.woocommerce_product and self.item.item_woocommerce_server.enable_sync:
-			# both exist, check sync hash
-			if (
+			# both exist, check sync hash. It's a Datetime field, so it reads back as a datetime and
+			# WooCommerce's date_modified is a string: compare them as datetimes.
+			last_sync_hash = self.item.item_woocommerce_server.woocommerce_last_sync_hash
+			if not last_sync_hash or get_datetime(last_sync_hash) != get_datetime(
 				self.woocommerce_product.woocommerce_date_modified
-				!= self.item.item_woocommerce_server.woocommerce_last_sync_hash
 			):
-				if get_datetime(self.woocommerce_product.woocommerce_date_modified) > get_datetime(
-					self.item.item.modified
-				):  # type: ignore
+				# Only WooCommerce updates the Item. An Item is shared by every shop it is linked to, so
+				# its fields are never written back; prices go to WooCommerce through the price sync.
+				# A newer Item means it was edited in ERPNext since, which a pull must not undo.
+				if self.get_wc_modified_in_system_timezone() > get_datetime(self.item.item.modified):
 					self.update_item()
-				if get_datetime(self.woocommerce_product.woocommerce_date_modified) < get_datetime(
-					self.item.item.modified
-				):  # type: ignore
-					self.update_woocommerce_product()
+
+	def get_wc_modified_in_system_timezone(self) -> datetime:
+		"""
+		WooCommerce's date_modified is in the shop's timezone, and Item.modified in ERPNext's, so compare
+		via date_modified_gmt when the product has it
+		"""
+		if date_modified_gmt := self.woocommerce_product.get("date_modified_gmt"):  # type: ignore
+			return convert_utc_to_system_timezone(get_datetime(date_modified_gmt)).replace(tzinfo=None)
+		return get_datetime(self.woocommerce_product.woocommerce_date_modified)  # type: ignore
 
 	def update_item(self):
 		"""
@@ -365,9 +361,16 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		if not self.woocommerce_product or not self.item:
 			return
 
+		# Only the primary shop fills in the Item. The others keep their own name, description, etc.,
+		# which would otherwise overwrite each other on the shared Item.
+		if not self.item.is_primary:
+			self.set_sync_hash()
+			return
+
 		item_dirty = False
-		if self.item.item.item_name != self.woocommerce_product.woocommerce_name:
-			self.item.item.item_name = self.woocommerce_product.woocommerce_name
+		wc_item_name = to_item_name(self.woocommerce_product.woocommerce_name)
+		if wc_item_name and self.item.item.item_name != wc_item_name:
+			self.item.item.item_name = wc_item_name
 			item_dirty = True
 
 		fields_updated, self.item.item = self.set_item_fields(self.item.item)
@@ -387,29 +390,6 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		if item_dirty or fields_updated:
 			self.item.item.flags.created_by_sync = True
 			self.item.item.save()
-
-		self.set_sync_hash()
-
-	def update_woocommerce_product(self):
-		"""
-		Update the WooCommerce Product with fields from it's corresponding ERPNext Item
-		"""
-		if not self.woocommerce_product or not self.item:
-			return
-
-		wc_product_dirty = False
-
-		# Update properties
-		if self.item.item.item_name and self.woocommerce_product.woocommerce_name != self.item.item.item_name:
-			self.woocommerce_product.woocommerce_name = self.item.item.item_name
-			wc_product_dirty = True
-
-		product_fields_changed = self.set_product_fields()
-		if product_fields_changed:
-			wc_product_dirty = True
-
-		if wc_product_dirty:
-			self.woocommerce_product.save()
 
 		self.set_sync_hash()
 
@@ -524,7 +504,7 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		# Set basic item properties
 		item.stock_uom = wc_server.uom or _("Nos")
 		item.item_group = wc_server.item_group
-		item.item_name = self.woocommerce_product.woocommerce_name
+		item.item_name = to_item_name(self.woocommerce_product.woocommerce_name)
 
 		# Link to WooCommerce server
 		row = item.append("woocommerce_servers")
@@ -551,13 +531,15 @@ class SynchroniseItem(SynchroniseWooCommerce):
 			# Get attribute options based on product type
 			options = self._get_attribute_options(wc_attribute)
 
-			# Update attribute values if needed
-			if self._should_update_attribute_values(item_attribute, options):
-				self._update_attribute_values(item_attribute, options)
+			# Item Attributes are shared between products, so only add the values that are missing
+			if (
+				not self._add_missing_attribute_values(item_attribute, options)
+				and not item_attribute.is_new()
+			):
+				continue
 
-			# Save the attribute
 			item_attribute.flags.ignore_mandatory = True
-			if not item_attribute.name:
+			if item_attribute.is_new():
 				item_attribute.insert()
 			else:
 				item_attribute.save()
@@ -579,19 +561,32 @@ class SynchroniseItem(SynchroniseWooCommerce):
 			else [wc_attribute["option"]]
 		)
 
-	def _should_update_attribute_values(self, item_attribute, options):
-		"""Helper method to determine if attribute values need updating"""
-		return len(item_attribute.item_attribute_values) == 0 or set(options) != set(
-			[val.attribute_value for val in item_attribute.item_attribute_values]
-		)
+	def _add_missing_attribute_values(self, item_attribute, options) -> bool:
+		"""
+		Add the options the attribute doesn't have yet. Values other products use are kept.
 
-	def _update_attribute_values(self, item_attribute, options):
-		"""Helper method to update attribute values"""
-		item_attribute.item_attribute_values = []
+		Returns:
+			bool: whether any value was added
+		"""
+		existing_values = {val.attribute_value for val in item_attribute.item_attribute_values}
+		existing_abbrs = {(val.abbr or "").lower() for val in item_attribute.item_attribute_values}
+		added = False
 		for option in options:
+			if option in existing_values:
+				continue
+			# ERPNext requires a unique abbreviation per attribute
+			abbr = base_abbr = option.replace(" ", "")
+			suffix = 1
+			while abbr.lower() in existing_abbrs:
+				suffix += 1
+				abbr = f"{base_abbr}{suffix}"
 			row = item_attribute.append("item_attribute_values")
 			row.attribute_value = option
-			row.abbr = option.replace(" ", "")
+			row.abbr = abbr
+			existing_values.add(option)
+			existing_abbrs.add(abbr.lower())
+			added = True
+		return added
 
 	def set_item_fields(self, item: SyncedItem) -> tuple[bool, SyncedItem]:
 		"""
@@ -639,9 +634,10 @@ class SynchroniseItem(SynchroniseWooCommerce):
 
 				wc_field_value = matches[0].value
 
-				# Update ERPNext item field
-				setattr(item, erpnext_field_name, wc_field_value)
-				item_modified = True
+				# Only touch fields that differ, so an unchanged product doesn't save (and re-date) the Item
+				if not values_match(item.get(erpnext_field_name), wc_field_value):
+					item.set(erpnext_field_name, wc_field_value)
+					item_modified = True
 
 			except Exception as e:
 				frappe.log_error(
@@ -650,85 +646,6 @@ class SynchroniseItem(SynchroniseWooCommerce):
 				)
 
 		return item_modified, item
-
-	def set_product_fields(self) -> bool:
-		"""
-		Synchronize values from ERPNext item fields to WooCommerce product fields
-		based on field mappings configured in WooCommerce Server.
-
-		Returns:
-			tuple: (was_modified, updated_woocommerce_product)
-		"""
-		if not self.woocommerce_product or not self.item:
-			return False
-
-		# Get WooCommerce server config
-		wc_server: WooCommerceServer = frappe.get_cached_doc(
-			"WooCommerce Server", self.woocommerce_product.woocommerce_server
-		)  # type: ignore
-
-		# Exit early if no field mappings exist
-		if not wc_server.item_field_map:
-			return False
-
-		# Deserialize WooCommerce product attributes for JSONPath operations
-		wc_product_data = self.woocommerce_product.deserialize_attributes_of_type_dict_or_list(
-			self.woocommerce_product
-		)
-
-		wc_product_modified = False
-
-		# Process each field mapping
-		for field_map in wc_server.item_field_map:
-			# Parse ERPNext field name
-			erpnext_field_parts = field_map.erpnext_field_name.split(" | ")
-			erpnext_field_name = erpnext_field_parts[0]
-
-			# Get item field value
-			try:
-				erpnext_field_value = getattr(self.item.item, erpnext_field_name)
-
-				# Find target field in WooCommerce product using JSONPath
-				jsonpath_expr = parse(field_map.woocommerce_field_name)
-				matches = jsonpath_expr.find(wc_product_data)
-
-				if not matches:
-					if self.woocommerce_product.name:
-						# Strict check for existing products - field should exist
-						raise ValueError(
-							_("Field <code>{0}</code> not found in WooCommerce Product {1}").format(
-								field_map.woocommerce_field_name, self.woocommerce_product.name
-							)
-						)
-					else:
-						# For new products, the field might not exist yet
-						continue
-
-				wc_field_value = matches[0].value
-
-				# Update WooCommerce field if values differ
-				if erpnext_field_value != wc_field_value:
-					jsonpath_expr.update(wc_product_data, erpnext_field_value)
-					wc_product_modified = True
-
-			except AttributeError as e:
-				frappe.log_error(
-					f"ERPNext field {erpnext_field_name} not found on item {self.item.item.name}: {e!s}",
-					"WooCommerce Field Mapping Error",
-				)
-			except Exception as e:
-				frappe.log_error(
-					f"Error mapping field {erpnext_field_name} to {field_map.woocommerce_field_name}: {e!s}",
-					"WooCommerce Field Mapping Error",
-				)
-
-		# Re-serialize if modified
-		if wc_product_modified:
-			self.woocommerce_product = self.woocommerce_product.serialize_attributes_of_type_dict_or_list(
-				wc_product_data
-			)
-
-		return wc_product_modified
 
 	def set_sync_hash(self):
 		"""
@@ -749,53 +666,31 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		)
 
 
-def get_list_of_wc_products(
-	item: ERPNextItemToSync | None = None, date_time_from: datetime | None = None
-) -> list[WooCommerceProduct]:
+def get_list_of_wc_products(date_time_from: datetime | str | None = None) -> list[dict]:
 	"""
-	Fetches a list of WooCommerce Products within a specified date range or linked with an Item.
+	Fetches the WooCommerce Products (and their variations) modified since date_time_from.
 
-	This function efficiently retrieves WooCommerce products using the built-in pagination
-	and caching mechanisms of the WooCommerceProduct class.
+	Only the identifying fields are requested, as each product is loaded in full when it is synced.
 
 	Args:
-		item: Optional ERPNext item to sync with WooCommerce
 		date_time_from: Optional datetime to filter products modified after this time
 
 	Returns:
-		List of WooCommerceProduct documents
+		List of WooCommerce Product records, as dicts
 	"""
-	# Build filters
 	filters = []
-	servers = None
-
 	if date_time_from:
 		filters.append(["WooCommerce Product", "date_modified", ">", date_time_from])
 
-	if item:
-		if not hasattr(item, "item_woocommerce_server") or not item.item_woocommerce_server:
-			frappe.log_error(
-				"WooCommerce Sync Error", f"Item {item.item.name} has no WooCommerce server configuration"
-			)
-			return []
-
-		filters.append(["WooCommerce Product", "id", "=", item.item_woocommerce_server.woocommerce_id])
-		servers = [item.item_woocommerce_server.woocommerce_server]
-
 	try:
-		# Leverage the WooCommerceProduct.get_list method which already has caching
-		woocommerce_product: WooCommerceProduct = frappe.get_doc({"doctype": "WooCommerce Product"})  # type: ignore
-
-		# Use a single call with appropriate arguments
-		wc_products = woocommerce_product.get_list(
+		wc_products = WooCommerceProduct.get_list(
 			args={
 				"doctype": "WooCommerce Product",
 				"filters": filters,
-				"servers": servers,
-				"as_doc": True,
-				# Let the API handle pagination efficiently
-				# Set a reasonable limit for maximum records
-				"page_length": 1 if item else 1000,
+				"fields": ["name"],
+				# This is a sync, so it needs the current list rather than a cached one
+				"skip_cache": True,
+				"page_length": 1000,
 			}
 		)
 
@@ -808,34 +703,23 @@ def get_list_of_wc_products(
 		return []
 
 
-def clear_sync_hash_and_run_item_sync(item_code: str):
+def to_item_name(wc_name: str | None) -> str | None:
 	"""
-	Clear the last sync hash value using db.set_value, as it does not call the ORM triggers
-	and it does not update the modified timestamp (by using the update_modified parameter)
+	A WooCommerce product name as an Item name, which is a Data field and so capped in length
 	"""
+	return wc_name[:ITEM_NAME_LENGTH] if wc_name else wc_name
 
-	iws = frappe.qb.DocType("Item WooCommerce Server")
 
-	iwss = (  # pyright: ignore[reportCallIssue]
-		frappe.qb.from_(iws).where(iws.enable_sync == 1).where(iws.parent == item_code).select(iws.name)
-	).run(as_dict=True)
-
-	for iws_row in iwss:
-		frappe.db.set_value(
-			"Item WooCommerce Server",
-			iws_row.name,
-			"woocommerce_last_sync_hash",
-			None,
-			update_modified=False,
-		)
-
-	if len(iwss) > 0:
-		frappe.enqueue(
-			run_item_sync,
-			item_code=item_code,
-			enqueue=True,
-			queue="long",  # Use appropriate queue
-			timeout=1500,  # Set appropriate timeout
-			job_name=f"Sync Item {item_code}",  # Provide useful job name
-			now=bool(frappe.flags.in_test),  # Run immediately in tests
-		)
+def values_match(erpnext_value, wc_value) -> bool:
+	"""
+	Compare an ERPNext and a WooCommerce value. WooCommerce sends numbers as strings ("10.00") and empty
+	values as "", while ERPNext has 10.0 and None, which are the same value.
+	"""
+	if erpnext_value == wc_value or (erpnext_value in (None, "") and wc_value in (None, "")):
+		return True
+	if isinstance(erpnext_value, int | float) or isinstance(wc_value, int | float):
+		try:
+			return float(erpnext_value or 0) == float(wc_value or 0)
+		except (TypeError, ValueError):
+			return False
+	return False

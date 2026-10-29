@@ -74,8 +74,28 @@ class WooCommerceProduct(WooCommerceDocument):
 		"price": "price",
 		"total_sales": "popularity",
 	}
-	# The name and type are used to find and name variations, the parent_id to relate them
-	mandatory_wc_fields = ["id", "name", "type", "parent_id", "date_created", "date_modified"]  # noqa: RUF012
+	# The name and type are used to find and name variations, the parent_id to relate them.
+	# date_modified_gmt lets the sync compare against ERPNext's timezone.
+	mandatory_wc_fields = [  # noqa: RUF012
+		"id",
+		"name",
+		"type",
+		"parent_id",
+		"date_created",
+		"date_modified",
+		"date_modified_gmt",
+	]
+	# The only fields ERPNext writes to WooCommerce. An Item can be linked to several shops, and each
+	# shop keeps its own name, description, images, etc., so everything else is left as the shop has it.
+	writable_fields = (
+		"regular_price",
+		"sale_price",
+		"date_on_sale_from",
+		"date_on_sale_to",
+		"manage_stock",
+		"stock_quantity",
+		"stock_status",
+	)
 
 	def db_insert(self, *args, **kwargs):
 		pass
@@ -96,8 +116,39 @@ class WooCommerceProduct(WooCommerceDocument):
 		record["height"] = record["dimensions"]["height"]
 		return record
 
-	def db_update(self):
-		pass
+	def get_update_endpoint(self, record_id: int) -> str:
+		# Variations are only writable through their parent
+		if self.parent_id:
+			return f"{self.resource}/{self.parent_id}/variations/{record_id}"
+		return super().get_update_endpoint(record_id)
+
+	def before_db_update(self, changes: dict) -> dict:
+		"""
+		Put the changed fields in the format the WooCommerce API expects
+		"""
+		changes = {key: value for key, value in changes.items() if key in self.writable_fields}
+
+		if self.get("type") == "variable":
+			# A variable product's price lives on its variations
+			changes.pop("regular_price", None)
+			changes.pop("sale_price", None)
+		if "regular_price" in changes:
+			changes["regular_price"] = str(changes["regular_price"] or "")
+		if "sale_price" in changes:
+			# An empty string clears a sale, 0 would set the product on sale for free
+			sale_price = frappe.utils.flt(changes["sale_price"])
+			changes["sale_price"] = str(sale_price) if sale_price > 0 else ""
+		if "stock_quantity" in changes:
+			changes["stock_quantity"] = frappe.utils.cint(changes["stock_quantity"])
+
+		for date_field in ("date_on_sale_from", "date_on_sale_to"):
+			if date_field in changes:
+				value = changes[date_field]
+				changes[date_field] = (
+					value.strftime("%Y-%m-%dT%H:%M:%S") if hasattr(value, "strftime") else value or None
+				)
+
+		return super().before_db_update(changes)
 
 	def delete(self, *args, **kwargs):
 		pass

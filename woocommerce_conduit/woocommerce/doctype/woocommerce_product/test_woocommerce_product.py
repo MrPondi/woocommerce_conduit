@@ -174,3 +174,93 @@ class TestListRequests(IntegrationTestCase):
 		self.assertEqual(
 			{product["woocommerce_server"] for product in products}, {"one.example.com", "two.example.com"}
 		)
+
+
+class FakeWritableWooCommerceAPI(FakeWooCommerceAPI):
+	def __init__(self, server: str):
+		super().__init__(server, [])
+		self.puts = []
+
+	def put(self, endpoint, data, **kwargs):
+		self.puts.append((endpoint, data))
+		return MagicMock(status_code=200, json=lambda: {"id": 1, "date_modified": "2025-02-01T10:00:00"})
+
+
+class TestProductWrites(IntegrationTestCase):
+	@staticmethod
+	def record(**values) -> dict:
+		return {
+			"doctype": "WooCommerce Product",
+			"name": "one.example.com~1",
+			"woocommerce_server": "one.example.com",
+			"woocommerce_id": "1",
+			"woocommerce_name": "Mug",
+			"type": "simple",
+			"regular_price": "10",
+			"sale_price": "",
+			"weight": "1",
+			"length": "10",
+			"width": "5",
+			"height": "8",
+			"description": "<p>A mug</p>",
+			"images": '[{"src": "https://one.example.com/mug.jpg"}]',
+			"attributes": "[]",
+			"woocommerce_date_modified": "2025-01-02T10:00:00",
+			**values,
+		}
+
+	def save(self, before: dict, **changes):
+		api = FakeWritableWooCommerceAPI("one.example.com")
+		with patch.object(WooCommerceProduct, "_init_api", return_value=[api]):
+			product: WooCommerceProduct = frappe.get_doc(self.record(**before))  # type: ignore
+			product._doc_before_save = frappe.get_doc(self.record(**before))
+			product.update(changes)
+			product.db_update()
+		return product, api
+
+	def test_only_changed_prices_and_stock_are_sent(self):
+		product, api = self.save({}, regular_price=12.5, stock_quantity="4")
+
+		self.assertEqual(api.puts, [("products/1", {"regular_price": "12.5", "stock_quantity": 4})])
+		self.assertEqual(product.woocommerce_date_modified, "2025-02-01T10:00:00")
+
+	def test_the_shops_own_fields_are_never_sent(self):
+		_product, api = self.save(
+			{},
+			woocommerce_name="Big Mug",
+			description="<p>Another mug</p>",
+			sku="MUG-1",
+			width=6,
+			images="[]",
+			price=99,
+		)
+
+		self.assertEqual(api.puts, [])
+
+	def test_nothing_is_sent_when_only_the_representation_differs(self):
+		_product, api = self.save({}, regular_price=10.0, sale_price=0)
+
+		self.assertEqual(api.puts, [])
+
+	def test_a_sale_price_of_zero_clears_the_sale(self):
+		_product, api = self.save({"sale_price": "8"}, sale_price=0)
+
+		self.assertEqual(api.puts[0][1], {"sale_price": ""})
+
+	def test_variations_are_written_through_their_parent(self):
+		_product, api = self.save({"type": "variation", "parent_id": 7}, regular_price=11)
+
+		self.assertEqual(api.puts[0][0], "products/7/variations/1")
+
+	def test_a_variable_products_price_is_not_sent(self):
+		_product, api = self.save({"type": "variable"}, regular_price=20, stock_quantity=3)
+
+		self.assertEqual(api.puts[0][1], {"stock_quantity": 3})
+
+	def test_long_names_and_unknown_statuses_do_not_block_a_price_update(self):
+		product, _api = self.save({})
+		product.woocommerce_name = "M" * 200
+		product.status = "future"
+
+		product._validate_length()
+		product._validate_selects()

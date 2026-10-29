@@ -148,8 +148,7 @@ doc_events = {
 		"on_submit": "woocommerce_conduit.tasks.sync_sales_orders.run_sales_order_sync_from_hook"
 	},
 	"Item": {
-		"on_update": "woocommerce_conduit.tasks.sync_items.run_item_sync_from_hook",
-		"after_insert": "woocommerce_conduit.tasks.sync_items.run_item_sync_from_hook",
+		"validate": "woocommerce_conduit.tasks.sync_items.validate_primary_connection",
 	},
 }
 

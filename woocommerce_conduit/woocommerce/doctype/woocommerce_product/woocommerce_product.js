@@ -78,7 +78,7 @@ frappe.ui.form.on("WooCommerce Product", {
 		// Sync this WooCommerce Product
 		frappe.dom.freeze(__("Sync Product with ERPNext..."));
 		frappe.call({
-			method: "woocommerce_conduit.tasks.sync_items.run_item_sync",
+			method: "woocommerce_conduit.tasks.sync_items.sync_woocommerce_product",
 			args: {
 				woocommerce_product_name: frm.doc.name,
 			},

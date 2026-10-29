@@ -30,8 +30,9 @@ Lint/format (run in the app dir): `pre-commit run --all-files`. It uses ruff (li
 
 ### Virtual doctypes backed by the WooCommerce REST API
 
-`WooCommerce Product` and `WooCommerce Order` are **virtual doctypes**. They have no DB tables. They subclass `WooCommerceDocument` in [woocommerce/woocommerce_api.py](woocommerce_conduit/woocommerce/woocommerce_api.py), which implements `load_from_db`, `get_list_of_records`, `get_count_of_records`, and no-op `db_insert`/`db_update`/`delete`.
+`WooCommerce Product` and `WooCommerce Order` are **virtual doctypes**. They have no DB tables. They subclass `WooCommerceDocument` in [woocommerce/woocommerce_api.py](woocommerce_conduit/woocommerce/woocommerce_api.py), which implements `load_from_db`, `get_list_of_records`, `get_count_of_records` and `db_update`. `db_insert`/`delete` are no-ops.
 
+- `db_update` PUTs only the fields that differ from `_doc_before_save` (which `save()` re-fetches from WooCommerce), filtered and shaped by the subclass's `before_db_update`, and stores the returned `date_modified`. `WooCommerce Product` only ever writes the price and stock fields in `writable_fields`. `WooCommerce Order` overrides it with a no-op. Frappe's length/select validators are disabled on these doctypes, because WooCommerce decides what is valid.
 - A record's `name` is `"{server_domain}~{wc_id}"` (`WC_RESOURCE_DELIMITER = "~"`). Use `generate_woocommerce_record_name_from_domain_and_id` and `get_domain_and_id_from_woocommerce_record_name` rather than building or parsing it by hand.
 - `WooCommerceDocument.__init__` builds one `WooCommerceAPI` client per **enabled** `WooCommerce Server` and throws `SyncDisabledError` if none exist. Queries fan out across all of those servers.
 - Each subclass declares `resource`, `field_setter_map`, `field_getter_map` (Frappe fieldname → WC fields it needs), `orderby_map` and `mandatory_wc_fields`. Only the WC fields needed for the requested Frappe fields are requested (`_fields`). When you add a field to a virtual doctype, update these maps so it is actually fetched.
@@ -42,11 +43,12 @@ Lint/format (run in the app dir): `pre-commit run --all-files`. It uses ruff (li
 ### Sync layer (`tasks/`)
 
 - `tasks/sync.py` has `SynchroniseWooCommerce`, the base class. It loads all `WooCommerce Server` docs.
-- `sync_items.py` has `SynchroniseItem`, which does a two-way ERPNext Item ↔ WC product sync. `sync_sales_orders.py` and `sync_item_prices.py` follow the same pattern.
-- Sync direction and conflict handling use a **sync hash**: `Item WooCommerce Server.woocommerce_last_sync_hash` stores the WC `date_modified` from the last sync. Changing how it is written affects loop prevention.
+- `sync_items.py` has `SynchroniseItem`, which syncs WC products **into** ERPNext Items, one way. One Item can be linked to several shops, and each shop keeps its own name, description, etc., so Item fields are never written back to WooCommerce. Only prices (`sync_item_prices.py`) and, later, stock go from ERPNext to WooCommerce. Only the **primary** connection (`Item WooCommerce Server.is_primary`, the first row when none is marked, see `get_primary_connection`) updates an existing Item. The other shops only record their sync hash. An Item `validate` hook allows one primary and marks the first row when none is. `sync_sales_orders.py` and `sync_item_prices.py` follow the same pattern.
+- Change detection uses a **sync hash**: `Item WooCommerce Server.woocommerce_last_sync_hash` stores the WC `date_modified` from the last sync. Changing how it is written affects loop prevention. It is a Datetime field, so compare it with `get_datetime` on both sides. A product is only pulled when its `date_modified_gmt` (converted to the system timezone) is newer than `Item.modified`, so edits made in ERPNext since aren't overwritten.
 - Documents created or updated by the sync set `doc.flags.created_by_sync` so the doc-event hooks don't re-trigger a sync. Keep that guard on any new hook.
 - The sync entry points are:
-  - `doc_events` in [hooks.py](woocommerce_conduit/hooks.py): `Item` on_update/after_insert, `Sales Order` on_submit. Each enqueues a background job per document. There is no queue or batching layer.
+  - `doc_events` in [hooks.py](woocommerce_conduit/hooks.py): `Sales Order` on_submit, which enqueues a background job per document. There is no Item hook, as Item changes don't go to WooCommerce. There is no queue or batching layer.
+  - Jobs get names (`item_code`, `woocommerce_product_name`), never documents, and load the product themselves.
   - Scheduler: `hourly_long` (orders and products modified since the last sync; the cursor is stored in `WooCommerce Settings`) and `daily_long` (item prices).
   - Webhook: `order_created` in [endpoint.py](woocommerce_conduit/endpoint.py) is guest-whitelisted and validated by an HMAC-SHA256 signature against the server's `secret`. It then runs as the server's `creation_user`.
 
