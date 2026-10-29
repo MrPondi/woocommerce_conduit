@@ -14,9 +14,16 @@ bench install-app woocommerce_conduit
 
 ### TODO:
 
-- [ ] Add suport for args.order_by
-- [ ] Migrate woocomerce server secret key to password
-- [ ] Woocommerce webhooks
+- [ ] Stock level sync to WooCommerce (daily job, plus hooks on Stock Entry, Stock Reconciliation, Sales Invoice and Delivery Note)
+- [ ] Warehouse mapping on WooCommerce Server, to choose which warehouses count towards WooCommerce stock
+- [ ] Item Price hook, to push price changes immediately instead of waiting for the daily job
+- [ ] Migrate the WooCommerce Server webhook secret to a Password field
+- [ ] More webhooks: only `order_created` is handled so far
+- [ ] Field value transforms and order item field mapping
+- [ ] Sales Order and Item form buttons (client scripts and Sales Order override)
+- [ ] Batch API: sync queue, batch log and flush job, to group updates into WooCommerce batch calls
+- [ ] Unit and integration tests for item, price and order sync
+- [ ] Setup and usage documentation
 
 ### Contributing
 
