@@ -43,10 +43,6 @@
   "shipping_state",
   "shipping_postcode",
   "shipping_country",
-  "maps_section",
-  "billing_map",
-  "column_break_gyon",
-  "shipping_map",
   "section_break_jnkf",
   "customer_id",
   "customer_ip_address",
@@ -517,27 +513,6 @@
    "read_only": 1
   },
   {
-   "fieldname": "maps_section",
-   "fieldtype": "Section Break",
-   "label": "Maps"
-  },
-  {
-   "fieldname": "billing_map",
-   "fieldtype": "Geolocation",
-   "label": "Billing",
-   "read_only": 1
-  },
-  {
-   "fieldname": "column_break_gyon",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "shipping_map",
-   "fieldtype": "Geolocation",
-   "label": "Shipping",
-   "read_only": 1
-  },
-  {
    "fieldname": "section_break_jnkf",
    "fieldtype": "Section Break"
   },
@@ -552,7 +527,7 @@
  "index_web_pages_for_search": 1,
  "is_virtual": 1,
  "links": [],
- "modified": "2026-10-29 00:54:05.829253",
+ "modified": "2026-10-30 10:36:15.310840",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Order",

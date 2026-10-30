@@ -5,7 +5,6 @@ import json
 
 import frappe
 import frappe.utils
-import requests
 from frappe import _dict
 from frappe.model.document import Document
 from frappe.utils import flt
@@ -35,9 +34,7 @@ WC_ORDER_STATUS_MAPPING_REVERSE = {v: k for k, v in WC_ORDER_STATUS_MAPPING.item
 # `billing_<key>` and `shipping_<key>` fields
 ADDRESS_PREFIXES = ("billing", "shipping")
 # Prefixed fields that are not part of the nested address
-NON_ADDRESS_FIELDS = {"shipping_total", "shipping_tax", "shipping_lines", "billing_map", "shipping_map"}
-GEOCODER_URL = "https://nominatim.openstreetmap.org/search"
-GEOCODE_CACHE_SECONDS = 60 * 60 * 24 * 30
+NON_ADDRESS_FIELDS = {"shipping_total", "shipping_tax", "shipping_lines"}
 
 
 def get_address_data(order, prefix: str) -> dict:
@@ -48,75 +45,6 @@ def get_address_data(order, prefix: str) -> dict:
 		for key, value in data.items()
 		if key.startswith(f"{prefix}_") and key not in NON_ADDRESS_FIELDS
 	}
-
-
-def geocode_address(address: dict) -> tuple[float, float] | None:
-	"""
-	Look up the coordinates of an address, caching the result (also when nothing was found)
-
-	Returns:
-		(latitude, longitude), or None when the address can't be located
-	"""
-	query = ", ".join(
-		part.strip()
-		for part in (
-			address.get("address_1"),
-			address.get("address_2"),
-			f"{address.get('postcode') or ''} {address.get('city') or ''}",
-			address.get("state"),
-			address.get("country"),
-		)
-		if part and part.strip()
-	)
-	if not address.get("address_1") and not address.get("city"):
-		return None
-
-	cache_key = f"wc_geocode_{frappe.generate_hash(query, 16)}"
-	cached = frappe.cache.get_value(cache_key)
-	if cached:
-		return tuple(cached) if cached != "not_found" else None
-
-	params = {"format": "jsonv2", "limit": 1, "q": query}
-	if country := address.get("country"):
-		params["countrycodes"] = country.lower()
-	try:
-		response = requests.get(
-			GEOCODER_URL,
-			params=params,
-			headers={"User-Agent": "woocommerce_conduit (ERPNext)"},
-			timeout=5,
-		)
-		response.raise_for_status()
-		results = response.json()
-	except Exception as e:
-		# Not cached, so it is retried the next time the order is opened
-		frappe.log_error("WooCommerce Geocode Error", f"Geocoding '{query}' failed: {e!s}")
-		return None
-
-	if not results:
-		frappe.cache.set_value(cache_key, "not_found", expires_in_sec=GEOCODE_CACHE_SECONDS)
-		return None
-
-	coordinates = (float(results[0]["lat"]), float(results[0]["lon"]))
-	frappe.cache.set_value(cache_key, list(coordinates), expires_in_sec=GEOCODE_CACHE_SECONDS)
-	return coordinates
-
-
-def to_geolocation_value(coordinates: tuple[float, float]) -> str:
-	"""The GeoJSON the Geolocation field (leaflet widget) expects. GeoJSON is longitude first."""
-	latitude, longitude = coordinates
-	return json.dumps(
-		{
-			"type": "FeatureCollection",
-			"features": [
-				{
-					"type": "Feature",
-					"properties": {},
-					"geometry": {"type": "Point", "coordinates": [longitude, latitude]},
-				}
-			],
-		}
-	)
 
 
 class WooCommerceOrder(WooCommerceDocument):
@@ -137,7 +65,6 @@ class WooCommerceOrder(WooCommerceDocument):
 		billing_email: DF.Data | None
 		billing_first_name: DF.Data | None
 		billing_last_name: DF.Data | None
-		billing_map: DF.Geolocation | None
 		billing_phone: DF.Data | None
 		billing_postcode: DF.Data | None
 		billing_state: DF.Data | None
@@ -169,13 +96,27 @@ class WooCommerceOrder(WooCommerceDocument):
 		shipping_first_name: DF.Data | None
 		shipping_last_name: DF.Data | None
 		shipping_lines: DF.JSON
-		shipping_map: DF.Geolocation | None
 		shipping_phone: DF.Data | None
 		shipping_postcode: DF.Data | None
 		shipping_state: DF.Data | None
 		shipping_tax: DF.Currency
 		shipping_total: DF.Currency
-		status: DF.Literal["pending", "on-hold", "failed", "cancelled", "processing", "refunded", "completed", "ready-pickup", "pickup", "delivered", "processing-lp", "checkout-draft", "gplsquote-req", "trash"]
+		status: DF.Literal[
+			"pending",
+			"on-hold",
+			"failed",
+			"cancelled",
+			"processing",
+			"refunded",
+			"completed",
+			"ready-pickup",
+			"pickup",
+			"delivered",
+			"processing-lp",
+			"checkout-draft",
+			"gplsquote-req",
+			"trash",
+		]
 		tax_lines: DF.JSON | None
 		total: DF.Currency
 		total_tax: DF.Currency
@@ -190,10 +131,6 @@ class WooCommerceOrder(WooCommerceDocument):
 	doctype = "WooCommerce Order"
 	resource = "orders"
 	field_setter_map = {"woocommerce_name": "name", "woocommerce_id": "id"}  # noqa: RUF012
-	field_getter_map = {  # noqa: RUF012
-		"billing_map": ["billing"],
-		"shipping_map": ["shipping"],
-	}
 
 	@classmethod
 	def get_wc_fields(cls, frappe_fields=None, extra=None) -> str:
@@ -227,10 +164,6 @@ class WooCommerceOrder(WooCommerceDocument):
 		for fieldname in ("line_items", "shipping_lines"):
 			if isinstance(record.get(fieldname), str):
 				record[fieldname] = json.dumps(json.loads(record[fieldname]), indent=2, ensure_ascii=False)
-		# Geocoding is a network call, so only the form gets the maps, not the list
-		for prefix in ADDRESS_PREFIXES:
-			if coordinates := geocode_address(get_address_data(record, prefix)):
-				record[f"{prefix}_map"] = to_geolocation_value(coordinates)
 		return record
 
 	def db_insert(self, *args, **kwargs):
