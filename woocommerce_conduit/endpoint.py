@@ -8,7 +8,7 @@ import frappe
 from frappe import _
 from werkzeug.wrappers import Response
 
-from woocommerce_conduit.tasks.sync_sales_orders import run_sales_order_sync
+from woocommerce_conduit.tasks.sync_sales_orders import enqueue_sales_order_sync
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	WooCommerceServer,
 )
@@ -63,7 +63,7 @@ def order_created(*args, **kwargs):
 		woocommerce_order_name = (
 			f"{parse_domain_from_url(webhook_source_url)}{WC_RESOURCE_DELIMITER}{order['id']}"  # type: ignore
 		)
-		frappe.enqueue(run_sales_order_sync, queue="long", woocommerce_order_name=woocommerce_order_name)
+		enqueue_sales_order_sync(woocommerce_order_name=woocommerce_order_name)
 		return Response(status=HTTPStatus.OK)
 	else:
 		return Response(response=_("Event not supported"), status=HTTPStatus.BAD_REQUEST)

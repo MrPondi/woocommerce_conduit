@@ -324,7 +324,10 @@ fixtures = [
 					"Sales Order-woocommerce_payment_entry",
 					"Sales Order-woocommerce_last_sync_hash",
 					"Sales Order-woocommerce_customer_note",
-					"Sales Order-custom_woocommerce_sync",
+					"Sales Order-woocommerce_sales_invoice",
+					"Sales Order-woocommerce_sync_issue",
+					"Sales Order Item-woocommerce_id",
+					"Sales Order Item-woocommerce_line_item_id",
 				),
 			]
 		],

@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -16,6 +17,7 @@ from frappe.contacts.doctype.address.address import Address
 from frappe.contacts.doctype.contact.contact import Contact
 from frappe.utils import get_datetime
 from frappe.utils.data import cstr, now
+from frappe.utils.synchronization import filelock
 
 from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce
@@ -36,6 +38,9 @@ from woocommerce_conduit.woocommerce.woocommerce_api import (
 	WooCommerceDocument,
 	generate_woocommerce_record_name_from_domain_and_id,
 )
+
+# The most orders one sync looks at, fetched 100 per request
+MAX_ORDERS_PER_SYNC = 10_000
 
 
 class SyncedOrderItem(SalesOrderItem):
@@ -62,40 +67,62 @@ class WooCustomer(Customer):
 	woocommerce_identifier: str
 
 
+def enqueue_sales_order_sync(
+	woocommerce_order_name: str | None = None, sales_order_name: str | None = None
+) -> None:
+	"""
+	Sync an order in the background. The job gets names and loads the documents itself. A job that is
+	still waiting in the queue will pick up everything that changed, so a second one is dropped.
+	"""
+	frappe.enqueue(
+		run_sales_order_sync,
+		queue="long",
+		timeout=300,
+		job_id=f"woocommerce_order_sync::{woocommerce_order_name or sales_order_name}",
+		deduplicate=True,
+		enqueue_after_commit=True,
+		woocommerce_order_name=woocommerce_order_name,
+		sales_order_name=sales_order_name,
+	)
+
+
 def run_sales_order_sync_from_hook(doc, method):
 	"""
-	Intended to be triggered by a Document Controller hook from Item
+	Intended to be triggered by a Document Controller hook from Sales Order
 	"""
-	if doc.doctype == "Sales Order" and not doc.flags.get("created_by_sync", None) and doc.woocommerce_server:
+	if (
+		doc.doctype == "Sales Order"
+		and not doc.flags.get("created_by_sync", None)
+		and doc.woocommerce_server
+		and doc.woocommerce_id
+	):
 		frappe.msgprint(
 			_("Background sync to WooCommerce triggered for {0} {1}").format(frappe.bold(doc.name), method),
 			indicator="blue",
 			alert=True,
 		)
-		frappe.enqueue(run_sales_order_sync, queue="long", sales_order_name=doc.name)
+		enqueue_sales_order_sync(sales_order_name=doc.name)
 
 
 def sync_woocommerce_orders_modified_since(date_time_from=None):
 	"""
-	Get list of WooCommerce orders modified since date_time_from
+	Sync the WooCommerce orders modified since date_time_from (by default since the last run)
 	"""
 	settings: WooCommerceSettings = frappe.get_cached_doc("WooCommerce Settings")  # type: ignore
 
 	if not date_time_from:
 		date_time_from = getattr(settings, "wc_last_sync_date_orders", None)
 
-	wc_orders = get_list_of_wc_orders(
-		date_time_from=date_time_from, status="pending,processing,on-hold,completed,cancelled"
-	)
-	for wc_order in wc_orders:
-		try:
-			run_sales_order_sync(woocommerce_order=wc_order, enqueue=True)
-		# Skip orders with errors, as these exceptions will be logged
-		except Exception as e:
-			frappe.log_error("Order sync error", f"There was an exception when syncing an order: {e!s}")
+	# Taken before fetching, so an order that changes while this runs is found by the next run. If
+	# WooCommerce can't be reached this raises and the cursor stays where it was.
+	sync_started = now()
+	for order_name in get_names_of_wc_orders(
+		date_time_from=date_time_from, status=["pending", "processing", "on-hold", "completed", "cancelled"]
+	):
+		enqueue_sales_order_sync(woocommerce_order_name=order_name)
 
 	settings.reload()
-	settings.wc_last_sync_date_orders = now()
+	settings.wc_last_sync_date_orders = sync_started
 	settings.flags.ignore_mandatory = True
 	settings.save()
 
@@ -111,9 +138,9 @@ def run_sales_order_sync(
 	"""
 	Synchronize an ERPNext Sales Order with its corresponding WooCommerce Order.
 
-	This function serves as a central dispatcher for item synchronization operations.
-	It can be initiated from either the ERPNext side (using sales_order_name/sales_order) or
-	the WooCommerce side (using woocommerce_order_name/woocommerce_order).
+	It can be initiated from either the ERPNext side (a Sales Order) or the WooCommerce side (a
+	WooCommerce Order). Either is given by name, or as a document of which only the name is used: the
+	sync loads current copies of both itself.
 
 	Parameters:
 	    sales_order_name: ERPNext Sales Order name to synchronize
@@ -123,114 +150,33 @@ def run_sales_order_sync(
 	    enqueue: Whether to process synchronization in background
 
 	Returns:
-	    tuple: (ERPNext Sales Order, WooCommerce Order) after synchronization
+	    tuple: (ERPNext Sales Order, WooCommerce Order) after synchronization, (None, None) when enqueued
 
 	Raises:
 	    ValueError: If no valid input parameters are provided
-	    ValidationError: If no WooCommerce Servers are defined for the order
+	    ValidationError: If the Sales Order is not linked to a WooCommerce Order
 	"""
-	# Initialize sync object reference
-	sync = None
-	erpnext_order = sales_order  # type: ignore
-	wc_order = woocommerce_order
+	woocommerce_order_name = woocommerce_order_name or (woocommerce_order.name if woocommerce_order else None)
+	sales_order_name = sales_order_name or (sales_order.name if sales_order else None)
 
-	# Validate inputs, at least one of the parameters should be provided
-	if not any([sales_order_name, erpnext_order, woocommerce_order_name, wc_order]):
+	if not (woocommerce_order_name or sales_order_name):
 		raise ValueError(
 			"At least one of sales_order_name, sales_order, woocommerce_order_name, woocommerce_order is required"
 		)
 
-	# Case 1: Sync initiated from WooCommerce side
-	if woocommerce_order_name or wc_order:
-		# Check if we need to load the order from the database
-		load_full_order = False
-		lookup_name = None
-
-		# If only name provided, we need to load the order
-		if not wc_order and woocommerce_order_name:
-			load_full_order = True
-			lookup_name = woocommerce_order_name
-		# If order provided but might be a partial/list view order
-		elif wc_order:
-			lookup_name = wc_order.get("name")
-			# Check for essential fields that would only exist in a full order
-			# List view orders typically only have name, id, date_created, date_modified, status, number
-			# Full orders have many more fields like created_via, customer_id, billing, etc.
-			required_full_fields = ["created_via", "customer_id", "billing_first_name", "shipping_first_name", "line_items"]
-
-			# If any of these fields are missing or None, we need to reload
-			if isinstance(wc_order, dict):
-				load_full_order = any(wc_order.get(field) is None for field in required_full_fields)
-			else:
-				load_full_order = any(
-					getattr(wc_order, field, None) is None for field in required_full_fields
-				)
-
-		if load_full_order:
-			try:
-				# Load the full order with all fields from the database
-				full_wc_order: WooCommerceOrder = frappe.get_doc(
-					{"doctype": "WooCommerce Order", "name": lookup_name}
-				)  # type: ignore
-				full_wc_order.load_from_db()
-
-				# Validate WooCommerce Order has required fields
-				if not full_wc_order.woocommerce_server or not full_wc_order.woocommerce_id:
-					raise ValueError(
-						f"WooCommerce Order {full_wc_order.name} is missing required fields: "
-						f"server={full_wc_order.woocommerce_server}, id={full_wc_order.woocommerce_id}\n\nWC ORDER:\n{full_wc_order.as_dict()}"
-					)
-
-				wc_order = full_wc_order
-
-			except frappe.DoesNotExistError:
-				frappe.throw(_(f"WooCommerce Order {lookup_name} not found"))
-
-		# Initialize synchronization
-		sync = SynchroniseSalesOrder(woocommerce_order=wc_order)
-
-		# Execute sync now or in background
-		if enqueue:
-			frappe.enqueue(sync.run, queue="long", timeout=300, job_name=f"Sync WC Order {wc_order.name}")  # type: ignore
-		else:
-			sync.run()
-
-	# Case 2: Sync initiated from ERPNext side
-	elif sales_order_name or erpnext_order:
-		# Load item if only the name was provided
-		if not erpnext_order and sales_order_name:
-			try:
-				erpnext_order: SyncedOrder = frappe.get_doc("Sales Order", sales_order_name)  # type: ignore
-			except frappe.DoesNotExistError:
-				frappe.throw(_(f"Sales Order {sales_order_name} not found"))
-
-		# Validate item has WooCommerce servers configured
-		if not erpnext_order.woocommerce_server:
-			frappe.throw(
-				_(f"No WooCommerce Server defined for Sales Order {erpnext_order.name or sales_order_name}")
-			)
-
-		# Initialize synchronization for this server
-		sync = SynchroniseSalesOrder(sales_order=erpnext_order)
-
-		# Execute sync now or in background
-		if enqueue:
-			frappe.enqueue(
-				sync.run,
-				queue="long",
-				timeout=300,
-				job_name=f"Sync Order {erpnext_order.name}",
-			)
-		else:
-			sync.run()
-
-	# Return the synchronize sales order and woocommerce order
-	if sync:
-		return (
-			sync.sales_order if sync.sales_order else None,
-			sync.woocommerce_order if sync.woocommerce_order else None,
+	if enqueue:
+		enqueue_sales_order_sync(
+			woocommerce_order_name=woocommerce_order_name,
+			sales_order_name=None if woocommerce_order_name else sales_order_name,
 		)
-	return None, None
+		return None, None
+
+	sync = SynchroniseSalesOrder(
+		sales_order_name=None if woocommerce_order_name else sales_order_name,
+		woocommerce_order_name=woocommerce_order_name,
+	)
+	sync.run()
+	return sync.sales_order, sync.woocommerce_order
 
 
 class SynchroniseSalesOrder(SynchroniseWooCommerce):
@@ -240,39 +186,60 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 	def __init__(
 		self,
-		sales_order: SyncedOrder | None = None,
-		woocommerce_order: WooCommerceOrder | None = None,
+		sales_order_name: str | None = None,
+		woocommerce_order_name: str | None = None,
 	) -> None:
 		super().__init__()
-		self.sales_order = sales_order  # type: ignore
-		self.woocommerce_order = woocommerce_order  # type: ignore
+		self.sales_order_name = sales_order_name
+		self.woocommerce_order_name = woocommerce_order_name
+		self.sales_order: SyncedOrder | None = None
+		self.woocommerce_order: WooCommerceOrder | None = None
 		self.settings: WooCommerceSettings = frappe.get_cached_doc("WooCommerce Settings")  # type: ignore
+
+	def get_lock_name(self) -> str:
+		"""
+		One lock per WooCommerce Order, whichever side the sync starts from
+		"""
+		record_name = self.woocommerce_order_name
+		if not record_name:
+			link = frappe.db.get_value(
+				"Sales Order", self.sales_order_name, ["woocommerce_server", "woocommerce_id"], as_dict=True
+			)
+			if not link:
+				frappe.throw(_("Sales Order {0} not found").format(self.sales_order_name))
+			if not (link.woocommerce_server and link.woocommerce_id):
+				frappe.throw(
+					_("Sales Order {0} is not linked to a WooCommerce Order").format(self.sales_order_name)
+				)
+			record_name = generate_woocommerce_record_name_from_domain_and_id(
+				link.woocommerce_server, link.woocommerce_id
+			)
+		return "woocommerce_order_" + re.sub(r"[^\w.~-]", "_", record_name)
 
 	def run(self):
 		"""
-		Run synchronisation
+		Run synchronisation. The documents are loaded inside the lock, so the webhook, the hourly sync and
+		the Sales Order hook can't all create the Sales Order of the same WooCommerce Order.
 		"""
-		try:
-			self.get_corresponding_sales_order_or_woocommerce_order()
-			self.sync_wc_order_with_erpnext_order()
-		except Exception as err:
+		with filelock(self.get_lock_name(), timeout=120):
 			try:
-				woocommerce_order_dict = (
-					self.woocommerce_order.as_dict()
-					if isinstance(self.woocommerce_order, WooCommerceOrder)
-					else self.woocommerce_order
+				self.load_orders()
+				self.get_corresponding_sales_order_or_woocommerce_order()
+				self.sync_wc_order_with_erpnext_order()
+			except Exception:
+				error_message = (
+					f"{frappe.get_traceback()}\n\n"
+					f"Sales Order Data: \n{describe_doc(self.sales_order)}\n\n"
+					f"WC Order Data \n{describe_doc(self.woocommerce_order)})"
 				)
-				sales_order_dict = (
-					self.sales_order.as_dict()
-					if isinstance(self.sales_order, SyncedOrder)
-					else self.sales_order
-				)
-			except ValidationError:
-				woocommerce_order_dict = self.woocommerce_order
-				sales_order_dict = self.sales_order
-			error_message = f"{frappe.get_traceback()}\n\nSales Order Data: \n{str(sales_order_dict) if self.sales_order else ''}\n\nWC Order Data \n{str(woocommerce_order_dict) if self.woocommerce_order else ''})"
-			frappe.log_error("WooCommerce Error", error_message)
-			raise err
+				frappe.log_error("WooCommerce Error", error_message)
+				raise
+
+	def load_orders(self):
+		if self.woocommerce_order_name:
+			self.woocommerce_order = load_wc_order(self.woocommerce_order_name)
+		else:
+			self.sales_order = frappe.get_doc("Sales Order", self.sales_order_name)  # type: ignore
 
 	def get_corresponding_sales_order_or_woocommerce_order(self):
 		"""
@@ -281,7 +248,12 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 		Assumes that both exist, and that the Sales Order is linked to the WooCommerce Order
 		"""
-		if self.sales_order and not self.woocommerce_order and self.sales_order.woocommerce_id:
+		if self.sales_order and not self.woocommerce_order:
+			if not self.sales_order.woocommerce_server or not self.sales_order.woocommerce_id:
+				frappe.throw(
+					_("Sales Order {0} is not linked to a WooCommerce Order").format(self.sales_order.name)
+				)
+
 			# Validate that this Sales Order's WooCommerce Server has sync enabled
 			wc_server: WooCommerceServer = frappe.get_cached_doc(
 				"WooCommerce Server",
@@ -290,16 +262,11 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			if not wc_server.enabled:
 				raise SyncDisabledError(wc_server)
 
-			wc_orders = get_list_of_wc_orders(sales_order=self.sales_order)
-
-			if not wc_orders:
-				raise ValueError(
-					f"No WooCommerce Order found with ID {self.sales_order.woocommerce_id} on {self.sales_order.woocommerce_server}"
+			self.woocommerce_order = load_wc_order(
+				generate_woocommerce_record_name_from_domain_and_id(
+					self.sales_order.woocommerce_server, self.sales_order.woocommerce_id
 				)
-			self.woocommerce_order: WooCommerceOrder = frappe.get_doc(
-				{"doctype": "WooCommerce Order", "name": wc_orders[0]["name"]}  # type: ignore
 			)
-			self.woocommerce_order.load_from_db()
 
 		if self.woocommerce_order and not self.sales_order:
 			self.get_erpnext_sales_order()
@@ -343,10 +310,9 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			# create missing order in ERPNext
 			self.create_sales_order()
 		elif self.sales_order and self.woocommerce_order:
-			# both exist, check sync hash
-			if (
-				self.woocommerce_order.woocommerce_date_modified
-				!= self.sales_order.woocommerce_last_sync_hash
+			# both exist, WooCommerce only wins when it changed since the last pull or push
+			if wc_order_changed(
+				self.woocommerce_order.woocommerce_date_modified, self.sales_order.woocommerce_last_sync_hash
 			):
 				self.update_sales_order()
 
@@ -365,20 +331,16 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 		# Ignore cancelled Sales Orders
 		if self.sales_order.docstatus != 2:
-			so_dirty = False
-
 			# Update the woocommerce_status field if necessary
 			wc_order_status = WC_ORDER_STATUS_MAPPING_REVERSE[self.woocommerce_order.status]
 			if self.sales_order.woocommerce_status != wc_order_status:
 				self.sales_order.woocommerce_status = wc_order_status
-				so_dirty = True
 
 			if (
 				self.woocommerce_order.customer_note
 				and self.sales_order.woocommerce_customer_note != self.woocommerce_order.customer_note
 			):
 				self.sales_order.woocommerce_customer_note = self.woocommerce_order.customer_note
-				so_dirty = True
 
 			# Update the payment_method_title field if necessary, use the payment method ID
 			# if the title field is too long
@@ -394,16 +356,14 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 			if payment_method and self.sales_order.woocommerce_payment_method != payment_method:
 				self.sales_order.woocommerce_payment_method = payment_method
-				so_dirty = True
 
 			if not self.sales_order.woocommerce_payment_entry:
-				if self.create_and_link_payment_entry(self.woocommerce_order, self.sales_order):
-					so_dirty = True
+				self.create_and_link_payment_entry(self.woocommerce_order, self.sales_order)
 
-			if so_dirty:
-				self.sales_order.woocommerce_last_sync_hash = self.woocommerce_order.woocommerce_date_modified
-				self.sales_order.flags.created_by_sync = True
-				self.sales_order.save()
+			# Always note what was seen, so an unchanged WooCommerce Order isn't looked at again
+			self.sales_order.woocommerce_last_sync_hash = self.woocommerce_order.woocommerce_date_modified
+			self.sales_order.flags.created_by_sync = True
+			self.sales_order.save()
 
 	def create_and_link_payment_entry(self, wc_order: WooCommerceOrder, sales_order: SyncedOrder) -> bool:
 		"""
@@ -924,72 +884,85 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		return address
 
 
-def get_list_of_wc_orders(
-	sales_order: SyncedOrder | None = None,
-	date_time_from: datetime | None = None,
-	status: str | None = None,
-) -> list[WooCommerceOrder]:
+def wc_order_changed(woocommerce_date_modified, last_sync_hash) -> bool:
 	"""
-	Fetches a list of WooCommerce Orders within a specified date range or linked with a Sales Order.
-
-	This function efficiently retrieves WooCommerce orders using the built-in pagination
-	and caching mechanisms of the WooCommerceOrder class.
-
-	Args:
-		sales_order: Optional ERPNext order to sync with WooCommerce
-		date_time_from: Optional datetime to filter orders modified after this time
-
-	Returns:
-		List of WooCommerceProduct documents
+	Whether WooCommerce changed the order since it was last pulled or pushed. The hash is the
+	`date_modified` WooCommerce had then, so both sides come from WooCommerce and the clock of
+	ERPNext (or when the Sales Order was last saved) plays no part.
 	"""
-	# Build filters
-	filters = []
-	servers = None
+	if not last_sync_hash:
+		return True
+	return get_datetime(woocommerce_date_modified) > get_datetime(last_sync_hash)
 
-	settings: WooCommerceSettings = frappe.get_cached_doc("WooCommerce Settings")  # type: ignore
-	minimum_creation_date = settings.minimum_creation_date
 
-	# Build filters
-	if date_time_from:
-		filters.append(["WooCommerce Order", "date_modified", ">", date_time_from])
-	if minimum_creation_date:
-		filters.append(["WooCommerce Order", "date_created", ">", minimum_creation_date])
-	if status:
-		filters.append(["WooCommerce Order", "status", "=", status])
-	if sales_order:
-		if not hasattr(sales_order, "woocommerce_id") or not sales_order.woocommerce_id:
-			frappe.log_error(
-				"WooCommerce Sync Error", f"Item {sales_order.name} has no WooCommerce server configuration"
-			)
-			return []
+def load_wc_order(woocommerce_order_name: str) -> WooCommerceOrder:
+	"""
+	Load the full WooCommerce Order, as the list view only has the fields it asked for
+	"""
+	wc_order: WooCommerceOrder = frappe.get_doc(
+		{"doctype": "WooCommerce Order", "name": woocommerce_order_name}
+	)  # type: ignore
+	wc_order.load_from_db()
 
-		filters.append(["WooCommerce Order", "id", "=", sales_order.woocommerce_id])
-		servers = [sales_order.woocommerce_server]
+	if not wc_order.woocommerce_server or not wc_order.woocommerce_id:
+		raise ValueError(
+			f"WooCommerce Order {wc_order.name} is missing required fields: "
+			f"server={wc_order.woocommerce_server}, id={wc_order.woocommerce_id}"
+		)
+	return wc_order
 
+
+def describe_doc(doc) -> str:
+	"""
+	A document for an error log, which must not fail on a document that is half loaded
+	"""
+	if not doc:
+		return ""
 	try:
-		# Leverage the WooCommerceProduct.get_list method which already has caching
-		woocommerce_product: WooCommerceOrder = frappe.get_doc({"doctype": "WooCommerce Order"})  # type: ignore
+		return str(doc.as_dict())
+	except Exception:
+		return str(doc)
 
-		# Use a single call with appropriate arguments
-		wc_products = woocommerce_product.get_list(
-			args={
-				"doctype": "WooCommerce Order",
-				"filters": filters,
-				"servers": servers,
-				"as_doc": True,
-				# Let the API handle pagination efficiently
-				# Set a reasonable limit for maximum records
-				"page_length": 1 if sales_order else 1000,
-			}
+
+def get_names_of_wc_orders(
+	date_time_from: datetime | str | None = None,
+	status: list[str] | None = None,
+) -> list[str]:
+	"""
+	The names of the WooCommerce Orders on all enabled servers that were modified after `date_time_from`
+	and created after the minimum creation date of the settings, with one of the statuses.
+
+	Raises when WooCommerce can't be reached, so an unreachable shop isn't taken for one without orders.
+	"""
+	settings: WooCommerceSettings = frappe.get_cached_doc("WooCommerce Settings")  # type: ignore
+
+	filters = []
+	if date_time_from:
+		# WooCommerce takes the date without microseconds
+		filters.append(
+			[
+				"WooCommerce Order",
+				"date_modified",
+				">",
+				get_datetime(date_time_from).strftime("%Y-%m-%dT%H:%M:%S"),
+			]
 		)
+	if settings.minimum_creation_date:
+		filters.append(["WooCommerce Order", "date_created", ">", settings.minimum_creation_date])
+	if status:
+		filters.append(["WooCommerce Order", "status", "in", status])
 
-		return wc_products or []  # type: ignore
-
-	except Exception as e:
-		frappe.log_error(
-			"WooCommerce Sync Error", f"Error fetching WooCommerce orders: {e!s}\n{frappe.get_traceback()}"
-		)
-		return []
+	records = WooCommerceOrder.get_list_of_records(
+		{
+			"doctype": "WooCommerce Order",
+			"filters": filters,
+			"fields": ["name"],
+			"page_length": MAX_ORDERS_PER_SYNC,
+			"max_results": MAX_ORDERS_PER_SYNC,
+			"strict": True,
+		}
+	)
+	return [record["name"] for record in records]
 
 
 def rename_address(address, customer):

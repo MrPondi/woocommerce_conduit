@@ -435,15 +435,23 @@ class WooCommerceDocument(Document):
 			frappe.log_error("WooCommerce API Error", "Invalid arguments for get_list_of_records")
 			return []
 
+		# With `strict`, a failing server raises instead of being logged and skipped, so the caller can tell
+		# "nothing found" from "nothing fetched"
+		strict = bool(args.get("strict"))
+
 		# Initialise the WC API
 		try:
 			wc_api_list = cls._init_api()
 		except SyncDisabledError:
+			if strict:
+				raise
 			frappe.msgprint(
 				_("WooCommerce synchronization is disabled. Please enable at least one WooCommerce server.")
 			)
 			return []
 		except Exception as e:
+			if strict:
+				raise
 			frappe.log_error("WooCommerce API Error", f"Failed to initialize WooCommerce API: {e!s}")
 			return []
 
@@ -479,11 +487,8 @@ class WooCommerceDocument(Document):
 
 		# Map Frappe filters to WooCommerce parameters
 		if args.get("filters"):
-			try:
-				updated_params = map_frappe_filters_to_wc_params(args["filters"])
-				params.update(updated_params)
-			except Exception as e:
-				frappe.log_error(f"Error mapping filters: {e!s}", "WooCommerce Filter Error")
+			# An unsupported filter must fail: dropping it would return unrelated records
+			params.update(map_frappe_filters_to_wc_params(args["filters"]))
 
 		# Initialize required variables
 		all_results = []
@@ -520,6 +525,10 @@ class WooCommerceDocument(Document):
 						f"WooCommerce API error: {response.status_code} - {response.text}",
 						"WooCommerce API Error",
 					)
+					if strict:
+						raise ConnectionError(
+							f"WooCommerce API returned {response.status_code} for {endpoint}"
+						)
 					continue
 
 				# Parse the response
@@ -531,6 +540,8 @@ class WooCommerceDocument(Document):
 					f"Error fetching WooCommerce records: {err!s}\nEndpoint: {endpoint}\nParams: {params}",
 					"WooCommerce API Error",
 				)
+				if strict:
+					raise
 				continue
 
 			# Get total count from headers if available
@@ -880,12 +891,14 @@ def map_frappe_filters_to_wc_params(filters):
 		# Handle specific cases
 		if field in ["name", "woocommerce_name"] and operator == "like":
 			params["search"] = value.strip("%")
-		elif field == "woocommerce_id" and operator == "=":
+		elif field in ("id", "woocommerce_id") and operator == "=":
 			params["include"] = [value]
-		elif field == "woocommerce_id" and operator == "in":
-			params["include"] = ",".join(value)
+		elif field in ("id", "woocommerce_id") and operator == "in":
+			params["include"] = ",".join(str(v) for v in value)
 		elif field == "status" and operator == "=":
 			params["status"] = [value]
+		elif field == "status" and operator == "in":
+			params["status"] = ",".join(value)
 		else:
 			frappe.throw(f"Unsupported operator '{operator}' for field '{field}'")
 
