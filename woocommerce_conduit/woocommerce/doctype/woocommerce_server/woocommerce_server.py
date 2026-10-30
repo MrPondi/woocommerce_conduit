@@ -10,8 +10,10 @@ from frappe.utils import cstr
 from frappe.utils.caching import redis_cache
 from jsonpath_ng.ext import parse
 
-from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import (
-	WC_ORDER_STATUS_MAPPING,
+from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
+	PAYMENT_OWNED_STATUSES,
+	get_default_status_rows,
+	normalise_status,
 )
 from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceAPI
 
@@ -89,6 +91,11 @@ class WooCommerceServer(Document):
 		if parsed_url.netloc:
 			self.name = parsed_url.netloc
 
+	def before_insert(self):
+		# A new server starts with what the core statuses mean, which the user can then change
+		if not self.sales_order_status_map:
+			self.add_default_order_statuses()
+
 	def validate(self):
 		self.validate_woocommerce_url()
 		if self.enabled and self.credentials_need_testing():
@@ -149,15 +156,98 @@ class WooCommerceServer(Document):
 
 	def validate_so_status_map(self):
 		"""
-		Validate Sales Order Status Map to have unique mappings
+		Validate the Sales Order Status Map: one row per WooCommerce status, one status to push per ERPNext
+		status, and nothing pushed over a status that the payment gateway sets
 		"""
-		erpnext_so_statuses = [map.erpnext_sales_order_status for map in self.sales_order_status_map]
-		if len(erpnext_so_statuses) != len(set(erpnext_so_statuses)):
-			frappe.throw(_("Duplicate ERPNext Sales Order Statuses found in Sales Order Status Map"))
+		seen_statuses, seen_pushes = set(), set()
+		for row in self.sales_order_status_map:
+			row.woocommerce_status = normalise_status(row.woocommerce_status)
+			if not row.woocommerce_status:
+				frappe.throw(_("Row {0}: WooCommerce Status is required").format(row.idx))
 
-		wc_so_statuses = [map.woocommerce_sales_order_status for map in self.sales_order_status_map]
-		if len(wc_so_statuses) != len(set(wc_so_statuses)):
-			frappe.throw(_("Duplicate WooCommerce Sales Order Statuses found in Sales Order Status Map"))
+			if row.woocommerce_status in seen_statuses:
+				frappe.throw(
+					_(
+						"Row {0}: WooCommerce Status {1} is in the Sales Order Status Map more than once"
+					).format(row.idx, frappe.bold(row.woocommerce_status))
+				)
+			seen_statuses.add(row.woocommerce_status)
+
+			if not row.push_from_erpnext_status:
+				continue
+			if row.push_from_erpnext_status in seen_pushes:
+				frappe.throw(
+					_("Row {0}: ERPNext status {1} is pushed as more than one WooCommerce Status").format(
+						row.idx, frappe.bold(row.push_from_erpnext_status)
+					)
+				)
+			seen_pushes.add(row.push_from_erpnext_status)
+
+			if row.woocommerce_status in PAYMENT_OWNED_STATUSES:
+				frappe.throw(
+					_(
+						"Row {0}: {1} is set by the payment gateway of the shop, ERPNext can't push a Sales Order status as that"
+					).format(row.idx, frappe.bold(row.woocommerce_status))
+				)
+
+	def get_order_status_row(self, woocommerce_status: str | None):
+		"""
+		The row of the Sales Order Status Map for a WooCommerce status, or None for a status it doesn't know
+		"""
+		status = normalise_status(woocommerce_status)
+		return next((row for row in self.sales_order_status_map if row.woocommerce_status == status), None)
+
+	def get_push_row(self, erpnext_status: str | None):
+		"""
+		The row that says which WooCommerce status to set when a Sales Order has this status
+		"""
+		if not erpnext_status:
+			return None
+		return next(
+			(row for row in self.sales_order_status_map if row.push_from_erpnext_status == erpnext_status),
+			None,
+		)
+
+	def fetch_order_statuses(self) -> dict[str, str]:
+		"""
+		The slug and name of every order status of the shop, those of plugins included. Empty when the shop
+		can't be reached: the core statuses are known without it.
+		"""
+		try:
+			wcapi = WooCommerceAPI(
+				url=self.woocommerce_server_url,
+				consumer_key=self._credential("api_consumer_key"),
+				consumer_secret=self._credential("api_consumer_secret"),
+				version="wc/v3",
+			)
+			response = wcapi.get("reports/orders/totals")
+			if response.status_code == 200:
+				return {row["slug"]: row["name"] for row in response.json()}
+		except Exception:
+			frappe.log_error("WooCommerce Error", frappe.get_traceback())
+		return {}
+
+	def add_default_order_statuses(self) -> list[dict]:
+		"""
+		Add a row for each status that the Sales Order Status Map lacks. Rows that are there stay as they are.
+		"""
+		rows = get_default_status_rows(
+			self.fetch_order_statuses() if not frappe.flags.in_test else {},
+			existing=[row.woocommerce_status for row in self.sales_order_status_map],
+		)
+		for row in rows:
+			self.append("sales_order_status_map", row)
+		return rows
+
+	@frappe.whitelist()
+	def get_missing_order_status_rows(self) -> list[dict]:
+		"""
+		The rows the Sales Order Status Map lacks, for the form to add
+		"""
+		return get_default_status_rows(
+			self.fetch_order_statuses(),
+			existing=[row.woocommerce_status for row in self.sales_order_status_map],
+		)
 
 	def validate_item_map(self):
 		"""
@@ -215,11 +305,3 @@ class WooCommerceServer(Document):
 			filters=[["fieldtype", "not in", invalid_field_types], ["dt", "=", "Item"]],
 		)
 		return docfields + custom_fields
-
-	@frappe.whitelist()
-	@redis_cache(ttl=86400)
-	def get_woocommerce_order_status_list(self) -> list[str]:
-		"""
-		Retrieve list of WooCommerce Order Statuses
-		"""
-		return [key for key in WC_ORDER_STATUS_MAPPING.keys()]

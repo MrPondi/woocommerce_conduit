@@ -20,16 +20,25 @@ from frappe.utils.data import cstr, now
 from frappe.utils.synchronization import filelock
 
 from woocommerce_conduit.exceptions import SyncDisabledError
+from woocommerce_conduit.tasks.order_status import (
+	SalesOrderStatusMixin,
+	get_status_to_push,
+	get_statuses_to_sync,
+)
 from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce
 from woocommerce_conduit.tasks.sync_items import run_item_sync
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import (
-	WC_ORDER_STATUS_MAPPING,
-	WC_ORDER_STATUS_MAPPING_REVERSE,
 	WooCommerceOrder,
 	get_address_data,
 )
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	WooCommerceServer,
+)
+from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
+	ACTION_STATUS_ONLY,
+	ACTION_SUBMIT_HOLD,
+	CREATING_ACTIONS,
+	normalise_status,
 )
 from woocommerce_conduit.woocommerce.doctype.woocommerce_settings.woocommerce_settings import (
 	WooCommerceSettings,
@@ -116,9 +125,7 @@ def sync_woocommerce_orders_modified_since(date_time_from=None):
 	# Taken before fetching, so an order that changes while this runs is found by the next run. If
 	# WooCommerce can't be reached this raises and the cursor stays where it was.
 	sync_started = now()
-	for order_name in get_names_of_wc_orders(
-		date_time_from=date_time_from, status=["pending", "processing", "on-hold", "completed", "cancelled"]
-	):
+	for order_name in get_names_of_wc_orders(date_time_from=date_time_from, status=get_statuses_to_sync()):
 		enqueue_sales_order_sync(woocommerce_order_name=order_name)
 
 	settings.reload()
@@ -179,7 +186,7 @@ def run_sales_order_sync(
 	return sync.sales_order, sync.woocommerce_order
 
 
-class SynchroniseSalesOrder(SynchroniseWooCommerce):
+class SynchroniseSalesOrder(SalesOrderStatusMixin, SynchroniseWooCommerce):
 	"""
 	Class for managing synchronisation of a WooCommerce Order with an ERPNext Sales Order
 	"""
@@ -218,14 +225,27 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 	def run(self):
 		"""
-		Run synchronisation. The documents are loaded inside the lock, so the webhook, the hourly sync and
-		the Sales Order hook can't all create the Sales Order of the same WooCommerce Order.
+		Run synchronisation
+		"""
+		self.run_locked(self.sync_wc_order_with_erpnext_order)
+
+	def push_status(self):
+		"""
+		Set the WooCommerce Order to the status that its Sales Order has now
+		"""
+		self.run_locked(self.push_status_to_woocommerce)
+
+	def run_locked(self, sync):
+		"""
+		Load both orders and sync them. The documents are loaded inside the lock, so the webhook, the hourly
+		sync and the Sales Order hook can't all create the Sales Order of the same WooCommerce Order, or
+		change it on top of each other.
 		"""
 		with filelock(self.get_lock_name(), timeout=120):
 			try:
 				self.load_orders()
 				self.get_corresponding_sales_order_or_woocommerce_order()
-				self.sync_wc_order_with_erpnext_order()
+				sync()
 			except Exception:
 				error_message = (
 					f"{frappe.get_traceback()}\n\n"
@@ -306,23 +326,69 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		"""
 		Syncronise Sales Order between ERPNext and WooCommerce
 		"""
-		if self.woocommerce_order and not self.sales_order:
-			# create missing order in ERPNext
-			self.create_sales_order()
-		elif self.sales_order and self.woocommerce_order:
-			# both exist, WooCommerce only wins when it changed since the last pull or push
-			if wc_order_changed(
-				self.woocommerce_order.woocommerce_date_modified, self.sales_order.woocommerce_last_sync_hash
-			):
-				self.update_sales_order()
+		if not self.woocommerce_order:
+			return
 
-			# If the Sales Order exists and has been submitted in the mean time, sync Payment Entries
-			if self.sales_order.docstatus == 1 and not self.sales_order.woocommerce_payment_entry:
-				self.sales_order.reload()
-				if self.create_and_link_payment_entry(self.woocommerce_order, self.sales_order):
-					self.sales_order.save()
+		wc_server: WooCommerceServer = frappe.get_cached_doc(
+			"WooCommerce Server", self.woocommerce_order.woocommerce_server
+		)  # type: ignore
+		status_row = wc_server.get_order_status_row(self.woocommerce_order.status)
+		# A status that the map doesn't know leaves ERPNext as it is
+		action = status_row.erpnext_action if status_row else ACTION_STATUS_ONLY
 
-	def update_sales_order(self):
+		if not self.sales_order:
+			# Only some statuses mean there is an order to keep. For the others nothing is made, and that
+			# includes the Customer, Address and Contact that a Sales Order would need.
+			if action in CREATING_ACTIONS:
+				self.create_sales_order(action)
+			return
+
+		# WooCommerce only wins when it changed since the last pull or push
+		if wc_order_changed(
+			self.woocommerce_order.woocommerce_date_modified, self.sales_order.woocommerce_last_sync_hash
+		):
+			self.update_sales_order(action)
+
+		# If the Sales Order exists and has been submitted in the mean time, sync Payment Entries
+		if self.sales_order.docstatus == 1 and not self.sales_order.woocommerce_payment_entry:
+			self.sales_order.reload()
+			if self.create_and_link_payment_entry(self.woocommerce_order, self.sales_order):
+				self.sales_order.save()
+
+	def push_status_to_woocommerce(self):
+		"""
+		Set the WooCommerce Order to the status that the server maps the status of its Sales Order to. If
+		WooCommerce changed the order in the meantime, say a payment came in, it wins and the order is
+		pulled instead. Otherwise that payment would be undone with a stale status.
+		"""
+		if not (self.sales_order and self.woocommerce_order):
+			return
+
+		if wc_order_changed(
+			self.woocommerce_order.woocommerce_date_modified, self.sales_order.woocommerce_last_sync_hash
+		):
+			self.sync_wc_order_with_erpnext_order()
+			return
+
+		status = get_status_to_push(self.sales_order)
+		if not status:
+			return
+
+		if normalise_status(self.woocommerce_order.status) != status:
+			self.woocommerce_order.status = status
+			self.woocommerce_order.flags.ignore_permissions = True
+			self.woocommerce_order.save()
+
+		# The date that WooCommerce gave back for the change is what the next pull compares with
+		self.sales_order.db_set(
+			{
+				"woocommerce_status": status,
+				"woocommerce_last_sync_hash": get_datetime(self.woocommerce_order.woocommerce_date_modified),
+			},
+			update_modified=False,
+		)
+
+	def update_sales_order(self, action: str = ACTION_STATUS_ONLY):
 		"""
 		Update the ERPNext Sales Order with fields from it's corresponding WooCommerce Order
 		"""
@@ -332,9 +398,9 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		# Ignore cancelled Sales Orders
 		if self.sales_order.docstatus != 2:
 			# Update the woocommerce_status field if necessary
-			wc_order_status = WC_ORDER_STATUS_MAPPING_REVERSE[self.woocommerce_order.status]
-			if self.sales_order.woocommerce_status != wc_order_status:
-				self.sales_order.woocommerce_status = wc_order_status
+			wc_order_status = normalise_status(self.woocommerce_order.status)
+			status_changed = normalise_status(self.sales_order.woocommerce_status) != wc_order_status
+			self.sales_order.woocommerce_status = wc_order_status
 
 			if (
 				self.woocommerce_order.customer_note
@@ -364,6 +430,11 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			self.sales_order.woocommerce_last_sync_hash = self.woocommerce_order.woocommerce_date_modified
 			self.sales_order.flags.created_by_sync = True
 			self.sales_order.save()
+
+			# What a status means is done once, when it changes. Otherwise editing the note of an order would
+			# undo a hold that was put on its Sales Order in ERPNext.
+			if status_changed:
+				self.apply_status_action(action)
 
 	def create_and_link_payment_entry(self, wc_order: WooCommerceOrder, sales_order: SyncedOrder) -> bool:
 		"""
@@ -451,7 +522,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			return True
 		return False
 
-	def create_sales_order(self) -> None:
+	def create_sales_order(self, action: str) -> None:
 		"""
 		Create an ERPNext Sales Order from the given WooCommerce Order
 		"""
@@ -473,7 +544,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		if self.woocommerce_order.customer_note:
 			new_sales_order.woocommerce_customer_note = self.woocommerce_order.customer_note
 
-		new_sales_order.woocommerce_status = WC_ORDER_STATUS_MAPPING_REVERSE[self.woocommerce_order.status]
+		new_sales_order.woocommerce_status = normalise_status(self.woocommerce_order.status)
 		wc_server: WooCommerceServer = frappe.get_cached_doc(
 			"WooCommerce Server", self.woocommerce_order.woocommerce_server
 		)  # type: ignore
@@ -522,13 +593,14 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		new_sales_order.submit()
 
 		new_sales_order.reload()
+		new_sales_order.flags.created_by_sync = True
 		self.create_and_link_payment_entry(self.woocommerce_order, new_sales_order)
 
 		try:
-			if self.woocommerce_order.status == "cancelled":
-				new_sales_order.cancel()
-			else:
-				new_sales_order.save()
+			new_sales_order.save()
+			# Held last, as a Payment Entry can't be made for a Sales Order that is on hold
+			if action == ACTION_SUBMIT_HOLD:
+				new_sales_order.update_status("On Hold")
 		except Exception:
 			error_message = f"{frappe.get_traceback()}\n\nSales Order Data{new_sales_order.as_dict()!s}"
 			frappe.log_error("WooCommerce Error", error_message)
@@ -882,6 +954,14 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		address.flags.ignore_mandatory = True
 		address.save()
 		return address
+
+
+def push_order_status(sales_order_name: str) -> None:
+	"""
+	Background job: set the WooCommerce Order of a Sales Order to the status that the server maps the
+	status of the Sales Order to
+	"""
+	SynchroniseSalesOrder(sales_order_name=sales_order_name).push_status()
 
 
 def wc_order_changed(woocommerce_date_modified, last_sync_hash) -> bool:

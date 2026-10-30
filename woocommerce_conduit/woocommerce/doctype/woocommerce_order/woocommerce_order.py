@@ -11,25 +11,6 @@ from frappe.utils import flt
 
 from woocommerce_conduit.woocommerce.woocommerce_api import CACHE_TIMEOUT_SECONDS, WooCommerceDocument
 
-WC_ORDER_STATUS_MAPPING = {
-	"Pending Payment": "pending",
-	"On hold": "on-hold",
-	"Failed": "failed",
-	"Cancelled": "cancelled",
-	"Processing": "processing",
-	"Refunded": "refunded",
-	"Completed": "completed",
-	"Ready for Pickup": "ready-pickup",
-	"Picked up": "pickup",
-	"Delivered": "delivered",
-	"Processing LP": "processing-lp",
-	"Draft": "checkout-draft",
-	"Quote Sent": "gplsquote-req",
-	"Trash": "trash",
-	"Partially Shipped": "partial-shipped",
-}
-WC_ORDER_STATUS_MAPPING_REVERSE = {v: k for k, v in WC_ORDER_STATUS_MAPPING.items()}
-
 # WooCommerce nests the addresses as `billing` and `shipping`, the DocType has them as
 # `billing_<key>` and `shipping_<key>` fields
 ADDRESS_PREFIXES = ("billing", "shipping")
@@ -101,22 +82,7 @@ class WooCommerceOrder(WooCommerceDocument):
 		shipping_state: DF.Data | None
 		shipping_tax: DF.Currency
 		shipping_total: DF.Currency
-		status: DF.Literal[
-			"pending",
-			"on-hold",
-			"failed",
-			"cancelled",
-			"processing",
-			"refunded",
-			"completed",
-			"ready-pickup",
-			"pickup",
-			"delivered",
-			"processing-lp",
-			"checkout-draft",
-			"gplsquote-req",
-			"trash",
-		]
+		status: DF.Data
 		tax_lines: DF.JSON | None
 		total: DF.Currency
 		total_tax: DF.Currency
@@ -131,6 +97,8 @@ class WooCommerceOrder(WooCommerceDocument):
 	doctype = "WooCommerce Order"
 	resource = "orders"
 	field_setter_map = {"woocommerce_name": "name", "woocommerce_id": "id"}  # noqa: RUF012
+	# The only fields ERPNext writes to WooCommerce
+	writable_fields = ("status",)
 
 	@classmethod
 	def get_wc_fields(cls, frappe_fields=None, extra=None) -> str:
@@ -172,8 +140,13 @@ class WooCommerceOrder(WooCommerceDocument):
 	def load_from_db(self):
 		return super().load_from_db()
 
-	def db_update(self):
-		pass
+	def before_db_update(self, changes: dict) -> dict:
+		"""
+		Only the status is written to WooCommerce, the rest of an order is the shop's
+		"""
+		return super().before_db_update(
+			{key: value for key, value in changes.items() if key in self.writable_fields}
+		)
 
 	def delete(self, *args, **kwargs):
 		pass

@@ -130,10 +130,9 @@
   },
   {
    "fieldname": "status",
-   "fieldtype": "Select",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Status",
-   "options": "pending\non-hold\nfailed\ncancelled\nprocessing\nrefunded\ncompleted\nready-pickup\npickup\ndelivered\nprocessing-lp\ncheckout-draft\ngplsquote-req\ntrash",
    "read_only": 1,
    "reqd": 1
   },

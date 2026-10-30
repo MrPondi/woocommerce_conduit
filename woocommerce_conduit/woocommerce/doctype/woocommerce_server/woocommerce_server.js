@@ -43,48 +43,25 @@ frappe.ui.form.on("WooCommerce Server", {
 				},
 			};
 		};
-
-		if (
-			frm.doc.enabled_order_status &&
-			!frm.fields_dict.sales_order_status_map.grid.get_docfield(
-				"woocommerce_sales_order_status"
-			).options
-		) {
-			frm.trigger("get_woocommerce_order_status_list");
-		}
 	},
 
-	// Handle click of 'Keep the Status of ERPNext Sales Orders and WooCommerce Orders in sync'
-	enabled_order_status: function (frm) {
-		if (
-			frm.doc.enabled_order_status &&
-			!frm.fields_dict.sales_order_status_map.grid.get_docfield(
-				"woocommerce_sales_order_status"
-			).options
-		) {
-			frm.trigger("get_woocommerce_order_status_list");
-		}
-	},
-
-	// Retrieve WooCommerce order statuses
-	get_woocommerce_order_status_list: function (frm) {
-		frappe.call({
-			method: "get_woocommerce_order_status_list",
+	// Add the order statuses of the shop that the Order Status Map lacks
+	load_default_order_statuses: function (frm) {
+		frm.call({
 			doc: frm.doc,
+			method: "get_missing_order_status_rows",
 			callback: function (r) {
-				// Join the strings with newline characters to create the final string
-				const options = r.message.join("\n");
-
-				// Set the Options property
-				frm.fields_dict.sales_order_status_map.grid.update_docfield_property(
-					"woocommerce_sales_order_status",
-					"options",
-					options
-				);
+				const rows = r.message || [];
+				rows.forEach((row) => frm.add_child("sales_order_status_map", row));
+				frm.refresh_field("sales_order_status_map");
+				frappe.show_alert({
+					message: rows.length ? __("{0} statuses added", [rows.length]) : __("No statuses missing"),
+					indicator: rows.length ? "green" : "blue",
+				});
 			},
 		});
 	},
-	
+
 	// View WooCommerce Webhook Configuration
 	view_webhook_config: function(frm) {
 		let d = new frappe.ui.Dialog({
@@ -101,7 +78,7 @@ frappe.ui.form.on("WooCommerce Server", {
 					label: __('Topic'),
 					fieldname: 'topic',
 					fieldtype: 'Data',
-					default: 'Order created',
+					default: 'Order created, and a second webhook with Order updated',
 					read_only: 1
 				},
 				{

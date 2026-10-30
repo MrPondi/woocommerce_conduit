@@ -150,6 +150,7 @@ doc_events = {
 			"woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
 		],
 		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+		"on_change": "woocommerce_conduit.tasks.order_status.enqueue_status_push_from_hook",
 	},
 	"Item": {
 		"validate": "woocommerce_conduit.tasks.sync_items.validate_primary_connection",

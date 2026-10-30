@@ -6,31 +6,55 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "erpnext_sales_order_status",
-  "woocommerce_sales_order_status"
+  "woocommerce_status",
+  "woocommerce_status_label",
+  "erpnext_action",
+  "push_from_erpnext_status"
  ],
  "fields": [
   {
-   "fieldname": "erpnext_sales_order_status",
-   "fieldtype": "Select",
+   "description": "The status slug as WooCommerce has it, for example processing",
+   "fieldname": "woocommerce_status",
+   "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "ERPNext Sales Order Status",
-   "options": "Draft\nOn Hold\nTo Deliver and Bill\nTo Bill\nTo Deliver\nCompleted\nCancelled\nClosed",
-   "reqd": 1
+   "label": "WooCommerce Status",
+   "reqd": 1,
+   "columns": 2
   },
   {
-   "fieldname": "woocommerce_sales_order_status",
+   "fieldname": "woocommerce_status_label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Label",
+   "read_only": 1,
+   "columns": 2
+  },
+  {
+   "default": "Status only",
+   "description": "What an order that has this status means in ERPNext",
+   "fieldname": "erpnext_action",
    "fieldtype": "Select",
    "in_list_view": 1,
-   "label": "WooCommerce Sales Order Status",
-   "reqd": 1
+   "label": "When WooCommerce has this status",
+   "options": "Skip\nSkip, cancel existing\nSubmit SO\nSubmit SO + Invoice\nSubmit SO + Hold\nCancel SO\nClose SO\nStatus only",
+   "reqd": 1,
+   "columns": 3
+  },
+  {
+   "description": "Set the WooCommerce Order to this status when the Sales Order reaches this status",
+   "fieldname": "push_from_erpnext_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Push when the Sales Order is",
+   "options": "\nDraft\nOn Hold\nTo Deliver and Bill\nTo Bill\nTo Deliver\nCompleted\nCancelled\nClosed",
+   "columns": 3
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-10-28 18:34:40.462980",
+ "modified": "2026-10-30 14:00:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server Order Status",

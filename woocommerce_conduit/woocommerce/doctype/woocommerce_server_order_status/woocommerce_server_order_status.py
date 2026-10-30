@@ -1,8 +1,83 @@
 # Copyright (c) 2025, Karol Parzonka and contributors
 # For license information, please see license.txt
 
-# import frappe
 from frappe.model.document import Document
+
+# What a WooCommerce Order with a status means in ERPNext. The statuses are WooCommerce's, and a shop can
+# have more than the core ones, so the server keeps a table of them instead of this code knowing them all.
+ACTION_SKIP = "Skip"
+ACTION_SKIP_CANCEL = "Skip, cancel existing"
+ACTION_SUBMIT = "Submit SO"
+ACTION_SUBMIT_INVOICE = "Submit SO + Invoice"
+ACTION_SUBMIT_HOLD = "Submit SO + Hold"
+ACTION_CANCEL = "Cancel SO"
+ACTION_CLOSE = "Close SO"
+ACTION_STATUS_ONLY = "Status only"
+
+# The actions for which a Sales Order is created when there is none yet. For every other action an order
+# that was never synced stays out of ERPNext, so no Customer, Address or Contact is made for it either.
+CREATING_ACTIONS = (ACTION_SUBMIT, ACTION_SUBMIT_INVOICE, ACTION_SUBMIT_HOLD)
+CANCELLING_ACTIONS = (ACTION_CANCEL, ACTION_SKIP_CANCEL)
+
+# The payment gateway decides on these, so ERPNext must not push them over the gateway's
+PAYMENT_OWNED_STATUSES = ("checkout-draft", "pending", "failed", "on-hold", "processing")
+
+# (slug, label, action, the Sales Order status that is pushed as this status)
+DEFAULT_STATUSES = (
+	("checkout-draft", "Draft", ACTION_SKIP, ""),
+	("pending", "Pending payment", ACTION_SUBMIT_INVOICE, ""),
+	("failed", "Failed", ACTION_SKIP_CANCEL, ""),
+	("on-hold", "On hold", ACTION_SUBMIT_HOLD, ""),
+	("processing", "Processing", ACTION_SUBMIT_INVOICE, ""),
+	("completed", "Completed", ACTION_SUBMIT_INVOICE, "Completed"),
+	("cancelled", "Cancelled", ACTION_CANCEL, "Cancelled"),
+	("refunded", "Refunded", ACTION_CLOSE, ""),
+	("trash", "Trash", ACTION_CANCEL, ""),
+)
+
+
+def normalise_status(status: str | None) -> str:
+	"""
+	The slug as the REST API has it. Statuses are registered as `wc-processing`, the API says `processing`.
+	"""
+	return (status or "").strip().removeprefix("wc-")
+
+
+def get_default_status_rows(
+	live_statuses: dict[str, str] | None = None, existing: list[str] | tuple[str, ...] = ()
+) -> list[dict]:
+	"""
+	The rows of the status map for the statuses that are not in `existing` yet: the core statuses with
+	their defaults, and any other status the shop has (`live_statuses` as slug -> name) that does nothing
+	until the user decides what it means.
+	"""
+	live = {normalise_status(slug): name for slug, name in (live_statuses or {}).items()}
+	existing = {normalise_status(slug) for slug in existing}
+
+	rows = []
+	for slug, label, action, push_status in DEFAULT_STATUSES:
+		if slug not in existing:
+			rows.append(
+				{
+					"woocommerce_status": slug,
+					"woocommerce_status_label": live.get(slug, label),
+					"erpnext_action": action,
+					"push_from_erpnext_status": push_status,
+				}
+			)
+
+	core = {slug for slug, *_ in DEFAULT_STATUSES}
+	for slug, name in live.items():
+		if slug and slug not in existing and slug not in core:
+			rows.append(
+				{
+					"woocommerce_status": slug,
+					"woocommerce_status_label": name,
+					"erpnext_action": ACTION_STATUS_ONLY,
+					"push_from_erpnext_status": "",
+				}
+			)
+	return rows
 
 
 class WooCommerceServerOrderStatus(Document):
@@ -14,7 +89,21 @@ class WooCommerceServerOrderStatus(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		erpnext_sales_order_status: DF.Literal[
+		erpnext_action: DF.Literal[
+			"Skip",
+			"Skip, cancel existing",
+			"Submit SO",
+			"Submit SO + Invoice",
+			"Submit SO + Hold",
+			"Cancel SO",
+			"Close SO",
+			"Status only",
+		]
+		parent: DF.Data
+		parentfield: DF.Data
+		parenttype: DF.Data
+		push_from_erpnext_status: DF.Literal[
+			"",
 			"Draft",
 			"On Hold",
 			"To Deliver and Bill",
@@ -24,10 +113,8 @@ class WooCommerceServerOrderStatus(Document):
 			"Cancelled",
 			"Closed",
 		]
-		parent: DF.Data
-		parentfield: DF.Data
-		parenttype: DF.Data
-		woocommerce_sales_order_status: DF.Literal[None]
+		woocommerce_status: DF.Data
+		woocommerce_status_label: DF.Data | None
 	# end: auto-generated types
 
 	pass

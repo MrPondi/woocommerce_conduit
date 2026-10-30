@@ -42,7 +42,8 @@ def validate_request() -> tuple[bool, Response | None]:
 @frappe.whitelist(allow_guest=True, methods=["POST"])
 def order_created(*args, **kwargs):
 	"""
-	Accepts payload data from WooCommerce "Order Created" webhook
+	Accepts payload data from the WooCommerce "Order created" and "Order updated" webhooks. The name is
+	that of the first, and part of the delivery URL of the webhooks that are set up already.
 	"""
 	valid, response = validate_request()
 	if not valid:
@@ -58,7 +59,11 @@ def order_created(*args, **kwargs):
 	else:
 		return Response(response=_("Missing Header"), status=HTTPStatus.BAD_REQUEST)
 
-	if event == "created":
+	if not isinstance(order, dict):
+		# The ping WooCommerce sends when a webhook is saved
+		return Response(status=HTTPStatus.OK)
+
+	if event in ("created", "updated"):
 		webhook_source_url: str = frappe.get_request_header("x-wc-webhook-source", "")  # type: ignore
 		woocommerce_order_name = (
 			f"{parse_domain_from_url(webhook_source_url)}{WC_RESOURCE_DELIMITER}{order['id']}"  # type: ignore
