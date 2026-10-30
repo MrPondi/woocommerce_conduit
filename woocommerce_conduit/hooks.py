@@ -44,7 +44,7 @@ add_to_apps_screen = [
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
+doctype_js = {"Item": "public/js/item.js"}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
@@ -145,12 +145,58 @@ doc_events = {
 	# 		"on_trash": "method"
 	# 	}
 	"Sales Order": {
-		"on_submit": "woocommerce_conduit.tasks.sync_sales_orders.run_sales_order_sync_from_hook"
+		"on_submit": [
+			"woocommerce_conduit.tasks.sync_sales_orders.run_sales_order_sync_from_hook",
+			"woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+		],
+		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
 	},
 	"Item": {
 		"validate": "woocommerce_conduit.tasks.sync_items.validate_primary_connection",
 	},
+	"Item Price": {
+		"on_update": "woocommerce_conduit.tasks.sync_item_prices.update_item_price_for_woocommerce_item_from_hook",
+	},
+	"Stock Entry": {
+		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+	},
+	"Stock Reconciliation": {
+		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+	},
+	"Delivery Note": {
+		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+	},
+	"Purchase Receipt": {
+		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+	},
+	"Sales Invoice": {
+		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+	},
+	"Purchase Invoice": {
+		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+	},
 }
+
+# Extension Hooks (for other apps)
+# --------------------------------
+# Adjust the stock values pushed to WooCommerce, e.g. to take backorders when a supplier has stock.
+# Declare in the other app's hooks.py:
+#
+# woocommerce_stock_values = ["supplier_app.stock.adjust_woocommerce_stock"]
+#
+# def adjust_woocommerce_stock(item, wc_server, bins, stock_values) -> dict | None:
+# 	if stock_values["stock_quantity"] <= 0 and supplier_has_stock(item.name):
+# 		return {**stock_values, "backorders": "notify"}
+#
+# Return the values to push, or None to keep them. Only WooCommerce Product writable_fields are written.
+# Call woocommerce_conduit.tasks.stock_update.enqueue_stock_update(item_code) to push again when the
+# data the method reads changes.
 
 # Scheduled Tasks
 # ---------------
@@ -162,15 +208,17 @@ scheduler_events = {
 	# 	"daily": [
 	# 		"woocommerce_conduit.tasks.daily"
 	# 	],
+	# Prices and stock are pushed when they change; these are the safety net
 	"daily_long": [
 		"woocommerce_conduit.tasks.sync_item_prices.run_item_price_sync_in_background",
+		"woocommerce_conduit.tasks.stock_update.update_stock_levels_for_all_enabled_items_in_background",
 	],
 	# 	"hourly": [
 	# 		"woocommerce_conduit.tasks.hourly"
 	# 	],
+	# Products are pulled once, when an order needs them (or from the Sync buttons), not on a schedule
 	"hourly_long": [
 		"woocommerce_conduit.tasks.sync_sales_orders.sync_woocommerce_orders_modified_since",
-		"woocommerce_conduit.tasks.sync_items.sync_woocommerce_products_modified_since",
 	],
 	# 	"weekly": [
 	# 		"woocommerce_conduit.tasks.weekly"

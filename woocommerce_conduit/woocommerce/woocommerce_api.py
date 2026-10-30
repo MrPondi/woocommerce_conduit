@@ -15,6 +15,8 @@ from woocommerce import API
 from woocommerce_conduit.exceptions import SyncDisabledError
 
 WC_RESOURCE_DELIMITER = "~"
+# How long a cached list of WooCommerce records is reused, in seconds
+CACHE_TIMEOUT_SECONDS = 300
 
 
 class WooCommerceAPI(API):

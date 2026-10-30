@@ -9,7 +9,7 @@ from frappe import _dict
 from frappe.model.document import Document
 from frappe.utils import flt
 
-from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceDocument
+from woocommerce_conduit.woocommerce.woocommerce_api import CACHE_TIMEOUT_SECONDS, WooCommerceDocument
 
 WC_ORDER_STATUS_MAPPING = {
 	"Pending Payment": "pending",
@@ -198,10 +198,6 @@ class WooCommerceOrder(WooCommerceDocument):
 			frappe.log_error("WooCommerce Order Error", "Invalid arguments for get_list")
 			return []
 
-		# Extract settings early for consistency
-		settings = frappe.get_cached_doc("WooCommerce Settings")
-		cache_timeout = getattr(settings, "cache_timeout", 300)  # 5 minutes default
-
 		# Skip cache for specific scenarios
 		skip_cache = args.get("skip_cache", True)
 
@@ -257,7 +253,7 @@ class WooCommerceOrder(WooCommerceDocument):
 			# Cache the results before returning (if caching is enabled)
 			if cache and cache_key:
 				try:
-					cache.set_value(cache_key, json.dumps(orders), expires_in_sec=cache_timeout)
+					cache.set_value(cache_key, json.dumps(orders), expires_in_sec=CACHE_TIMEOUT_SECONDS)
 				except Exception as e:
 					frappe.log_error(
 						f"WooCommerce Cache ErrorWooCommerce cache set error: {e!s}",

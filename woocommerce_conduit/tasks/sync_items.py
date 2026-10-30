@@ -6,7 +6,7 @@ import frappe
 from erpnext.stock.doctype.item.item import Item
 from frappe import ValidationError, _, _dict
 from frappe.query_builder import Criterion
-from frappe.utils import convert_utc_to_system_timezone, get_datetime, now
+from frappe.utils import convert_utc_to_system_timezone, flt, get_datetime, getdate, now
 from jsonpath_ng.ext import parse
 
 from woocommerce_conduit.exceptions import SyncDisabledError
@@ -92,10 +92,20 @@ def sync_woocommerce_products_modified_since(date_time_from=None):
 @frappe.whitelist(methods=["POST"])
 def sync_woocommerce_product(woocommerce_product_name: str):
 	"""
-	Sync one WooCommerce Product with its ERPNext Item, from the WooCommerce Product form
+	Sync one WooCommerce Product with its ERPNext Item, from the WooCommerce Product form. A click is an
+	explicit request, so an Item that is already linked is updated too.
 	"""
 	frappe.has_permission("Item", "write", throw=True)
-	run_item_sync(woocommerce_product_name=woocommerce_product_name)
+	run_item_sync(woocommerce_product_name=woocommerce_product_name, force_update=True)
+
+
+@frappe.whitelist(methods=["POST"])
+def sync_item_from_woocommerce(item_code: str):
+	"""
+	Update one ERPNext Item from its WooCommerce Product(s), from the Item form
+	"""
+	frappe.has_permission("Item", "write", doc=item_code, throw=True)
+	run_item_sync(item_code=item_code, force_update=True)
 
 
 def load_wc_product(woocommerce_product_name: str) -> WooCommerceProduct:
@@ -115,6 +125,7 @@ def run_item_sync(
 	woocommerce_product_name: str | None = None,
 	woocommerce_product: WooCommerceProduct | None = None,
 	enqueue: bool = False,
+	force_update: bool = False,
 ) -> tuple[SyncedItem | None, WooCommerceProduct | None]:
 	"""
 	Synchronize an ERPNext Item with its corresponding WooCommerce Product.
@@ -123,12 +134,17 @@ def run_item_sync(
 	It can be initiated from either the ERPNext side (using item_code/item) or
 	the WooCommerce side (using woocommerce_product_name/woocommerce_product).
 
+	A product is pulled once: a missing Item is created, an Item that is already linked is left alone
+	unless force_update is set (a manual sync). After that only prices and stock change, and they go from
+	ERPNext to WooCommerce.
+
 	Parameters:
 	    item_code: ERPNext Item Code to synchronize
 	    item: ERPNext Item document to synchronize
 	    woocommerce_product_name: Name of WooCommerce Product to synchronize
 	    woocommerce_product: WooCommerce Product document to synchronize
 	    enqueue: Whether to process synchronization in background
+	    force_update: Update an Item that already exists from its WooCommerce Product
 
 	Returns:
 	    tuple: (ERPNext Item, WooCommerce Product) after synchronization
@@ -148,7 +164,14 @@ def run_item_sync(
 			kwargs = {"woocommerce_product_name": woocommerce_product_name or woocommerce_product.name}  # type: ignore
 		else:
 			kwargs = {"item_code": item_code or item.name}  # type: ignore
-		frappe.enqueue(run_item_sync, queue="long", timeout=300, now=bool(frappe.flags.in_test), **kwargs)
+		frappe.enqueue(
+			run_item_sync,
+			queue="long",
+			timeout=300,
+			now=bool(frappe.flags.in_test),
+			force_update=force_update,
+			**kwargs,
+		)
 		return None, None
 
 	sync = None
@@ -160,7 +183,7 @@ def run_item_sync(
 		if not wc_product:
 			wc_product = load_wc_product(woocommerce_product_name)  # type: ignore
 
-		sync = SynchroniseItem(woocommerce_product=wc_product)
+		sync = SynchroniseItem(woocommerce_product=wc_product, force_update=force_update)
 		sync.run()
 
 	# Case 2: Sync initiated from ERPNext side
@@ -186,7 +209,8 @@ def run_item_sync(
 				continue
 
 			sync = SynchroniseItem(
-				item=ERPNextItemToSync(item=erpnext_item, item_woocommerce_server_idx=wc_server.idx)
+				item=ERPNextItemToSync(item=erpnext_item, item_woocommerce_server_idx=wc_server.idx),
+				force_update=force_update,
 			)
 			try:
 				sync.run()
@@ -233,10 +257,12 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		servers: list[WooCommerceServer | _dict] | None = None,
 		item: ERPNextItemToSync | None = None,
 		woocommerce_product: WooCommerceProduct | None = None,
+		force_update: bool = False,
 	) -> None:
 		super().__init__(servers)
 		self.item = item
 		self.woocommerce_product = woocommerce_product  # type: ignore
+		self.force_update = force_update
 		self.settings: WooCommerceSettings = frappe.get_cached_doc("WooCommerce Settings")  # type: ignore
 
 	def run(self):
@@ -332,9 +358,11 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		if self.woocommerce_product and not self.item:
 			# create missing item in ERPNext
 			self.create_item()
-		elif self.item and self.woocommerce_product and self.item.item_woocommerce_server.enable_sync:
-			# both exist, check sync hash. It's a Datetime field, so it reads back as a datetime and
-			# WooCommerce's date_modified is a string: compare them as datetimes.
+		elif self.item and self.woocommerce_product and self.force_update:
+			# A product is pulled once, when it is created. Later pulls (orders, the product list) leave a
+			# linked Item alone; only a manual sync updates it.
+			# Check the sync hash. It's a Datetime field, so it reads back as a datetime and WooCommerce's
+			# date_modified is a string: compare them as datetimes.
 			last_sync_hash = self.item.item_woocommerce_server.woocommerce_last_sync_hash
 			if not last_sync_hash or get_datetime(last_sync_hash) != get_datetime(
 				self.woocommerce_product.woocommerce_date_modified
@@ -432,8 +460,50 @@ class SynchroniseItem(SynchroniseWooCommerce):
 			),
 		)
 
+		# Prices are pulled once, with the Item. From then on ERPNext owns them and the price sync pushes them.
+		self.create_item_prices(wc_server)
+
 		# Update sync hash
 		self.set_sync_hash()
+
+	def create_item_prices(self, wc_server: WooCommerceServer):
+		"""
+		Create the Item Prices of a new Item from its WooCommerce Product: the regular price in the server's
+		Price List and a running or scheduled sale in its Sales Price List
+		"""
+		product = self.woocommerce_product
+		if not product or not self.item or product.type == "variable":
+			# A variable product's prices live on its variations
+			return
+
+		if wc_server.price_list and (regular_price := flt(product.regular_price)) > 0:
+			self._insert_item_price(wc_server.price_list, regular_price)
+
+		if wc_server.sales_price_list and (sale_price := flt(product.sale_price)) > 0:
+			self._insert_item_price(
+				wc_server.sales_price_list,
+				sale_price,
+				valid_from=getdate(product.date_on_sale_from) if product.date_on_sale_from else None,
+				valid_upto=getdate(product.date_on_sale_to) if product.date_on_sale_to else None,
+			)
+
+	def _insert_item_price(self, price_list: str, rate: float, valid_from=None, valid_upto=None):
+		item_code = self.item.item.name  # type: ignore
+		if frappe.db.exists("Item Price", {"item_code": item_code, "price_list": price_list}):
+			return
+		item_price = frappe.get_doc(
+			{
+				"doctype": "Item Price",
+				"item_code": item_code,
+				"price_list": price_list,
+				"price_list_rate": rate,
+				"valid_from": valid_from,
+				"valid_upto": valid_upto,
+			}
+		)
+		# The price came from WooCommerce, so don't push it straight back
+		item_price.flags.created_by_sync = True
+		item_price.insert()
 
 	def _handle_product_variants(self, item: SyncedItem):
 		"""
@@ -462,10 +532,16 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		if self.woocommerce_product.type == "variable":
 			item.has_variants = 1
 		elif self.woocommerce_product.type == "variation":
-			# Check if parent exists and set variant_of
+			# Without its parent the variation would become a standalone Item, which a later pull no longer
+			# fixes, so fail instead
 			parent_item = self._get_or_create_parent_item()
-			if parent_item:
-				item.variant_of = parent_item.item_code
+			if not parent_item:
+				frappe.throw(
+					_("Parent product {0} of WooCommerce variation {1} could not be synced").format(
+						self.woocommerce_product.parent_id, self.woocommerce_product.name
+					)
+				)
+			item.variant_of = parent_item.item_code
 
 	def _get_or_create_parent_item(self):
 		"""
@@ -510,6 +586,7 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		row = item.append("woocommerce_servers")
 		row.woocommerce_id = self.woocommerce_product.woocommerce_id
 		row.woocommerce_server = wc_server.name
+		row.enable_sync = 1
 
 		# Set image if enabled
 		if wc_server.enable_image_sync and self.woocommerce_product.image:

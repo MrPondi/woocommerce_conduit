@@ -34,6 +34,9 @@ class WooCommerceServer(Document):
 		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_shipping_rule.woocommerce_server_shipping_rule import (
 			WooCommerceServerShippingRule,
 		)
+		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_warehouse.woocommerce_server_warehouse import (
+			WooCommerceServerWarehouse,
+		)
 
 		api_consumer_key: DF.Password
 		api_consumer_secret: DF.Password
@@ -43,6 +46,7 @@ class WooCommerceServer(Document):
 		enable_image_sync: DF.Check
 		enable_price_list_sync: DF.Check
 		enable_sales_price_list_sync: DF.Check
+		enable_stock_level_synchronisation: DF.Check
 		enabled: DF.Check
 		enabled_order_status: DF.Check
 		enabled_payments_sync: DF.Check
@@ -55,17 +59,21 @@ class WooCommerceServer(Document):
 		payment_method_bank_account_mapping: DF.JSON
 		payment_method_gl_account_mapping: DF.JSON
 		price_list: DF.Link | None
+		price_list_delay_per_item: DF.Float
+		push_zero_stock_for_disabled_items: DF.Check
 		sales_order_status_map: DF.Table[WooCommerceServerOrderStatus]
 		sales_price_list: DF.Link | None
 		sales_taxes_and_charges_template: DF.Link | None
 		secret: DF.SmallText | None
 		shipping_rule_map: DF.Table[WooCommerceServerShippingRule]
+		subtract_reserved_stock: DF.Check
 		sync_prices_for_disabled_items: DF.Check
 		sync_so_items_to_wc: DF.Check
 		tax_account: DF.Link | None
 		uom: DF.Link
 		use_actual_tax_type: DF.Check
 		warehouse: DF.Link
+		warehouses: DF.TableMultiSelect[WooCommerceServerWarehouse]
 		woocommerce_server_url: DF.Data
 	# end: auto-generated types
 

@@ -57,13 +57,23 @@ class TestValueComparison(IntegrationTestCase):
 
 
 class TestSyncDirection(IntegrationTestCase):
-	def run_sync(self, item_modified: str, date_modified: str, date_modified_gmt: str, last_sync_hash=None):
+	def run_sync(
+		self,
+		item_modified: str,
+		date_modified: str,
+		date_modified_gmt: str,
+		last_sync_hash=None,
+		force_update=True,
+	):
 		item = _dict(
 			modified=item_modified,
-			woocommerce_servers=[_dict(idx=1, enable_sync=1, woocommerce_last_sync_hash=last_sync_hash)],
+			woocommerce_servers=[_dict(idx=1, woocommerce_last_sync_hash=last_sync_hash)],
 		)
 		product = _dict(woocommerce_date_modified=date_modified, date_modified_gmt=date_modified_gmt)
-		sync = make_sync(item=ERPNextItemToSync(item=item, item_woocommerce_server_idx=1))  # type: ignore
+		sync = make_sync(
+			item=ERPNextItemToSync(item=item, item_woocommerce_server_idx=1),  # type: ignore
+			force_update=force_update,
+		)
 		sync.woocommerce_product = product  # type: ignore
 
 		with (
@@ -94,6 +104,70 @@ class TestSyncDirection(IntegrationTestCase):
 		)
 
 		update_item.assert_not_called()
+
+	def test_a_linked_item_is_only_pulled_on_request(self):
+		# The product is newer, but only a manual sync updates an Item that already exists
+		update_item = self.run_sync(
+			"2025-01-10 10:30:00", "2025-01-10T09:45:00", "2025-01-10T09:45:00", force_update=False
+		)
+
+		update_item.assert_not_called()
+
+
+class TestItemCreation(IntegrationTestCase):
+	def create_prices(self, product, server):
+		item = _dict(name="MUG-1")
+		sync = make_sync(
+			item=ERPNextItemToSync(item=item, item_woocommerce_server_idx=1),  # type: ignore
+			woocommerce_product=product,
+		)
+		with patch.object(SynchroniseItem, "_insert_item_price") as insert_item_price:
+			sync.create_item_prices(server)  # type: ignore
+		return insert_item_price
+
+	def test_prices_are_pulled_into_the_price_lists(self):
+		product = make_product(
+			type="simple",
+			regular_price="12.50",
+			sale_price="10",
+			date_on_sale_from="2025-01-10T00:00:00",
+			date_on_sale_to=None,
+		)
+		server = _dict(price_list="Standard Selling", sales_price_list="Sale")
+
+		insert_item_price = self.create_prices(product, server)
+
+		self.assertEqual(
+			[c.args for c in insert_item_price.call_args_list], [("Standard Selling", 12.5), ("Sale", 10.0)]
+		)
+		self.assertEqual(
+			insert_item_price.call_args_list[1].kwargs["valid_from"], frappe.utils.getdate("2025-01-10")
+		)
+
+	def test_no_sale_and_no_price_list_create_nothing(self):
+		product = make_product(type="simple", regular_price="12.50", sale_price="")
+
+		insert_item_price = self.create_prices(product, _dict(price_list=None, sales_price_list="Sale"))
+
+		insert_item_price.assert_not_called()
+
+	def test_a_variable_product_has_no_prices_of_its_own(self):
+		product = make_product(type="variable", regular_price="12.50")
+
+		insert_item_price = self.create_prices(product, _dict(price_list="Standard Selling"))
+
+		insert_item_price.assert_not_called()
+
+	def test_a_variation_without_its_parent_is_not_created(self):
+		product = make_product(type="variation", parent_id=5, attributes="[]")
+		sync = make_sync(woocommerce_product=product)
+
+		with (
+			patch.object(SynchroniseItem, "create_or_update_item_attributes"),
+			patch.object(SynchroniseItem, "_get_or_create_parent_item", return_value=None),
+			self.assertRaises(frappe.ValidationError),
+		):
+			sync._handle_product_variants(frappe.new_doc("Item"))  # type: ignore
 
 
 class TestItemFields(IntegrationTestCase):

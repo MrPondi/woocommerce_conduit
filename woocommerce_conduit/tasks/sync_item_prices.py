@@ -1,11 +1,13 @@
+import time
+
 import frappe
 from erpnext.stock.doctype.item_price.item_price import ItemPrice
-from frappe import _dict, qb
+from frappe import _, _dict, qb
 from frappe.query_builder import Criterion
 from frappe.query_builder.functions import IfNull
 from frappe.utils import get_datetime
 
-from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce
+from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce, record_sync_time
 from woocommerce_conduit.woocommerce.doctype.woocommerce_product.woocommerce_product import (
 	WooCommerceProduct,
 )
@@ -38,20 +40,42 @@ def item_wide_price_conditions(ip) -> list:
 	]
 
 
-def update_item_price_for_woocommerce_item_from_hook(doc, method):
-	if not frappe.flags.in_test:
-		if doc.doctype == "Item Price":
-			frappe.enqueue(
-				"woocommerce_conduit.tasks.sync_item_prices.run_item_price_sync",
-				enqueue_after_commit=True,
-				item_code=doc.item_code,
-				item_price_doc=doc,
-			)
+def price_sync_is_enabled() -> bool:
+	"""
+	Whether any WooCommerce Server has its price sync switched on
+	"""
+	return bool(frappe.db.exists("WooCommerce Server", {"enabled": 1, "enable_price_list_sync": 1}))
+
+
+def update_item_price_for_woocommerce_item_from_hook(doc, method=None):
+	"""
+	Intended to be triggered by a Document Controller hook from Item Price. Pushes the Item's prices once
+	the change is committed.
+	"""
+	if frappe.flags.in_test or doc.flags.created_by_sync or not price_sync_is_enabled():
+		return
+	# Only the name goes in the job. It runs after the commit, so it reads the saved price.
+	frappe.enqueue(
+		"woocommerce_conduit.tasks.sync_item_prices.run_item_price_sync",
+		enqueue_after_commit=True,
+		item_code=doc.item_code,
+	)
 
 
 @frappe.whitelist()
 def run_item_price_sync_in_background():
 	frappe.enqueue(run_item_price_sync, queue="long", timeout=3600)
+
+
+@frappe.whitelist(methods=["POST"])
+def sync_item_price_to_woocommerce(item_code: str):
+	"""
+	Push one Item's prices to WooCommerce, from the Item form
+	"""
+	frappe.has_permission("Item", "write", doc=item_code, throw=True)
+	if not price_sync_is_enabled():
+		frappe.throw(_("Price sync is not enabled on any WooCommerce Server"))
+	run_item_price_sync(item_code=item_code)
 
 
 @frappe.whitelist()
@@ -91,7 +115,7 @@ class SynchroniseItemPrice(SynchroniseWooCommerce):
 			self.wc_server = server
 			self.get_erpnext_item_prices()
 			self.get_erpnext_sale_prices()
-			# self.sync_items_with_woocommerce_products()
+			self.sync_items_with_woocommerce_products()
 
 	def get_erpnext_item_prices(self) -> None:
 		"""
@@ -107,6 +131,7 @@ class SynchroniseItemPrice(SynchroniseWooCommerce):
 			and_conditions = []
 			and_conditions.append(ip.price_list == self.wc_server.price_list)
 			and_conditions.append(iwc.woocommerce_server == self.wc_server.name)
+			and_conditions.append(iwc.enable_sync == 1)
 			if not self.wc_server.sync_prices_for_disabled_items:
 				and_conditions.append(item.disabled == 0)
 			and_conditions.append(iwc.woocommerce_id.isnotnull())
@@ -148,6 +173,8 @@ class SynchroniseItemPrice(SynchroniseWooCommerce):
 		and_conditions = [
 			ip.price_list == server.sales_price_list,
 			iwc.woocommerce_server == server.name,
+			# Same as the regular price query, see below
+			iwc.enable_sync == 1,
 			iwc.woocommerce_id.isnotnull(),
 			*item_wide_price_conditions(ip),
 		]
@@ -180,6 +207,7 @@ class SynchroniseItemPrice(SynchroniseWooCommerce):
 		"""
 		if not self.wc_server:
 			return
+		pushed = False
 		for item_price in self.item_price_list:
 			# Get the WooCommerce Product doc
 			wc_product_name = generate_woocommerce_record_name_from_domain_and_id(
@@ -216,10 +244,22 @@ class SynchroniseItemPrice(SynchroniseWooCommerce):
 					wc_product_dirty |= self._apply_sale_price(wc_product, item_price.woocommerce_id)
 
 				if wc_product_dirty:
+					# The callers check permissions; whoever saved the Item Price may not have write
+					# access to WooCommerce Products
+					wc_product.flags.ignore_permissions = True
 					wc_product.save()
+					pushed = True
+					# Space out the writes of a full sweep, so the shop isn't flooded
+					if (delay := frappe.utils.flt(self.wc_server.price_list_delay_per_item)) > 0 and not (
+						frappe.flags.in_test
+					):
+						time.sleep(delay)
 			except Exception:
 				error_message = f"{frappe.get_traceback()}\n\n Product Data: \n{wc_product.as_dict()!s}"
 				frappe.log_error("WooCommerce Error: Price List Sync", error_message)
+
+		if pushed:
+			record_sync_time(self.wc_server.name)
 
 	def _apply_sale_price(self, wc_product: WooCommerceProduct, woocommerce_id: str) -> bool:
 		"""
