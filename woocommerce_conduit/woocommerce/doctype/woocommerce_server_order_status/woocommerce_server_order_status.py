@@ -6,20 +6,23 @@ from frappe.model.document import Document
 # What a WooCommerce Order with a status means in ERPNext. The statuses are WooCommerce's, and a shop can
 # have more than the core ones, so the server keeps a table of them instead of this code knowing them all.
 ACTION_SKIP = "Skip"
-ACTION_SKIP_CANCEL = "Skip, cancel existing"
 ACTION_SUBMIT = "Submit SO"
 ACTION_SUBMIT_INVOICE = "Submit SO + Invoice"
 ACTION_SUBMIT_HOLD = "Submit SO + Hold"
+ACTION_COMPLETE = "Complete SO"
 ACTION_CANCEL = "Cancel SO"
 ACTION_CLOSE = "Close SO"
 ACTION_STATUS_ONLY = "Status only"
 
-# The actions for which a Sales Order is created when there is none yet. For every other action an order
-# that was never synced stays out of ERPNext, so no Customer, Address or Contact is made for it either.
-CREATING_ACTIONS = (ACTION_SUBMIT, ACTION_SUBMIT_INVOICE, ACTION_SUBMIT_HOLD)
-CANCELLING_ACTIONS = (ACTION_CANCEL, ACTION_SKIP_CANCEL)
+# The actions for which a Sales Order is created when there is none yet. Every other action only acts on a
+# Sales Order that exists, so an order first seen with it (say one that failed, or was cancelled or refunded
+# before it was ever synced) stays out of ERPNext, and no Customer, Address or Contact is made for it either.
+CREATING_ACTIONS = (ACTION_SUBMIT, ACTION_SUBMIT_INVOICE, ACTION_SUBMIT_HOLD, ACTION_COMPLETE)
+# The actions for which a Sales Invoice is made. Complete SO only makes one for an order first seen
+# completed: once an order is in ERPNext, ERPNext is where it is completed.
+INVOICING_ACTIONS = (ACTION_SUBMIT_INVOICE, ACTION_COMPLETE)
 # The actions after which a Sales Order is not changed any more
-ENDING_ACTIONS = (*CANCELLING_ACTIONS, ACTION_CLOSE)
+ENDING_ACTIONS = (ACTION_CANCEL, ACTION_CLOSE)
 
 # The payment gateway decides on these, so ERPNext must not push them over the gateway's
 PAYMENT_OWNED_STATUSES = ("checkout-draft", "pending", "failed", "on-hold", "processing")
@@ -28,10 +31,10 @@ PAYMENT_OWNED_STATUSES = ("checkout-draft", "pending", "failed", "on-hold", "pro
 DEFAULT_STATUSES = (
 	("checkout-draft", "Draft", ACTION_SKIP, ""),
 	("pending", "Pending payment", ACTION_SUBMIT_INVOICE, ""),
-	("failed", "Failed", ACTION_SKIP_CANCEL, ""),
+	("failed", "Failed", ACTION_CANCEL, ""),
 	("on-hold", "On hold", ACTION_SUBMIT_HOLD, ""),
 	("processing", "Processing", ACTION_SUBMIT_INVOICE, ""),
-	("completed", "Completed", ACTION_SUBMIT_INVOICE, "Completed"),
+	("completed", "Completed", ACTION_COMPLETE, "Completed"),
 	("cancelled", "Cancelled", ACTION_CANCEL, "Cancelled"),
 	("refunded", "Refunded", ACTION_CLOSE, ""),
 	("trash", "Trash", ACTION_CANCEL, ""),

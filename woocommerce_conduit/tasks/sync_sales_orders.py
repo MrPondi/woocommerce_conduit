@@ -338,7 +338,8 @@ class SynchroniseSalesOrder(
 		# A status that the map doesn't know leaves ERPNext as it is
 		action = status_row.erpnext_action if status_row else ACTION_STATUS_ONLY
 
-		if not self.sales_order:
+		first_sight = not self.sales_order
+		if first_sight:
 			# Only some statuses mean there is an order to keep. For the others nothing is made, and that
 			# includes the Customer, Address and Contact that a Sales Order would need.
 			if action not in CREATING_ACTIONS:
@@ -351,7 +352,7 @@ class SynchroniseSalesOrder(
 			self.update_sales_order(action)
 
 		# Also when nothing changed, as the Sales Order may have been submitted in the mean time
-		self.sync_invoice_and_payment(action)
+		self.sync_invoice_and_payment(action, first_sight)
 
 	def push_status_to_woocommerce(self):
 		"""

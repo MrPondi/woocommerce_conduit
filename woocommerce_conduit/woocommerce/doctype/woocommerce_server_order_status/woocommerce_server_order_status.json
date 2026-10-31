@@ -31,12 +31,12 @@
   },
   {
    "default": "Status only",
-   "description": "What an order that has this status means in ERPNext",
+   "description": "What an order that has this status means in ERPNext. Only the Submit actions and Complete SO make a Sales Order: the others act on one that exists, so an order first seen with them stays out of ERPNext. Complete SO makes the Sales Order, Sales Invoice, Payment Entry and Delivery Note of an order first seen completed, and leaves one that exists alone.",
    "fieldname": "erpnext_action",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "When WooCommerce has this status",
-   "options": "Skip\nSkip, cancel existing\nSubmit SO\nSubmit SO + Invoice\nSubmit SO + Hold\nCancel SO\nClose SO\nStatus only",
+   "options": "Skip\nSubmit SO\nSubmit SO + Invoice\nSubmit SO + Hold\nComplete SO\nCancel SO\nClose SO\nStatus only",
    "reqd": 1,
    "columns": 3
   },

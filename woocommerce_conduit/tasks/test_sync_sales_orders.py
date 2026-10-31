@@ -37,8 +37,8 @@ from woocommerce_conduit.tasks.sync_sales_orders import (
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import WooCommerceOrder
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 	ACTION_CANCEL,
+	ACTION_COMPLETE,
 	ACTION_SKIP,
-	ACTION_SKIP_CANCEL,
 	ACTION_STATUS_ONLY,
 	ACTION_SUBMIT_HOLD,
 	ACTION_SUBMIT_INVOICE,
@@ -185,7 +185,7 @@ class TestSyncHash(IntegrationTestCase):
 				patch.object(sync, "sync_invoice_and_payment") as sync_invoice_and_payment,
 			):
 				sync.sync_wc_order_with_erpnext_order()
-			sync_invoice_and_payment.assert_called_once_with(ACTION_STATUS_ONLY)
+			sync_invoice_and_payment.assert_called_once_with(ACTION_STATUS_ONLY, False)
 
 	def test_changed_order_is_pulled(self):
 		sync = self.sync_with(datetime(2026, 10, 30, 9, 0, 0))
@@ -339,7 +339,8 @@ class TestStatusMap(IntegrationTestCase):
 
 		self.assertEqual(rows["checkout-draft"]["erpnext_action"], ACTION_SKIP)
 		self.assertEqual(rows["pending"]["erpnext_action"], ACTION_SUBMIT_INVOICE)
-		self.assertEqual(rows["failed"]["erpnext_action"], ACTION_SKIP_CANCEL)
+		self.assertEqual(rows["failed"]["erpnext_action"], ACTION_CANCEL)
+		self.assertEqual(rows["completed"]["erpnext_action"], ACTION_COMPLETE)
 		self.assertEqual(rows["on-hold"]["erpnext_action"], ACTION_SUBMIT_HOLD)
 		self.assertEqual(rows["processing"]["erpnext_action"], ACTION_SUBMIT_INVOICE)
 		self.assertEqual(rows["cancelled"]["erpnext_action"], ACTION_CANCEL)
@@ -459,12 +460,26 @@ class TestCreatingOrders(IntegrationTestCase):
 			patch.object(sync, "sync_invoice_and_payment") as sync_invoice_and_payment,
 		):
 			sync.sync_wc_order_with_erpnext_order()
-		sync_invoice_and_payment.assert_called_once_with(ACTION_SUBMIT_INVOICE)
+		sync_invoice_and_payment.assert_called_once_with(ACTION_SUBMIT_INVOICE, True)
 
 	def test_orders_that_are_wanted_are_created(self):
 		self.sync_new_order("pending").assert_called_once_with(ACTION_SUBMIT_INVOICE)
 		self.sync_new_order("processing").assert_called_once_with(ACTION_SUBMIT_INVOICE)
 		self.sync_new_order("on-hold").assert_called_once_with(ACTION_SUBMIT_HOLD)
+		self.sync_new_order("completed").assert_called_once_with(ACTION_COMPLETE)
+
+	def test_order_seen_before_is_not_new(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.sales_order = MagicMock(woocommerce_last_sync_hash="2026-10-30 10:00:00")
+		sync.woocommerce_order = _dict(
+			status="completed", woocommerce_server=SERVER, woocommerce_date_modified="2026-10-30T10:00:00"
+		)
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=make_server()),
+			patch.object(sync, "sync_invoice_and_payment") as sync_invoice_and_payment,
+		):
+			sync.sync_wc_order_with_erpnext_order()
+		sync_invoice_and_payment.assert_called_once_with(ACTION_COMPLETE, False)
 
 
 class TestPullingStatus(IntegrationTestCase):
@@ -503,8 +518,8 @@ class TestPullingStatus(IntegrationTestCase):
 		self.assertEqual(calls, ["save", "lines", ACTION_SUBMIT_INVOICE])
 
 	def test_lines_of_a_cancelled_order_are_left(self):
-		_sync, calls = self.pull("pending", "failed", ACTION_SKIP_CANCEL)
-		self.assertEqual(calls, ["save", ACTION_SKIP_CANCEL])
+		_sync, calls = self.pull("pending", "failed", ACTION_CANCEL)
+		self.assertEqual(calls, ["save", ACTION_CANCEL])
 
 	def test_action_is_not_repeated_for_other_changes(self):
 		# The note of an order was edited: a hold put on the Sales Order in ERPNext must stay
@@ -552,7 +567,7 @@ class TestStatusActions(IntegrationTestCase):
 
 	def test_unpaid_order_is_cancelled(self):
 		sync = self.make()
-		sync.apply_status_action(ACTION_SKIP_CANCEL)
+		sync.apply_status_action(ACTION_CANCEL)
 		sync.sales_order.cancel.assert_called_once()
 		sync.sales_order.update_status.assert_not_called()
 
@@ -743,7 +758,12 @@ class TestWebhook(IntegrationTestCase):
 		enqueue.assert_not_called()
 
 
-class TestInvoiceAndPayment(IntegrationTestCase):
+class InvoiceAndPaymentCase(IntegrationTestCase):
+	"""Makes a synced Sales Order and runs its invoice and payment step with ERPNext mocked"""
+
+	def setUp(self):
+		self.delivery_note = MagicMock(flags=_dict())
+
 	def make(self, server=None, **sales_order_values):
 		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
 		sync.sales_order = MagicMock(
@@ -773,7 +793,12 @@ class TestInvoiceAndPayment(IntegrationTestCase):
 		return sync
 
 	def run_sync(
-		self, sync, action=ACTION_SUBMIT_INVOICE, payment_reference_status=1, account="1100 - Bank - T"
+		self,
+		sync,
+		action=ACTION_SUBMIT_INVOICE,
+		payment_reference_status=1,
+		account="1100 - Bank - T",
+		first_sight=False,
 	):
 		invoice = MagicMock()
 		invoice.name = "ACC-SINV-1"
@@ -788,14 +813,17 @@ class TestInvoiceAndPayment(IntegrationTestCase):
 			patch.object(order_payment, "make_sales_invoice", return_value=invoice) as make_sales_invoice,
 			patch.object(order_payment, "get_payment_entry", return_value=payment_entry) as get_payment_entry,
 			patch.object(order_payment, "get_mode_of_payment_account", return_value=account),
+			patch.object(order_payment, "make_delivery_note", return_value=self.delivery_note),
 		):
-			sync.sync_invoice_and_payment(action)
+			sync.sync_invoice_and_payment(action, first_sight)
 		return invoice, payment_entry, make_sales_invoice, get_payment_entry
 
 	def linked(self, sync, fieldname):
 		calls = [c.args for c in sync.sales_order.db_set.call_args_list if c.args[0] == fieldname]
 		return calls[-1][1] if calls else None
 
+
+class TestInvoiceAndPayment(InvoiceAndPaymentCase):
 	def test_invoice_is_made_without_waiting_for_delivery(self):
 		sync = self.make(make_server(enabled_payments_sync=0))
 		invoice, _pe, make_sales_invoice, _get_pe = self.run_sync(sync)
@@ -1269,3 +1297,43 @@ class TestNewSalesOrderLines(IntegrationTestCase):
 				self.assertRaises(frappe.ValidationError),
 			):
 				sync.set_items_in_sales_order(frappe.new_doc("Sales Order"))
+
+
+class TestCompletedOrders(InvoiceAndPaymentCase):
+	def test_order_first_seen_completed_gets_everything(self):
+		sync = self.make(per_delivered=0)
+		sync.woocommerce_order.date_completed = "2026-10-31T12:30:00"
+		_inv, _pe, make_sales_invoice, get_payment_entry = self.run_sync(
+			sync, action=ACTION_COMPLETE, first_sight=True
+		)
+
+		make_sales_invoice.assert_called_once()
+		get_payment_entry.assert_called_once()
+		self.delivery_note.submit.assert_called_once()
+		self.assertEqual(self.delivery_note.posting_date, date(2026, 10, 31))
+		self.assertEqual(self.delivery_note.posting_time, "12:30:00")
+		self.assertTrue(self.delivery_note.flags.created_by_sync)
+
+	def test_order_completed_later_is_left_to_erpnext(self):
+		sync = self.make()
+		_inv, _pe, make_sales_invoice, get_payment_entry = self.run_sync(sync, action=ACTION_COMPLETE)
+
+		make_sales_invoice.assert_not_called()
+		get_payment_entry.assert_not_called()
+		self.delivery_note.insert.assert_not_called()
+
+	def test_processing_after_pending_only_adds_the_payment(self):
+		sync = self.make(woocommerce_sales_invoice="ACC-SINV-1")
+		_inv, _pe, make_sales_invoice, get_payment_entry = self.run_sync(sync)
+
+		make_sales_invoice.assert_not_called()
+		get_payment_entry.assert_called_once()
+		self.delivery_note.insert.assert_not_called()
+
+	def test_delivery_that_fails_is_flagged(self):
+		sync = self.make(per_delivered=0)
+		self.delivery_note.submit.side_effect = frappe.ValidationError("Not enough stock")
+		self.run_sync(sync, action=ACTION_COMPLETE, first_sight=True)
+
+		self.assertIn("Not enough stock", self.linked(sync, "woocommerce_sync_issue"))
+		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), "ACC-PAY-1")

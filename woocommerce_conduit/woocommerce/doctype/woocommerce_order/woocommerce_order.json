@@ -59,6 +59,7 @@
   "payment_method",
   "transaction_id",
   "date_paid",
+  "date_completed",
   "section_break_nidm",
   "tax_lines",
   "fee_lines",
@@ -257,6 +258,12 @@
    "fieldname": "date_paid",
    "fieldtype": "Datetime",
    "label": "Date Paid",
+   "read_only": 1
+  },
+  {
+   "fieldname": "date_completed",
+   "fieldtype": "Datetime",
+   "label": "Date Completed",
    "read_only": 1
   },
   {

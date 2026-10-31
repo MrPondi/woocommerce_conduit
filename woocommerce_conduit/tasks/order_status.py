@@ -8,7 +8,6 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woo
 	ACTION_CANCEL,
 	ACTION_CLOSE,
 	ACTION_SKIP,
-	ACTION_SKIP_CANCEL,
 	ACTION_SUBMIT,
 	ACTION_SUBMIT_HOLD,
 	ACTION_SUBMIT_INVOICE,
@@ -95,7 +94,7 @@ class SalesOrderStatusMixin:
 			self.resume_sales_order()
 		elif action == ACTION_SUBMIT_HOLD:
 			self.hold_sales_order()
-		elif action in (ACTION_CANCEL, ACTION_SKIP_CANCEL):
+		elif action == ACTION_CANCEL:
 			self.cancel_sales_order()
 		elif action == ACTION_CLOSE:
 			self.close_sales_order()

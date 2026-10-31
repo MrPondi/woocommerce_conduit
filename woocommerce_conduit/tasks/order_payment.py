@@ -2,15 +2,16 @@ from typing import TYPE_CHECKING
 
 import frappe
 from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
-from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
+from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note, make_sales_invoice
 from frappe import _
-from frappe.utils import flt, getdate
+from frappe.utils import flt, get_datetime, getdate
 
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	get_mode_of_payment_account,
 )
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
-	ACTION_SUBMIT_INVOICE,
+	ACTION_COMPLETE,
+	INVOICING_ACTIONS,
 )
 
 if TYPE_CHECKING:
@@ -60,14 +61,19 @@ class SalesOrderPaymentMixin:
 	sales_order: "SyncedOrder"
 	woocommerce_order: "WooCommerceOrder"
 
-	def sync_invoice_and_payment(self, action: str) -> None:
+	def sync_invoice_and_payment(self, action: str, first_sight: bool = False) -> None:
 		"""
 		Make the Sales Invoice when the status of the order says so, and the Payment Entry when it was paid.
 		Every step is done once: it is skipped when the Sales Order is linked to its document already. A step
 		that fails is flagged on the Sales Order and logged, as the order itself is still worth keeping.
+
+		An order first seen completed gets its Delivery Note too, so it is complete in ERPNext as well. An
+		order that WooCommerce completes later was handled in ERPNext, so nothing is made for it.
 		"""
 		sales_order = self.sales_order
 		if not sales_order or sales_order.docstatus != 1:
+			return
+		if action == ACTION_COMPLETE and not first_sight:
 			return
 
 		sales_order.reload()
@@ -79,7 +85,7 @@ class SalesOrderPaymentMixin:
 		wc_server: WooCommerceServer = frappe.get_cached_doc(
 			"WooCommerce Server", self.woocommerce_order.woocommerce_server
 		)  # type: ignore
-		if wc_server.create_sales_invoice and action == ACTION_SUBMIT_INVOICE:
+		if wc_server.create_sales_invoice and action in INVOICING_ACTIONS:
 			self.run_flagged(
 				lambda: self.create_sales_invoice(wc_server), _("The Sales Invoice could not be made: {0}")
 			)
@@ -87,6 +93,8 @@ class SalesOrderPaymentMixin:
 			self.run_flagged(
 				lambda: self.create_payment_entry(wc_server), _("The Payment Entry could not be made: {0}")
 			)
+		if action == ACTION_COMPLETE:
+			self.run_flagged(self.create_delivery_note, _("The Delivery Note could not be made: {0}"))
 
 	def create_sales_invoice(self, wc_server) -> None:
 		sales_order = self.sales_order
@@ -107,6 +115,25 @@ class SalesOrderPaymentMixin:
 			invoice.submit()
 
 		sales_order.db_set("woocommerce_sales_invoice", invoice.name, update_modified=False)
+
+	def create_delivery_note(self) -> None:
+		"""
+		Deliver an order that was completed in WooCommerce before ERPNext saw it, dated when it was completed
+		"""
+		sales_order, wc_order = self.sales_order, self.woocommerce_order
+		sales_order.reload()
+		if flt(sales_order.per_delivered) > 0:
+			return
+
+		delivery_note = make_delivery_note(sales_order.name)
+		completed = wc_order.get("date_completed")
+		delivery_note.set_posting_time = 1
+		delivery_note.posting_date = getdate(completed) if completed else sales_order.transaction_date
+		if completed:
+			delivery_note.posting_time = get_datetime(completed).strftime("%H:%M:%S")
+		delivery_note.flags.created_by_sync = True
+		delivery_note.insert()
+		delivery_note.submit()
 
 	def create_payment_entry(self, wc_server) -> None:
 		"""
