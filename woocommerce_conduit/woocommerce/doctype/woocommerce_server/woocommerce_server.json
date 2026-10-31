@@ -47,6 +47,7 @@
   "load_default_order_statuses",
   "sales_order_status_map",
   "items_tab",
+  "check_order_items",
   "name_by",
   "enable_image_sync",
   "item_field_map",
@@ -126,6 +127,13 @@
    "fieldname": "items_tab",
    "fieldtype": "Tab Break",
    "label": "Items"
+  },
+  {
+   "depends_on": "eval: !doc.__islocal",
+   "description": "List the products of the latest orders that have no Item yet, to link or create them before the order sync is unpaused",
+   "fieldname": "check_order_items",
+   "fieldtype": "Button",
+   "label": "Check Order Items"
   },
   {
    "fieldname": "item_field_map",

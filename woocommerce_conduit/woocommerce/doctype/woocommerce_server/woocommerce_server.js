@@ -54,6 +54,10 @@ frappe.ui.form.on("WooCommerce Server", {
 		});
 	},
 
+	check_order_items: function (frm) {
+		new OrderItemCheck(frm).show();
+	},
+
 	load_payment_methods: function (frm) {
 		add_missing_rows(frm, "get_missing_payment_method_rows", "payment_method_map", {
 			added: __("{0} payment methods added"),
@@ -140,4 +144,104 @@ function add_missing_rows(frm, method, table, messages) {
 			});
 		},
 	});
+}
+
+// The products of the latest orders that have no Item, each to link to the Item that looks like it or to
+// create an Item for
+class OrderItemCheck {
+	constructor(frm) {
+		this.frm = frm;
+		this.dialog = new frappe.ui.Dialog({
+			title: __("Check Order Items"),
+			size: "extra-large",
+			fields: [
+				{
+					label: __("Orders to Check"),
+					fieldname: "order_count",
+					fieldtype: "Int",
+					default: 200,
+					description: __("The newest orders of the shop, up to 2000"),
+				},
+				{ fieldtype: "HTML", fieldname: "results" },
+			],
+			primary_action_label: __("Check"),
+			primary_action: () => this.check(),
+		});
+		this.dialog.fields_dict.results.$wrapper.on("click", "button[data-action]", (e) =>
+			this.act($(e.currentTarget).data()),
+		);
+	}
+
+	show() {
+		this.dialog.show();
+	}
+
+	check() {
+		const results = this.dialog.fields_dict.results;
+		results.$wrapper.html(`<p class="text-muted">${__("Reading the orders...")}</p>`);
+		frappe.call({
+			method: "woocommerce_conduit.tasks.item_parity.get_unlinked_order_products",
+			args: {
+				woocommerce_server: this.frm.doc.name,
+				order_count: this.dialog.get_value("order_count"),
+			},
+			freeze: true,
+			callback: (r) => this.render(r.message || []),
+			error: () => results.$wrapper.empty(),
+		});
+	}
+
+	render(products) {
+		const results = this.dialog.fields_dict.results;
+		if (!products.length) {
+			results.$wrapper.html(
+				`<p class="text-success">${__("Every product of these orders has an Item")}</p>`,
+			);
+			return;
+		}
+		const esc = frappe.utils.escape_html;
+		const rows = products
+			.map((p) => {
+				const link = p.suggested_item
+					? `<button class="btn btn-xs btn-primary" data-action="link" data-product-id="${esc(p.product_id)}" data-item-code="${esc(p.suggested_item)}">${__("Link to {0}", [esc(p.suggested_item)])}</button>`
+					: "";
+				return `<tr>
+					<td><a href="/app/woocommerce-product/${encodeURIComponent(p.woocommerce_product_name)}" target="_blank">${esc(p.name || p.product_id)}</a></td>
+					<td>${esc(p.sku || "")}</td>
+					<td class="text-right">${p.orders}</td>
+					<td class="text-right">${format_number(p.qty)}</td>
+					<td class="text-nowrap">${link}
+						<button class="btn btn-xs btn-default" data-action="create" data-product-name="${esc(p.woocommerce_product_name)}">${__("Create Item")}</button>
+					</td>
+				</tr>`;
+			})
+			.join("");
+		results.$wrapper.html(`
+			<p class="text-muted">${__("{0} products have no Item", [products.length])}</p>
+			<table class="table table-bordered table-condensed">
+				<thead><tr>
+					<th>${__("Product")}</th><th>${__("SKU")}</th>
+					<th class="text-right">${__("Orders")}</th><th class="text-right">${__("Qty")}</th><th></th>
+				</tr></thead>
+				<tbody>${rows}</tbody>
+			</table>`);
+	}
+
+	act(data) {
+		const call =
+			data.action === "link"
+				? {
+						method: "woocommerce_conduit.tasks.item_parity.link_product_to_item",
+						args: {
+							woocommerce_server: this.frm.doc.name,
+							product_id: String(data.productId),
+							item_code: data.itemCode,
+						},
+					}
+				: {
+						method: "woocommerce_conduit.tasks.sync_items.sync_woocommerce_product",
+						args: { woocommerce_product_name: data.productName },
+					};
+		frappe.call({ ...call, freeze: true, callback: () => this.check() });
+	}
 }
