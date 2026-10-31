@@ -20,6 +20,7 @@ from frappe.utils.data import cstr, now
 from frappe.utils.synchronization import filelock
 
 from woocommerce_conduit.exceptions import SyncDisabledError
+from woocommerce_conduit.tasks.order_payment import SalesOrderPaymentMixin, get_payment_method
 from woocommerce_conduit.tasks.order_status import (
 	SalesOrderStatusMixin,
 	get_status_to_push,
@@ -68,6 +69,8 @@ class SyncedOrder(SalesOrder):
 		woocommerce_status: DF.Data
 		woocommerce_payment_method: DF.Data
 		woocommerce_payment_entry: DF.Data
+		woocommerce_sales_invoice: DF.Data
+		woocommerce_sync_issue: DF.SmallText
 		woocommerce_customer_note: DF.Data
 		items: DF.Table[SyncedOrderItem]  # pyright: ignore[reportIncompatibleVariableOverride]
 
@@ -186,7 +189,7 @@ def run_sales_order_sync(
 	return sync.sales_order, sync.woocommerce_order
 
 
-class SynchroniseSalesOrder(SalesOrderStatusMixin, SynchroniseWooCommerce):
+class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, SynchroniseWooCommerce):
 	"""
 	Class for managing synchronisation of a WooCommerce Order with an ERPNext Sales Order
 	"""
@@ -339,21 +342,17 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SynchroniseWooCommerce):
 		if not self.sales_order:
 			# Only some statuses mean there is an order to keep. For the others nothing is made, and that
 			# includes the Customer, Address and Contact that a Sales Order would need.
-			if action in CREATING_ACTIONS:
-				self.create_sales_order(action)
-			return
-
+			if action not in CREATING_ACTIONS:
+				return
+			self.create_sales_order(action)
 		# WooCommerce only wins when it changed since the last pull or push
-		if wc_order_changed(
+		elif wc_order_changed(
 			self.woocommerce_order.woocommerce_date_modified, self.sales_order.woocommerce_last_sync_hash
 		):
 			self.update_sales_order(action)
 
-		# If the Sales Order exists and has been submitted in the mean time, sync Payment Entries
-		if self.sales_order.docstatus == 1 and not self.sales_order.woocommerce_payment_entry:
-			self.sales_order.reload()
-			if self.create_and_link_payment_entry(self.woocommerce_order, self.sales_order):
-				self.sales_order.save()
+		# Also when nothing changed, as the Sales Order may have been submitted in the mean time
+		self.sync_invoice_and_payment(action)
 
 	def push_status_to_woocommerce(self):
 		"""
@@ -408,23 +407,9 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SynchroniseWooCommerce):
 			):
 				self.sales_order.woocommerce_customer_note = self.woocommerce_order.customer_note
 
-			# Update the payment_method_title field if necessary, use the payment method ID
-			# if the title field is too long
-			payment_method = None
-
-			if (
-				self.woocommerce_order.payment_method_title
-				and len(self.woocommerce_order.payment_method_title) < 140
-			):
-				payment_method = self.woocommerce_order.payment_method_title
-			elif self.woocommerce_order.payment_method:
-				payment_method = self.woocommerce_order.payment_method
-
+			payment_method = get_payment_method(self.woocommerce_order)
 			if payment_method and self.sales_order.woocommerce_payment_method != payment_method:
 				self.sales_order.woocommerce_payment_method = payment_method
-
-			if not self.sales_order.woocommerce_payment_entry:
-				self.create_and_link_payment_entry(self.woocommerce_order, self.sales_order)
 
 			# Always note what was seen, so an unchanged WooCommerce Order isn't looked at again
 			self.sales_order.woocommerce_last_sync_hash = self.woocommerce_order.woocommerce_date_modified
@@ -435,92 +420,6 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SynchroniseWooCommerce):
 			# undo a hold that was put on its Sales Order in ERPNext.
 			if status_changed:
 				self.apply_status_action(action)
-
-	def create_and_link_payment_entry(self, wc_order: WooCommerceOrder, sales_order: SyncedOrder) -> bool:
-		"""
-		Create a Payment Entry for a WooCommerce Order that has been marked as Paid
-		"""
-		wc_server: WooCommerceServer = frappe.get_cached_doc(
-			"WooCommerce Server", wc_order.woocommerce_server
-		)  # type: ignore
-		if not wc_server:
-			raise ValueError("Could not find woocommerce_server in list of servers")
-
-		# Validate that WooCommerce order has been paid, and that sales order doesn't have a linked Payment Entry yet
-		if (
-			wc_server.enabled_payments_sync
-			and wc_order.payment_method
-			and wc_order.date_paid
-			and not sales_order.woocommerce_payment_entry
-			and sales_order.docstatus == 1
-		):
-			# If the grand total is 0, skip payment entry creation
-			if sales_order.grand_total is None or float(sales_order.grand_total) == 0:
-				return True
-
-			# Get Company Bank Account for this Payment Method
-			payment_method_bank_account_mapping = json.loads(wc_server.payment_method_bank_account_mapping)
-
-			if wc_order.payment_method not in payment_method_bank_account_mapping:
-				raise KeyError(
-					f"WooCommerce payment method {wc_order.payment_method} not found in WooCommerce Server"
-				)
-
-			company_bank_account = payment_method_bank_account_mapping[wc_order.payment_method]
-
-			if company_bank_account:
-				# Get G/L Account for this Payment Method
-				payment_method_gl_account_mapping = json.loads(wc_server.payment_method_gl_account_mapping)
-				company_gl_account = payment_method_gl_account_mapping[wc_order.payment_method]
-
-				# Create a new Payment Entry
-				company = frappe.get_value("Account", company_gl_account, "company")
-
-				# Attempt to get Payfast Transaction ID
-				payment_reference_no = wc_order.get("transaction_id", None)
-
-				# Determine if the reference should be Sales Order or Sales Invoice
-				reference_doctype = "Sales Order"
-				reference_name = sales_order.name
-				total_amount = sales_order.grand_total
-				if sales_order.per_billed > 0:
-					si_item_details = frappe.get_all(
-						"Sales Invoice Item",
-						fields=["name", "parent"],
-						filters={"sales_order": sales_order.name},
-					)
-					if len(si_item_details) > 0:
-						reference_doctype = "Sales Invoice"
-						reference_name = si_item_details[0].parent
-						total_amount = sales_order.grand_total
-
-				# Create Payment Entry
-				payment_entry_dict = {
-					"company": company,
-					"payment_type": "Receive",
-					"reference_no": payment_reference_no or wc_order.payment_method_title,
-					"reference_date": wc_order.date_paid,
-					"party_type": "Customer",
-					"party": sales_order.customer,
-					"posting_date": wc_order.date_paid or sales_order.transaction_date,
-					"paid_amount": float(wc_order.total),
-					"received_amount": float(wc_order.total),
-					"bank_account": company_bank_account,
-					"paid_to": company_gl_account,
-				}
-				payment_entry = frappe.new_doc("Payment Entry")
-				payment_entry.update(payment_entry_dict)
-				row = payment_entry.append("references")
-				row.reference_doctype = reference_doctype
-				row.reference_name = reference_name
-				row.total_amount = total_amount
-				row.allocated_amount = total_amount
-				payment_entry.save()
-
-				# Link created Payment Entry to Sales Order
-				sales_order.woocommerce_payment_entry = payment_entry.name  # type: ignore
-			return True
-		return False
 
 	def create_sales_order(self, action: str) -> None:
 		"""
@@ -550,18 +449,7 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SynchroniseWooCommerce):
 		)  # type: ignore
 
 		new_sales_order.woocommerce_server = self.woocommerce_order.woocommerce_server
-		# Set the payment_method_title field if necessary, use the payment method ID if the title field is too long
-		payment_method = None
-
-		if (
-			self.woocommerce_order.payment_method_title
-			and len(self.woocommerce_order.payment_method_title) < 140
-		):
-			payment_method = self.woocommerce_order.payment_method_title
-		elif self.woocommerce_order.payment_method:
-			payment_method = self.woocommerce_order.payment_method
-
-		if payment_method:
+		if payment_method := get_payment_method(self.woocommerce_order):
 			new_sales_order.woocommerce_payment_method = payment_method
 		created_date = str(self.woocommerce_order.woocommerce_date_created).split("T", 1)
 		new_sales_order.transaction_date = created_date[0]
@@ -594,18 +482,15 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SynchroniseWooCommerce):
 
 		new_sales_order.reload()
 		new_sales_order.flags.created_by_sync = True
-		self.create_and_link_payment_entry(self.woocommerce_order, new_sales_order)
 
+		self.sales_order = new_sales_order
 		try:
-			new_sales_order.save()
-			# Held last, as a Payment Entry can't be made for a Sales Order that is on hold
 			if action == ACTION_SUBMIT_HOLD:
-				new_sales_order.update_status("On Hold")
+				self.hold_sales_order()
 		except Exception:
+			# The Sales Order is made, so a hold that fails must not undo it
 			error_message = f"{frappe.get_traceback()}\n\nSales Order Data{new_sales_order.as_dict()!s}"
 			frappe.log_error("WooCommerce Error", error_message)
-		finally:
-			self.sales_order = new_sales_order
 
 	def create_or_link_customer_and_address(self) -> str | None:
 		"""

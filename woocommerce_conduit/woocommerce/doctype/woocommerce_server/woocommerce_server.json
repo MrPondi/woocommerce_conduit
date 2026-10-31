@@ -31,6 +31,8 @@
   "column_break_fjij",
   "freight_and_forwarding_account",
   "payment_sync_section",
+  "create_sales_invoice",
+  "submit_sales_invoice",
   "enabled_payments_sync",
   "payment_method_bank_account_mapping",
   "payment_method_gl_account_mapping",
@@ -185,6 +187,21 @@
    "fieldname": "payment_sync_section",
    "fieldtype": "Section Break",
    "label": "Payment Sync"
+  },
+  {
+   "default": "1",
+   "description": "A Sales Invoice is made for an order whose status is mapped to \"Submit SO + Invoice\", for example when it is placed or paid, without waiting for the delivery.",
+   "fieldname": "create_sales_invoice",
+   "fieldtype": "Check",
+   "label": "Create Sales Invoices"
+  },
+  {
+   "default": "1",
+   "depends_on": "eval: doc.create_sales_invoice || doc.enabled_payments_sync",
+   "description": "Submit the Sales Invoices and Payment Entries that are made. Otherwise they are left as drafts, and a Payment Entry waits for its Sales Invoice to be submitted.",
+   "fieldname": "submit_sales_invoice",
+   "fieldtype": "Check",
+   "label": "Submit Sales Invoices and Payment Entries"
   },
   {
    "default": "0",

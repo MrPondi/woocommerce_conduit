@@ -1,7 +1,8 @@
 # Copyright (c) 2025, Karol Parzonka and Contributors
 # See license.txt
 
-from datetime import datetime
+import json
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -10,7 +11,8 @@ from frappe.tests import IntegrationTestCase
 
 from woocommerce_conduit import endpoint
 from woocommerce_conduit.exceptions import SyncDisabledError
-from woocommerce_conduit.tasks import sync_sales_orders
+from woocommerce_conduit.tasks import order_payment, sync_sales_orders
+from woocommerce_conduit.tasks.order_payment import get_payment_method
 from woocommerce_conduit.tasks.order_status import (
 	enqueue_status_push_from_hook,
 	get_status_to_push,
@@ -40,9 +42,10 @@ from woocommerce_conduit.woocommerce.woocommerce_api import map_frappe_filters_t
 SERVER = "one.example.com"
 
 
-def make_server(rows=None, push=True):
+def make_server(rows=None, push=True, **fields):
 	"""
-	A WooCommerce Server with a status map, which is all the sync asks of it. The default map unless given.
+	A WooCommerce Server with a status map and payment settings, which is all the sync asks of it. The
+	default map unless given.
 	"""
 	return frappe.get_doc(
 		{
@@ -52,6 +55,12 @@ def make_server(rows=None, push=True):
 			"enabled": 1,
 			"enabled_order_status": 1 if push else 0,
 			"sales_order_status_map": get_default_status_rows() if rows is None else rows,
+			"create_sales_invoice": 1,
+			"submit_sales_invoice": 1,
+			"enabled_payments_sync": 1,
+			"payment_method_bank_account_mapping": json.dumps({"stripe": "Stripe Bank", "cod": ""}),
+			"payment_method_gl_account_mapping": json.dumps({"stripe": "1100 - Bank - T"}),
+			**fields,
 		}
 	)
 
@@ -152,6 +161,17 @@ class TestSyncHash(IntegrationTestCase):
 		):
 			sync.sync_wc_order_with_erpnext_order()
 		update_sales_order.assert_not_called()
+
+	def test_invoice_and_payment_are_synced_whether_or_not_the_order_changed(self):
+		for last_sync in (datetime(2026, 10, 30, 10, 0, 0), datetime(2026, 10, 30, 9, 0, 0)):
+			sync = self.sync_with(last_sync)
+			with (
+				patch.object(frappe, "get_cached_doc", return_value=make_server()),
+				patch.object(sync, "update_sales_order"),
+				patch.object(sync, "sync_invoice_and_payment") as sync_invoice_and_payment,
+			):
+				sync.sync_wc_order_with_erpnext_order()
+			sync_invoice_and_payment.assert_called_once_with(ACTION_STATUS_ONLY)
 
 	def test_changed_order_is_pulled(self):
 		sync = self.sync_with(datetime(2026, 10, 30, 9, 0, 0))
@@ -413,6 +433,19 @@ class TestCreatingOrders(IntegrationTestCase):
 		# Making a Sales Order also makes a Customer, Address and Contact, so none of these is
 		for status in ("checkout-draft", "failed", "cancelled", "trash", "refunded", "quote-sent"):
 			self.sync_new_order(status).assert_not_called()
+
+	def test_invoice_and_payment_follow_the_creation(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.woocommerce_order = _dict(
+			status="pending", woocommerce_server=SERVER, woocommerce_date_modified="2026-10-30T10:00:00"
+		)
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=make_server()),
+			patch.object(sync, "create_sales_order"),
+			patch.object(sync, "sync_invoice_and_payment") as sync_invoice_and_payment,
+		):
+			sync.sync_wc_order_with_erpnext_order()
+		sync_invoice_and_payment.assert_called_once_with(ACTION_SUBMIT_INVOICE)
 
 	def test_orders_that_are_wanted_are_created(self):
 		self.sync_new_order("pending").assert_called_once_with(ACTION_SUBMIT_INVOICE)
@@ -687,3 +720,193 @@ class TestWebhook(IntegrationTestCase):
 		response, enqueue = self.post("created", b"webhook_id=3")
 		self.assertEqual(response.status_code, 200)
 		enqueue.assert_not_called()
+
+
+class TestInvoiceAndPayment(IntegrationTestCase):
+	def make(self, server=None, **sales_order_values):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.sales_order = MagicMock(
+			**{
+				"docstatus": 1,
+				"status": "To Deliver and Bill",
+				"woocommerce_sales_invoice": None,
+				"woocommerce_payment_entry": None,
+				"woocommerce_sync_issue": None,
+				"per_billed": 0,
+				"grand_total": 100,
+				"transaction_date": "2026-10-29",
+				"flags": _dict(),
+				**sales_order_values,
+			}
+		)
+		sync.sales_order.name = "SAL-ORD-1"
+		sync.woocommerce_order = _dict(
+			name=f"{SERVER}~12",
+			woocommerce_server=SERVER,
+			payment_method="stripe",
+			payment_method_title="Card",
+			transaction_id="ch_1",
+			date_paid="2026-10-30T10:00:00",
+		)
+		sync.server = server or make_server()
+		return sync
+
+	def run_sync(self, sync, action=ACTION_SUBMIT_INVOICE, payment_reference_status=1):
+		invoice = MagicMock()
+		invoice.name = "ACC-SINV-1"
+		payment_entry = MagicMock()
+		payment_entry.name = "ACC-PAY-1"
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=sync.server),
+			patch.object(frappe, "log_error"),
+			patch.object(frappe.db, "get_value", return_value=payment_reference_status),
+			patch.object(order_payment, "make_sales_invoice", return_value=invoice) as make_sales_invoice,
+			patch.object(order_payment, "get_payment_entry", return_value=payment_entry) as get_payment_entry,
+		):
+			sync.sync_invoice_and_payment(action)
+		return invoice, payment_entry, make_sales_invoice, get_payment_entry
+
+	def linked(self, sync, fieldname):
+		calls = [c.args for c in sync.sales_order.db_set.call_args_list if c.args[0] == fieldname]
+		return calls[-1][1] if calls else None
+
+	def test_invoice_is_made_without_waiting_for_delivery(self):
+		sync = self.make(make_server(enabled_payments_sync=0))
+		invoice, _pe, make_sales_invoice, _get_pe = self.run_sync(sync)
+
+		make_sales_invoice.assert_called_once_with("SAL-ORD-1")
+		self.assertEqual(invoice.update_stock, 0)
+		# The date of the order, not of the day it was synced
+		self.assertEqual(invoice.posting_date, "2026-10-29")
+		invoice.insert.assert_called_once()
+		invoice.submit.assert_called_once()
+		self.assertEqual(self.linked(sync, "woocommerce_sales_invoice"), "ACC-SINV-1")
+
+	def test_invoice_is_left_a_draft_when_submitting_is_off(self):
+		sync = self.make(make_server(enabled_payments_sync=0, submit_sales_invoice=0))
+		invoice, *_ = self.run_sync(sync)
+
+		invoice.insert.assert_called_once()
+		invoice.submit.assert_not_called()
+
+	def test_invoice_only_for_statuses_that_say_so(self):
+		sync = self.make(make_server(enabled_payments_sync=0))
+		_inv, _pe, make_sales_invoice, _ = self.run_sync(sync, action=ACTION_SUBMIT_HOLD)
+		make_sales_invoice.assert_not_called()
+
+		sync = self.make(make_server(enabled_payments_sync=0, create_sales_invoice=0))
+		_inv, _pe, make_sales_invoice, _ = self.run_sync(sync)
+		make_sales_invoice.assert_not_called()
+
+	def test_invoice_is_made_once_and_not_for_billed_or_flagged_orders(self):
+		for values in (
+			{"woocommerce_sales_invoice": "ACC-SINV-9"},
+			{"per_billed": 100},
+			{"woocommerce_sync_issue": "Totals differ"},
+		):
+			sync = self.make(make_server(enabled_payments_sync=0), **values)
+			_inv, _pe, make_sales_invoice, _ = self.run_sync(sync)
+			make_sales_invoice.assert_not_called()
+
+	def test_nothing_is_made_for_orders_on_hold_or_closed(self):
+		for status in ("On Hold", "Closed"):
+			sync = self.make(status=status)
+			_inv, _pe, make_sales_invoice, get_payment_entry = self.run_sync(sync)
+			make_sales_invoice.assert_not_called()
+			get_payment_entry.assert_not_called()
+
+	def test_nothing_is_made_for_a_sales_order_that_is_not_submitted(self):
+		sync = self.make(docstatus=2)
+		_inv, _pe, make_sales_invoice, get_payment_entry = self.run_sync(sync)
+		make_sales_invoice.assert_not_called()
+		get_payment_entry.assert_not_called()
+
+	def test_payment_is_booked_against_the_invoice(self):
+		sync = self.make(woocommerce_sales_invoice="ACC-SINV-1")
+		_inv, payment_entry, _msi, get_payment_entry = self.run_sync(sync)
+
+		get_payment_entry.assert_called_once_with(
+			"Sales Invoice", "ACC-SINV-1", bank_account="1100 - Bank - T", reference_date=date(2026, 10, 30)
+		)
+		self.assertEqual(payment_entry.posting_date, date(2026, 10, 30))
+		self.assertEqual(payment_entry.reference_no, "ch_1")
+		self.assertEqual(payment_entry.bank_account, "Stripe Bank")
+		payment_entry.insert.assert_called_once()
+		payment_entry.submit.assert_called_once()
+		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), "ACC-PAY-1")
+
+	def test_payment_waits_for_the_invoice_to_be_submitted(self):
+		sync = self.make(woocommerce_sales_invoice="ACC-SINV-1")
+		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, payment_reference_status=0)
+		get_payment_entry.assert_not_called()
+
+	def test_payment_without_an_invoice_is_an_advance_on_the_sales_order(self):
+		sync = self.make(make_server(create_sales_invoice=0))
+		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
+		self.assertEqual(get_payment_entry.call_args.args[:2], ("Sales Order", "SAL-ORD-1"))
+
+	def test_both_are_made_for_a_paid_order(self):
+		sync = self.make()
+		invoice, payment_entry, make_sales_invoice, get_payment_entry = self.run_sync(sync)
+
+		make_sales_invoice.assert_called_once()
+		get_payment_entry.assert_called_once()
+		self.assertEqual(self.linked(sync, "woocommerce_sales_invoice"), invoice.name)
+		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), payment_entry.name)
+
+	def test_payment_is_not_made_twice_or_for_nothing(self):
+		for values, order_values in (
+			({"woocommerce_payment_entry": "ACC-PAY-9"}, {}),
+			({"grand_total": 0}, {}),
+			({}, {"date_paid": None}),
+			({}, {"payment_method": None}),
+		):
+			sync = self.make(make_server(create_sales_invoice=0), **values)
+			sync.woocommerce_order.update(order_values)
+			_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
+			get_payment_entry.assert_not_called()
+
+	def test_payment_method_without_a_bank_account_is_not_booked(self):
+		sync = self.make(make_server(create_sales_invoice=0))
+		sync.woocommerce_order.payment_method = "cod"
+		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
+
+		get_payment_entry.assert_not_called()
+		self.assertIsNone(self.linked(sync, "woocommerce_sync_issue"))
+
+	def test_payment_method_without_a_mapping_is_flagged(self):
+		sync = self.make(make_server(create_sales_invoice=0))
+		sync.woocommerce_order.payment_method = "paypal"
+		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
+
+		get_payment_entry.assert_not_called()
+		self.assertIn("paypal", self.linked(sync, "woocommerce_sync_issue"))
+
+	def test_a_step_that_fails_is_flagged_and_the_next_still_runs(self):
+		sync = self.make()
+		payment_entry = MagicMock()
+		payment_entry.name = "ACC-PAY-1"
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=sync.server),
+			patch.object(frappe, "log_error") as log_error,
+			patch.object(frappe.db, "get_value", return_value=1),
+			patch.object(
+				order_payment, "make_sales_invoice", side_effect=frappe.ValidationError("No account")
+			),
+			patch.object(order_payment, "get_payment_entry", return_value=payment_entry),
+		):
+			sync.sync_invoice_and_payment(ACTION_SUBMIT_INVOICE)
+
+		log_error.assert_called_once()
+		self.assertIn("No account", self.linked(sync, "woocommerce_sync_issue"))
+		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), "ACC-PAY-1")
+
+	def test_payment_method_title(self):
+		self.assertEqual(
+			get_payment_method(_dict(payment_method_title="Card", payment_method="stripe")), "Card"
+		)
+		# A title that doesn't fit the field
+		self.assertEqual(
+			get_payment_method(_dict(payment_method_title="C" * 140, payment_method="stripe")), "stripe"
+		)
+		self.assertIsNone(get_payment_method(_dict(payment_method_title="", payment_method="")))
