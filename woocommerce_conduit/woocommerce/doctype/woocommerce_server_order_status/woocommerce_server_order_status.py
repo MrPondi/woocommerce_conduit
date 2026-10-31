@@ -9,6 +9,7 @@ ACTION_SKIP = "Skip"
 ACTION_SUBMIT = "Submit SO"
 ACTION_SUBMIT_INVOICE = "Submit SO + Invoice"
 ACTION_SUBMIT_HOLD = "Submit SO + Hold"
+ACTION_SUBMIT_INVOICE_HOLD = "Submit SO + Invoice + Hold"
 ACTION_COMPLETE = "Complete SO"
 ACTION_CANCEL = "Cancel SO"
 ACTION_CLOSE = "Close SO"
@@ -17,10 +18,18 @@ ACTION_STATUS_ONLY = "Status only"
 # The actions for which a Sales Order is created when there is none yet. Every other action only acts on a
 # Sales Order that exists, so an order first seen with it (say one that failed, or was cancelled or refunded
 # before it was ever synced) stays out of ERPNext, and no Customer, Address or Contact is made for it either.
-CREATING_ACTIONS = (ACTION_SUBMIT, ACTION_SUBMIT_INVOICE, ACTION_SUBMIT_HOLD, ACTION_COMPLETE)
-# The actions for which a Sales Invoice is made. Complete SO only makes one for an order first seen
-# completed: once an order is in ERPNext, ERPNext is where it is completed.
-INVOICING_ACTIONS = (ACTION_SUBMIT_INVOICE, ACTION_COMPLETE)
+CREATING_ACTIONS = (
+	ACTION_SUBMIT,
+	ACTION_SUBMIT_INVOICE,
+	ACTION_SUBMIT_HOLD,
+	ACTION_SUBMIT_INVOICE_HOLD,
+	ACTION_COMPLETE,
+)
+# The actions for which a Sales Invoice is made
+INVOICING_ACTIONS = (ACTION_SUBMIT_INVOICE, ACTION_SUBMIT_INVOICE_HOLD, ACTION_COMPLETE)
+# The actions that put the Sales Order on hold. ERPNext doesn't invoice a held order, so with an invoice
+# the hold comes after it.
+HOLDING_ACTIONS = (ACTION_SUBMIT_HOLD, ACTION_SUBMIT_INVOICE_HOLD)
 # The actions after which a Sales Order is not changed any more
 ENDING_ACTIONS = (ACTION_CANCEL, ACTION_CLOSE)
 
@@ -99,6 +108,7 @@ class WooCommerceServerOrderStatus(Document):
 			"Submit SO",
 			"Submit SO + Invoice",
 			"Submit SO + Hold",
+			"Submit SO + Invoice + Hold",
 			"Complete SO",
 			"Cancel SO",
 			"Close SO",

@@ -61,19 +61,17 @@ class SalesOrderPaymentMixin:
 	sales_order: "SyncedOrder"
 	woocommerce_order: "WooCommerceOrder"
 
-	def sync_invoice_and_payment(self, action: str, first_sight: bool = False) -> None:
+	def sync_invoice_and_payment(self, action: str) -> None:
 		"""
 		Make the Sales Invoice when the status of the order says so, and the Payment Entry when it was paid.
 		Every step is done once: it is skipped when the Sales Order is linked to its document already. A step
 		that fails is flagged on the Sales Order and logged, as the order itself is still worth keeping.
 
-		An order first seen completed gets its Delivery Note too, so it is complete in ERPNext as well. An
-		order that WooCommerce completes later was handled in ERPNext, so nothing is made for it.
+		A completed order gets its Delivery Note too, whether it was completed in WooCommerce before ERPNext
+		saw it or by mistake after, so ERPNext doesn't drift from the shop.
 		"""
 		sales_order = self.sales_order
 		if not sales_order or sales_order.docstatus != 1:
-			return
-		if action == ACTION_COMPLETE and not first_sight:
 			return
 
 		sales_order.reload()
@@ -85,7 +83,12 @@ class SalesOrderPaymentMixin:
 		wc_server: WooCommerceServer = frappe.get_cached_doc(
 			"WooCommerce Server", self.woocommerce_order.woocommerce_server
 		)  # type: ignore
-		if wc_server.create_sales_invoice and action in INVOICING_ACTIONS:
+		self.create_invoice_and_payment(wc_server, invoice=action in INVOICING_ACTIONS)
+		if action == ACTION_COMPLETE:
+			self.run_flagged(self.create_delivery_note, _("The Delivery Note could not be made: {0}"))
+
+	def create_invoice_and_payment(self, wc_server, invoice: bool) -> None:
+		if invoice and wc_server.create_sales_invoice:
 			self.run_flagged(
 				lambda: self.create_sales_invoice(wc_server), _("The Sales Invoice could not be made: {0}")
 			)
@@ -93,8 +96,23 @@ class SalesOrderPaymentMixin:
 			self.run_flagged(
 				lambda: self.create_payment_entry(wc_server), _("The Payment Entry could not be made: {0}")
 			)
-		if action == ACTION_COMPLETE:
-			self.run_flagged(self.create_delivery_note, _("The Delivery Note could not be made: {0}"))
+
+	def invoice_and_hold(self) -> None:
+		"""
+		Invoice the order, and book its payment if it was paid, then hold it. ERPNext doesn't invoice an
+		order on hold, so this is done once, when the order gets the status, rather than on every sync.
+		"""
+		sales_order = self.sales_order
+		sales_order.reload()
+		sales_order.flags.created_by_sync = True
+		if sales_order.status != "Closed":
+			wc_server: WooCommerceServer = frappe.get_cached_doc(
+				"WooCommerce Server", self.woocommerce_order.woocommerce_server
+			)  # type: ignore
+			self.create_invoice_and_payment(wc_server, invoice=True)
+			sales_order.reload()
+			sales_order.flags.created_by_sync = True
+		self.hold_sales_order()
 
 	def create_sales_invoice(self, wc_server) -> None:
 		sales_order = self.sales_order

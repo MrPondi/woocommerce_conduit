@@ -7,10 +7,12 @@ from frappe.utils import flt
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 	ACTION_CANCEL,
 	ACTION_CLOSE,
+	ACTION_COMPLETE,
 	ACTION_SKIP,
 	ACTION_SUBMIT,
 	ACTION_SUBMIT_HOLD,
 	ACTION_SUBMIT_INVOICE,
+	ACTION_SUBMIT_INVOICE_HOLD,
 	DEFAULT_STATUSES,
 	normalise_status,
 )
@@ -90,10 +92,13 @@ class SalesOrderStatusMixin:
 		# The status changes made here must not be pushed back to WooCommerce
 		self.sales_order.flags.created_by_sync = True
 
-		if action in (ACTION_SUBMIT, ACTION_SUBMIT_INVOICE):
+		if action in (ACTION_SUBMIT, ACTION_SUBMIT_INVOICE, ACTION_COMPLETE):
 			self.resume_sales_order()
 		elif action == ACTION_SUBMIT_HOLD:
 			self.hold_sales_order()
+		elif action == ACTION_SUBMIT_INVOICE_HOLD:
+			self.resume_sales_order()
+			self.invoice_and_hold()
 		elif action == ACTION_CANCEL:
 			self.cancel_sales_order()
 		elif action == ACTION_CLOSE:

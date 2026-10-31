@@ -42,6 +42,7 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woo
 	ACTION_STATUS_ONLY,
 	ACTION_SUBMIT_HOLD,
 	ACTION_SUBMIT_INVOICE,
+	ACTION_SUBMIT_INVOICE_HOLD,
 	get_default_status_rows,
 	normalise_status,
 )
@@ -185,7 +186,7 @@ class TestSyncHash(IntegrationTestCase):
 				patch.object(sync, "sync_invoice_and_payment") as sync_invoice_and_payment,
 			):
 				sync.sync_wc_order_with_erpnext_order()
-			sync_invoice_and_payment.assert_called_once_with(ACTION_STATUS_ONLY, False)
+			sync_invoice_and_payment.assert_called_once_with(ACTION_STATUS_ONLY)
 
 	def test_changed_order_is_pulled(self):
 		sync = self.sync_with(datetime(2026, 10, 30, 9, 0, 0))
@@ -509,7 +510,7 @@ class TestCreatingOrders(IntegrationTestCase):
 			patch.object(sync, "sync_invoice_and_payment") as sync_invoice_and_payment,
 		):
 			sync.sync_wc_order_with_erpnext_order()
-		sync_invoice_and_payment.assert_called_once_with(ACTION_SUBMIT_INVOICE, True)
+		sync_invoice_and_payment.assert_called_once_with(ACTION_SUBMIT_INVOICE)
 
 	def test_orders_that_are_wanted_are_created(self):
 		self.sync_new_order("pending").assert_called_once_with(ACTION_SUBMIT_INVOICE)
@@ -528,7 +529,7 @@ class TestCreatingOrders(IntegrationTestCase):
 			patch.object(sync, "sync_invoice_and_payment") as sync_invoice_and_payment,
 		):
 			sync.sync_wc_order_with_erpnext_order()
-		sync_invoice_and_payment.assert_called_once_with(ACTION_COMPLETE, False)
+		sync_invoice_and_payment.assert_called_once_with(ACTION_COMPLETE)
 
 
 class TestPullingStatus(IntegrationTestCase):
@@ -847,7 +848,6 @@ class InvoiceAndPaymentCase(IntegrationTestCase):
 		action=ACTION_SUBMIT_INVOICE,
 		payment_reference_status=1,
 		account="1100 - Bank - T",
-		first_sight=False,
 	):
 		invoice = MagicMock()
 		invoice.name = "ACC-SINV-1"
@@ -864,7 +864,7 @@ class InvoiceAndPaymentCase(IntegrationTestCase):
 			patch.object(order_payment, "get_mode_of_payment_account", return_value=account),
 			patch.object(order_payment, "make_delivery_note", return_value=self.delivery_note),
 		):
-			sync.sync_invoice_and_payment(action, first_sight)
+			sync.sync_invoice_and_payment(action)
 		return invoice, payment_entry, make_sales_invoice, get_payment_entry
 
 	def linked(self, sync, fieldname):
@@ -1352,9 +1352,7 @@ class TestCompletedOrders(InvoiceAndPaymentCase):
 	def test_order_first_seen_completed_gets_everything(self):
 		sync = self.make(per_delivered=0)
 		sync.woocommerce_order.date_completed = "2026-10-31T12:30:00"
-		_inv, _pe, make_sales_invoice, get_payment_entry = self.run_sync(
-			sync, action=ACTION_COMPLETE, first_sight=True
-		)
+		_inv, _pe, make_sales_invoice, get_payment_entry = self.run_sync(sync, action=ACTION_COMPLETE)
 
 		make_sales_invoice.assert_called_once()
 		get_payment_entry.assert_called_once()
@@ -1363,12 +1361,22 @@ class TestCompletedOrders(InvoiceAndPaymentCase):
 		self.assertEqual(self.delivery_note.posting_time, "12:30:00")
 		self.assertTrue(self.delivery_note.flags.created_by_sync)
 
-	def test_order_completed_later_is_left_to_erpnext(self):
-		sync = self.make()
+	def test_order_completed_in_woocommerce_later_gets_what_it_lacks(self):
+		# Invoiced and paid while pending and processing, then completed in WooCommerce by mistake
+		sync = self.make(
+			per_delivered=0,
+			woocommerce_sales_invoice="ACC-SINV-1",
+			woocommerce_payment_entry="ACC-PAY-1",
+		)
 		_inv, _pe, make_sales_invoice, get_payment_entry = self.run_sync(sync, action=ACTION_COMPLETE)
 
 		make_sales_invoice.assert_not_called()
 		get_payment_entry.assert_not_called()
+		self.delivery_note.submit.assert_called_once()
+
+	def test_delivered_order_is_not_delivered_again(self):
+		sync = self.make(per_delivered=100)
+		self.run_sync(sync, action=ACTION_COMPLETE)
 		self.delivery_note.insert.assert_not_called()
 
 	def test_processing_after_pending_only_adds_the_payment(self):
@@ -1382,7 +1390,48 @@ class TestCompletedOrders(InvoiceAndPaymentCase):
 	def test_delivery_that_fails_is_flagged(self):
 		sync = self.make(per_delivered=0)
 		self.delivery_note.submit.side_effect = frappe.ValidationError("Not enough stock")
-		self.run_sync(sync, action=ACTION_COMPLETE, first_sight=True)
+		self.run_sync(sync, action=ACTION_COMPLETE)
 
 		self.assertIn("Not enough stock", self.linked(sync, "woocommerce_sync_issue"))
 		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), "ACC-PAY-1")
+
+
+class TestInvoiceAndHold(InvoiceAndPaymentCase):
+	def invoice_and_hold(self, sync):
+		calls = []
+		sync.sales_order.update_status.side_effect = lambda status: calls.append(status)
+		invoice = MagicMock()
+		invoice.name = "ACC-SINV-1"
+		invoice.insert.side_effect = lambda: calls.append("invoice")
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=sync.server),
+			patch.object(frappe.db, "get_value", return_value=1),
+			patch.object(order_payment, "make_sales_invoice", return_value=invoice),
+			patch.object(order_payment, "get_payment_entry", return_value=MagicMock()),
+			patch.object(order_payment, "get_mode_of_payment_account", return_value="1100 - Bank - T"),
+		):
+			sync.apply_status_action(ACTION_SUBMIT_INVOICE_HOLD)
+		return calls
+
+	def test_order_is_invoiced_before_it_is_held(self):
+		sync = self.make(woocommerce_payment_entry="ACC-PAY-9")
+		self.assertEqual(self.invoice_and_hold(sync), ["invoice", "On Hold"])
+
+	def test_held_order_is_resumed_to_be_invoiced(self):
+		sync = self.make(status="On Hold", woocommerce_payment_entry="ACC-PAY-9")
+		calls = self.invoice_and_hold(sync)
+		self.assertEqual(calls[:2], ["Draft", "invoice"])
+
+	def test_new_order_is_invoiced_and_held(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.woocommerce_order = _dict(
+			status="on-hold", woocommerce_server=SERVER, woocommerce_date_modified="2026-10-30T10:00:00"
+		)
+		rows = [{"woocommerce_status": "on-hold", "erpnext_action": ACTION_SUBMIT_INVOICE_HOLD}]
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=make_server(rows)),
+			patch.object(sync, "create_sales_order") as create_sales_order,
+			patch.object(sync, "sync_invoice_and_payment"),
+		):
+			sync.sync_wc_order_with_erpnext_order()
+		create_sales_order.assert_called_once_with(ACTION_SUBMIT_INVOICE_HOLD)
