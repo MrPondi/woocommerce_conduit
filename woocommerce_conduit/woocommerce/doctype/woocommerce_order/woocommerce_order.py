@@ -4,18 +4,19 @@
 import json
 
 import frappe
-import frappe.utils
 from frappe import _dict
 from frappe.model.document import Document
-from frappe.utils import flt
+from frappe.utils import cstr, flt
 
-from woocommerce_conduit.woocommerce.woocommerce_api import CACHE_TIMEOUT_SECONDS, WooCommerceDocument
+from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceDocument
 
 # WooCommerce nests the addresses as `billing` and `shipping`, the DocType has them as
 # `billing_<key>` and `shipping_<key>` fields
 ADDRESS_PREFIXES = ("billing", "shipping")
 # Prefixed fields that are not part of the nested address
 NON_ADDRESS_FIELDS = {"shipping_total", "shipping_tax", "shipping_lines"}
+# Indented in the form, so they can be read
+JSON_FIELDS = ("line_items", "shipping_lines", "fee_lines", "tax_lines", "coupon_lines", "refunds", "_links")
 
 
 def get_address_data(order, prefix: str) -> dict:
@@ -99,6 +100,9 @@ class WooCommerceOrder(WooCommerceDocument):
 	field_setter_map = {"woocommerce_name": "name", "woocommerce_id": "id"}  # noqa: RUF012
 	# The only fields ERPNext writes to WooCommerce
 	writable_fields = ("status",)
+	# Worked out here, not asked of WooCommerce
+	field_getter_map = {"sales_order": []}  # noqa: RUF012
+	orderby_map = {"modified": "modified", "woocommerce_date_modified": "modified"}  # noqa: RUF012
 
 	@classmethod
 	def get_wc_fields(cls, frappe_fields=None, extra=None) -> str:
@@ -129,16 +133,39 @@ class WooCommerceOrder(WooCommerceDocument):
 
 	def after_load_from_db(self, record: dict):
 		# Indent the JSON fields so they are readable in the form
-		for fieldname in ("line_items", "shipping_lines"):
+		for fieldname in JSON_FIELDS:
 			if isinstance(record.get(fieldname), str):
 				record[fieldname] = json.dumps(json.loads(record[fieldname]), indent=2, ensure_ascii=False)
 		return record
 
+	def onload(self):
+		"""
+		What the order is in ERPNext: its Sales Order, and the Item each line is linked to
+		"""
+		# Imported here, as the sync imports this module
+		from woocommerce_conduit.tasks.order_lines import find_item_code, get_line_items, get_product_id
+
+		self.sales_order = frappe.db.get_value(
+			"Sales Order",
+			{"woocommerce_server": self.woocommerce_server, "woocommerce_id": cstr(self.woocommerce_id)},
+			"name",
+			order_by="docstatus asc, creation desc",
+		)
+		product_ids = {get_product_id(line) for line in get_line_items(self)}
+		self.set_onload(
+			"item_codes",
+			{product_id: find_item_code(self.woocommerce_server, product_id) for product_id in product_ids},
+		)
+
+	def on_update(self):
+		# The status was changed in the form and written to WooCommerce, the Sales Order follows
+		if self.has_value_changed("status"):
+			from woocommerce_conduit.tasks.sync_sales_orders import enqueue_sales_order_sync
+
+			enqueue_sales_order_sync(woocommerce_order_name=self.name)
+
 	def db_insert(self, *args, **kwargs):
 		pass
-
-	def load_from_db(self):
-		return super().load_from_db()
 
 	def before_db_update(self, changes: dict) -> dict:
 		"""
@@ -154,91 +181,9 @@ class WooCommerceOrder(WooCommerceDocument):
 	@staticmethod
 	def get_list(args) -> list[_dict | Document] | None:
 		"""
-		Get list of orderss including their variations with intelligent caching.
-
-		This method works with standard Frappe arguments for virtual DocTypes.
-		Results are cached to improve performance for subsequent requests, with
-		cache invalidation based on request parameters.
-
-		Args:
-			args: Arguments passed by Frappe (filters, limit, etc.)
-
-		Returns:
-			List: Orders with their variations
+		The orders of all enabled servers, for the list and report views
 		"""
-		# Validate input arguments
-		if not isinstance(args, dict):
-			frappe.log_error("WooCommerce Order Error", "Invalid arguments for get_list")
-			return []
-
-		# Skip cache for specific scenarios
-		skip_cache = args.get("skip_cache", True)
-
-		# For single order lookups, skip cache to ensure fresh data
-		if args.get("filters") and any(f[1] == "id" and f[2] == "=" for f in args["filters"]):
-			skip_cache = True
-
-		# Generate a cache key based on args, excluding non-serializable items
-		cache = None if skip_cache else frappe.cache
-		cache_key: str | None = None
-		if cache:
-			try:
-				args_for_cache = {
-					k: v
-					for k, v in args.copy().items()
-					if k not in ["metadata", "as_doc", "servers"] and v is not None
-				}
-
-				# Handle filters specially - convert to tuple for hashability
-				if "filters" in args_for_cache and isinstance(args_for_cache["filters"], list):
-					args_for_cache["filters"] = tuple(
-						tuple(f) if isinstance(f, list) else f for f in args_for_cache["filters"]
-					)
-
-				# Add server names if specified
-				if args.get("servers"):
-					args_for_cache["servers"] = tuple(sorted(args["servers"]))
-
-				# Create a deterministic representation for cache key
-				cache_key = f"wc_orders_{frappe.utils.cstr(frappe.generate_hash(str(args_for_cache), 16))}"
-
-				# Try to get cached data
-				cached_data = cache.get_value(cache_key)
-				if cached_data:
-					cached_orders = json.loads(cached_data)
-
-					# If requesting docs and cache contains dicts, convert to docs
-					if args.get("as_doc") and cached_orders and isinstance(cached_orders[0], dict):
-						return [frappe.get_doc(order) for order in cached_orders]
-
-					return cached_orders
-			except Exception as e:
-				frappe.log_error("WooCommerce Cache Error", f"WooCommerce cache fetch error: {e!s}")
-
-		# If cache miss or error, fetch from API
-		try:
-			# Fetch orders with normal implementation
-			orders = WooCommerceOrder.get_list_of_records(args)
-
-			if not orders:
-				return []
-
-			# Cache the results before returning (if caching is enabled)
-			if cache and cache_key:
-				try:
-					cache.set_value(cache_key, json.dumps(orders), expires_in_sec=CACHE_TIMEOUT_SECONDS)
-				except Exception as e:
-					frappe.log_error(
-						f"WooCommerce Cache ErrorWooCommerce cache set error: {e!s}",
-					)
-			return orders
-
-		except Exception as e:
-			frappe.log_error(
-				"WooCommerce Order Fetch Error",
-				f"WooCommerce order fetch error: {e!s}\n{frappe.get_traceback()}",
-			)
-			return []
+		return WooCommerceOrder.get_list_of_records(args)
 
 	@staticmethod
 	def get_count(args) -> int:
@@ -247,3 +192,16 @@ class WooCommerceOrder(WooCommerceDocument):
 	@staticmethod
 	def get_stats(args):
 		pass
+
+
+@frappe.whitelist()
+def get_status_options(woocommerce_server: str) -> list[dict]:
+	"""
+	The statuses of a server's Order Status Map, as suggestions for the status of an order
+	"""
+	server = frappe.get_cached_doc("WooCommerce Server", woocommerce_server)
+	server.check_permission("read")
+	return [
+		{"value": row.woocommerce_status, "label": row.woocommerce_status_label or row.woocommerce_status}
+		for row in server.sales_order_status_map
+	]

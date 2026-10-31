@@ -9,6 +9,7 @@
   "woocommerce_server",
   "column_break_uhol",
   "woocommerce_id",
+  "sales_order",
   "section_break_jagi",
   "number",
   "created_via",
@@ -48,6 +49,8 @@
   "customer_ip_address",
   "customer_user_agent",
   "order_lines_tab",
+  "line_items_html",
+  "raw_lines_section",
   "line_items",
   "shipping_lines",
   "refunds",
@@ -104,6 +107,13 @@
    "reqd": 1
   },
   {
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "label": "Sales Order",
+   "options": "Sales Order",
+   "read_only": 1
+  },
+  {
    "fieldname": "section_break_jagi",
    "fieldtype": "Section Break"
   },
@@ -114,7 +124,8 @@
    "in_list_view": 1,
    "label": "WooCommerce Order Number",
    "read_only": 1,
-   "reqd": 1
+   "reqd": 1,
+   "bold": 1
   },
   {
    "fieldname": "created_via",
@@ -130,11 +141,13 @@
   },
   {
    "fieldname": "status",
-   "fieldtype": "Data",
+   "fieldtype": "Autocomplete",
    "in_list_view": 1,
    "label": "Status",
-   "read_only": 1,
-   "reqd": 1
+   "read_only": 0,
+   "reqd": 1,
+   "in_standard_filter": 1,
+   "description": "Changing it here changes it in WooCommerce, and the Sales Order follows as the Order Status Map says"
   },
   {
    "fieldname": "column_break_ngmb",
@@ -182,6 +195,17 @@
    "fieldname": "order_lines_tab",
    "fieldtype": "Tab Break",
    "label": "Order lines"
+  },
+  {
+   "fieldname": "line_items_html",
+   "fieldtype": "HTML",
+   "label": "Lines"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "raw_lines_section",
+   "fieldtype": "Section Break",
+   "label": "As WooCommerce has them"
   },
   {
    "depends_on": "eval: doc.line_items != \"[]\"",
@@ -336,7 +360,8 @@
    "fieldtype": "Datetime",
    "label": "Date Created",
    "read_only": 1,
-   "reqd": 1
+   "reqd": 1,
+   "in_list_view": 1
   },
   {
    "fieldname": "woocommerce_date_modified",
@@ -393,7 +418,8 @@
    "fieldname": "billing_email",
    "fieldtype": "Data",
    "label": "Email",
-   "read_only": 1
+   "read_only": 1,
+   "in_list_view": 1
   },
   {
    "fieldname": "billing_phone",
@@ -526,7 +552,7 @@
  "index_web_pages_for_search": 1,
  "is_virtual": 1,
  "links": [],
- "modified": "2026-10-30 10:36:15.310840",
+ "modified": "2026-10-31 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Order",
@@ -550,5 +576,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "title_field": "order_key"
+ "title_field": "number",
+ "show_title_field_in_link": 1
 }
