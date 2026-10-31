@@ -58,6 +58,7 @@ class WooCommerceOrder(WooCommerceDocument):
 		customer_ip_address: DF.Data | None
 		customer_note: DF.SmallText | None
 		customer_user_agent: DF.SmallText | None
+		date_completed: DF.Datetime | None
 		date_paid: DF.Datetime | None
 		discount_tax: DF.Currency
 		discount_total: DF.Currency
@@ -70,6 +71,7 @@ class WooCommerceOrder(WooCommerceDocument):
 		payment_method_title: DF.SmallText | None
 		prices_include_tax: DF.Check
 		refunds: DF.JSON | None
+		sales_order: DF.Link | None
 		shipping_address_1: DF.Data | None
 		shipping_address_2: DF.Data | None
 		shipping_city: DF.Data | None
@@ -83,7 +85,7 @@ class WooCommerceOrder(WooCommerceDocument):
 		shipping_state: DF.Data | None
 		shipping_tax: DF.Currency
 		shipping_total: DF.Currency
-		status: DF.Data
+		status: DF.Autocomplete
 		tax_lines: DF.JSON | None
 		total: DF.Currency
 		total_tax: DF.Currency

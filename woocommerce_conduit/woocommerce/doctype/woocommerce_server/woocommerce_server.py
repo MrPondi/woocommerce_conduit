@@ -56,6 +56,9 @@ class WooCommerceServer(Document):
 		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 			WooCommerceServerOrderStatus,
 		)
+		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_payment_method.woocommerce_server_payment_method import (
+			WooCommerceServerPaymentMethod,
+		)
 		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_shipping_rule.woocommerce_server_shipping_rule import (
 			WooCommerceServerShippingRule,
 		)
@@ -66,6 +69,7 @@ class WooCommerceServer(Document):
 		api_consumer_key: DF.Password
 		api_consumer_secret: DF.Password
 		company: DF.Link
+		create_sales_invoice: DF.Check
 		creation_user: DF.Link
 		delivery_after_days: DF.Int
 		enable_image_sync: DF.Check
@@ -81,8 +85,9 @@ class WooCommerceServer(Document):
 		item_group: DF.Link
 		last_sync_time: DF.Datetime | None
 		name_by: DF.Literal["WooCommerce ID", "Product SKU"]
-		payment_method_bank_account_mapping: DF.JSON
-		payment_method_gl_account_mapping: DF.JSON
+		order_sync_paused_since: DF.Datetime | None
+		pause_order_sync: DF.Check
+		payment_method_map: DF.Table[WooCommerceServerPaymentMethod]
 		price_list: DF.Link | None
 		price_list_delay_per_item: DF.Float
 		push_zero_stock_for_disabled_items: DF.Check
@@ -91,6 +96,7 @@ class WooCommerceServer(Document):
 		sales_taxes_and_charges_template: DF.Link | None
 		secret: DF.SmallText | None
 		shipping_rule_map: DF.Table[WooCommerceServerShippingRule]
+		submit_sales_invoice: DF.Check
 		subtract_reserved_stock: DF.Check
 		sync_prices_for_disabled_items: DF.Check
 		sync_so_items_to_wc: DF.Check

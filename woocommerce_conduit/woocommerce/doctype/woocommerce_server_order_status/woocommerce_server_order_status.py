@@ -96,10 +96,10 @@ class WooCommerceServerOrderStatus(Document):
 
 		erpnext_action: DF.Literal[
 			"Skip",
-			"Skip, cancel existing",
 			"Submit SO",
 			"Submit SO + Invoice",
 			"Submit SO + Hold",
+			"Complete SO",
 			"Cancel SO",
 			"Close SO",
 			"Status only",
