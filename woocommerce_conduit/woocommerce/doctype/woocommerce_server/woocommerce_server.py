@@ -18,6 +18,20 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woo
 from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceAPI
 
 
+def normalise_server_url(url: str | None) -> str | None:
+	"""
+	The shop's URL as scheme and host, `https` when none is given. None when there is no host in it.
+	"""
+	parsed_url = urlparse(cstr(url).strip())
+	if not parsed_url.netloc and not parsed_url.scheme:
+		parsed_url = urlparse(f"https://{cstr(url).strip()}")
+	if not parsed_url.netloc:
+		return None
+
+	url_scheme = parsed_url.scheme if parsed_url.scheme in ("http", "https") else "https"
+	return urlunparse((url_scheme, parsed_url.netloc, "", "", "", ""))
+
+
 class WooCommerceServer(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
@@ -122,37 +136,36 @@ class WooCommerceServer(Document):
 
 	def _credential(self, fieldname: str) -> str:
 		"""
-		A Password field holds the plaintext only while it is being changed, otherwise it is masked
-		and the stored value has to be read back
+		A Password field holds the plaintext only while it is being typed, otherwise the form sends it
+		masked and the stored value has to be read back
 		"""
-		if self.has_value_changed(fieldname):
-			return cstr(self.get(fieldname))
+		value = cstr(self.get(fieldname))
+		if value and set(value) != {"*"}:
+			return value
 		return cstr(self.get_password(fieldname, raise_exception=False))
 
-	def test_api_credentials(self):
-		wcapi = WooCommerceAPI(
-			url=self.woocommerce_server_url,
+	def get_api(self) -> WooCommerceAPI:
+		"""
+		A client for this server as the form has it, so also before it is saved
+		"""
+		return WooCommerceAPI(
+			url=normalise_server_url(self.woocommerce_server_url) or "",
 			consumer_key=self._credential("api_consumer_key"),
 			consumer_secret=self._credential("api_consumer_secret"),
 			version="wc/v3",
 		)
-		res = wcapi.get("system_status", params={"_fields": "environment"})
+
+	def test_api_credentials(self):
+		res = self.get_api().get("system_status", params={"_fields": "environment"})
 
 		if res.status_code != 200:
 			frappe.throw(_("WooCommerce API credentials are not valid"))
 
 	def validate_woocommerce_url(self):
-		parsed_url = urlparse(self.woocommerce_server_url)
-
-		if not parsed_url.netloc:
-			if not parsed_url.scheme:
-				parsed_url = urlparse(f"https://{self.woocommerce_server_url}")
-
-			if not parsed_url.netloc:
-				frappe.throw(_("Please enter a valid WooCommerce Server URL"))
-
-		url_scheme = parsed_url.scheme if parsed_url.scheme in ["http", "https"] else "https"
-		self.woocommerce_server_url = urlunparse((url_scheme, parsed_url.netloc, "", "", "", ""))
+		url = normalise_server_url(self.woocommerce_server_url)
+		if not url:
+			frappe.throw(_("Please enter a valid WooCommerce Server URL"))
+		self.woocommerce_server_url = url
 
 	def validate_so_status_map(self):
 		"""
@@ -208,46 +221,52 @@ class WooCommerceServer(Document):
 			None,
 		)
 
-	def fetch_order_statuses(self) -> dict[str, str]:
+	def fetch_names(self, endpoint: str, id_key: str, name_key: str) -> tuple[dict[str, str], str | None]:
 		"""
-		The slug and name of every order status of the shop, those of plugins included. Empty when the shop
-		can't be reached: the core statuses are known without it.
+		The id and name of every record of a list endpoint of the shop, and why it couldn't be read. The
+		error is returned rather than raised, as the callers can go on with what they know without it.
 		"""
 		try:
-			wcapi = WooCommerceAPI(
-				url=self.woocommerce_server_url,
-				consumer_key=self._credential("api_consumer_key"),
-				consumer_secret=self._credential("api_consumer_secret"),
-				version="wc/v3",
-			)
-			response = wcapi.get("reports/orders/totals")
-			if response.status_code == 200:
-				return {row["slug"]: row["name"] for row in response.json()}
-		except Exception:
+			response = self.get_api().get(endpoint)
+			if response.status_code != 200:
+				return {}, _("WooCommerce returned {0}").format(response.status_code)
+			return {cstr(row[id_key]): cstr(row[name_key]) for row in response.json()}, None
+		except Exception as e:
 			frappe.log_error("WooCommerce Error", frappe.get_traceback())
-		return {}
+			return {}, cstr(e) or e.__class__.__name__
+
+	def fetch_order_statuses(self) -> tuple[dict[str, str], str | None]:
+		"""
+		The slug and name of every order status of the shop, those of plugins included
+		"""
+		return self.fetch_names("reports/orders/totals", "slug", "name")
 
 	def add_default_order_statuses(self) -> list[dict]:
 		"""
 		Add a row for each status that the Sales Order Status Map lacks. Rows that are there stay as they are.
+		The core statuses are known without the shop, so a shop that can't be reached isn't an error here.
 		"""
+		live_statuses = self.fetch_order_statuses()[0] if not frappe.flags.in_test else {}
 		rows = get_default_status_rows(
-			self.fetch_order_statuses() if not frappe.flags.in_test else {},
-			existing=[row.woocommerce_status for row in self.sales_order_status_map],
+			live_statuses, existing=[row.woocommerce_status for row in self.sales_order_status_map]
 		)
 		for row in rows:
 			self.append("sales_order_status_map", row)
 		return rows
 
 	@frappe.whitelist()
-	def get_missing_order_status_rows(self) -> list[dict]:
+	def get_missing_order_status_rows(self) -> dict:
 		"""
-		The rows the Sales Order Status Map lacks, for the form to add
+		The rows the Sales Order Status Map lacks, for the form to add, and why the shop's own statuses
+		couldn't be read if they couldn't
 		"""
-		return get_default_status_rows(
-			self.fetch_order_statuses(),
-			existing=[row.woocommerce_status for row in self.sales_order_status_map],
-		)
+		live_statuses, error = self.fetch_order_statuses()
+		return {
+			"rows": get_default_status_rows(
+				live_statuses, existing=[row.woocommerce_status for row in self.sales_order_status_map]
+			),
+			"error": error,
+		}
 
 	def validate_item_map(self):
 		"""

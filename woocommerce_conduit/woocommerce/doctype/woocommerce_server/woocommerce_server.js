@@ -51,9 +51,22 @@ frappe.ui.form.on("WooCommerce Server", {
 			doc: frm.doc,
 			method: "get_missing_order_status_rows",
 			callback: function (r) {
-				const rows = r.message || [];
+				const { rows = [], error } = r.message || {};
 				rows.forEach((row) => frm.add_child("sales_order_status_map", row));
 				frm.refresh_field("sales_order_status_map");
+				if (error) {
+					frappe.show_alert(
+						{
+							message: __(
+								"Couldn't reach WooCommerce ({0}), only the core statuses were added",
+								[error]
+							),
+							indicator: "orange",
+						},
+						10
+					);
+					return;
+				}
 				frappe.show_alert({
 					message: rows.length ? __("{0} statuses added", [rows.length]) : __("No statuses missing"),
 					indicator: rows.length ? "green" : "blue",
