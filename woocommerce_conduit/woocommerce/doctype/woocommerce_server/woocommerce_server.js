@@ -19,7 +19,7 @@ frappe.ui.form.on("WooCommerce Server", {
 
 				// Use map to create an array of strings in the desired format
 				const formattedStrings = r.message.map(
-					(fields) => `${fields.fieldname} | ${fields.label}`
+					(fields) => `${fields.fieldname} | ${fields.label}`,
 				);
 
 				// Join the strings with newline characters to create the final string
@@ -29,7 +29,7 @@ frappe.ui.form.on("WooCommerce Server", {
 				frm.fields_dict.item_field_map.grid.update_docfield_property(
 					"erpnext_field_name",
 					"options",
-					options
+					options,
 				);
 			},
 		});
@@ -59,16 +59,18 @@ frappe.ui.form.on("WooCommerce Server", {
 						{
 							message: __(
 								"Couldn't reach WooCommerce ({0}), only the core statuses were added",
-								[error]
+								[error],
 							),
 							indicator: "orange",
 						},
-						10
+						10,
 					);
 					return;
 				}
 				frappe.show_alert({
-					message: rows.length ? __("{0} statuses added", [rows.length]) : __("No statuses missing"),
+					message: rows.length
+						? __("{0} statuses added", [rows.length])
+						: __("No statuses missing"),
 					indicator: rows.length ? "green" : "blue",
 				});
 			},
@@ -76,54 +78,57 @@ frappe.ui.form.on("WooCommerce Server", {
 	},
 
 	// View WooCommerce Webhook Configuration
-	view_webhook_config: function(frm) {
+	view_webhook_config: function (frm) {
 		let d = new frappe.ui.Dialog({
-			title: __('WooCommerce Webhook Settings'),
+			title: __("WooCommerce Webhook Settings"),
 			fields: [
 				{
-					label: __('Status'),
-					fieldname: 'status',
-					fieldtype: 'Data',
-					default: 'Active',
-					read_only: 1
+					label: __("Status"),
+					fieldname: "status",
+					fieldtype: "Data",
+					default: "Active",
+					read_only: 1,
 				},
 				{
-					label: __('Topic'),
-					fieldname: 'topic',
-					fieldtype: 'Data',
-					default: 'Order created, and a second webhook with Order updated',
-					read_only: 1
+					label: __("Topic"),
+					fieldname: "topic",
+					fieldtype: "Data",
+					default: "Order created, and a second webhook with Order updated",
+					read_only: 1,
 				},
 				{
-					label: __('Delivery URL'),
-					fieldname: 'url',
-					fieldtype: 'Data',
-					default: window.location.protocol.concat("//", window.location.host, '/api/method/woocommerce_conduit.endpoint.order_created'),
-					read_only: 1
+					label: __("Delivery URL"),
+					fieldname: "url",
+					fieldtype: "Data",
+					default: window.location.protocol.concat(
+						"//",
+						window.location.host,
+						"/api/method/woocommerce_conduit.endpoint.order_created",
+					),
+					read_only: 1,
 				},
 				{
-					label: __('Secret'),
-					fieldname: 'secret',
-					fieldtype: 'Data',
+					label: __("Secret"),
+					fieldname: "secret",
+					fieldtype: "Data",
 					default: frm.doc.secret,
-					read_only: 1
+					read_only: 1,
 				},
 				{
-					label: __('API Version'),
-					fieldname: 'api_version',
-					fieldtype: 'Data',
-					default: 'WP REST API Integration v3',
-					read_only: 1
-				}
+					label: __("API Version"),
+					fieldname: "api_version",
+					fieldtype: "Data",
+					default: "WP REST API Integration v3",
+					read_only: 1,
+				},
 			],
-			size: 'large', // small, large, extra-large
-			primary_action_label: __('OK'),
+			size: "large", // small, large, extra-large
+			primary_action_label: __("OK"),
 			primary_action(values) {
 				d.hide();
-			}
+			},
 		});
 
 		d.show();
-
-	}
+	},
 });
