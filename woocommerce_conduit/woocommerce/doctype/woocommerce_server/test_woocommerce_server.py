@@ -88,3 +88,34 @@ class TestWooCommerceServer(IntegrationTestCase):
 		labels = {row["woocommerce_status"]: row["woocommerce_status_label"] for row in result["rows"]}
 		self.assertEqual(labels["pending"], "Oczekujące na płatność")
 		self.assertEqual(labels["ready-pickup"], "Do odbioru")
+
+	def test_missing_payment_methods_leave_the_mapped_ones(self):
+		server = new_server(
+			payment_method_map=[{"woocommerce_payment_method": "bacs", "mode_of_payment": "Wire Transfer"}]
+		)
+		response = MagicMock(status_code=200)
+		response.json.return_value = [
+			{"id": "bacs", "title": "Przelew bankowy"},
+			{"id": "cod", "title": ""},
+		]
+		api = MagicMock()
+		api.get.return_value = response
+		with patch.object(type(server), "get_api", return_value=api):
+			result = server.get_missing_payment_method_rows()
+
+		api.get.assert_called_once_with("payment_gateways")
+		self.assertEqual(
+			result["rows"], [{"woocommerce_payment_method": "cod", "woocommerce_payment_method_title": "cod"}]
+		)
+		self.assertEqual(server.get_payment_method_row("bacs").mode_of_payment, "Wire Transfer")
+		self.assertIsNone(server.get_payment_method_row("paypal"))
+
+	def test_payment_method_is_mapped_once(self):
+		server = new_server(
+			payment_method_map=[
+				{"woocommerce_payment_method": "bacs"},
+				{"woocommerce_payment_method": "bacs"},
+			]
+		)
+		with self.assertRaises(frappe.ValidationError):
+			server.validate_payment_method_map()

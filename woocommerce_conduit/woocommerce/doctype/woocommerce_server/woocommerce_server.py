@@ -32,6 +32,15 @@ def normalise_server_url(url: str | None) -> str | None:
 	return urlunparse((url_scheme, parsed_url.netloc, "", "", "", ""))
 
 
+def get_mode_of_payment_account(mode_of_payment: str, company: str) -> str | None:
+	"""
+	The account a payment with this Mode of Payment is booked on for the company
+	"""
+	return frappe.db.get_value(
+		"Mode of Payment Account", {"parent": mode_of_payment, "company": company}, "default_account"
+	)
+
+
 class WooCommerceServer(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
@@ -109,12 +118,15 @@ class WooCommerceServer(Document):
 		# A new server starts with what the core statuses mean, which the user can then change
 		if not self.sales_order_status_map:
 			self.add_default_order_statuses()
+		if not self.payment_method_map and not frappe.flags.in_test:
+			self.add_missing_payment_methods()
 
 	def validate(self):
 		self.validate_woocommerce_url()
 		if self.enabled and self.credentials_need_testing():
 			self.test_api_credentials()
 		self.validate_so_status_map()
+		self.validate_payment_method_map()
 		self.validate_item_map()
 
 		if not self.secret:
@@ -267,6 +279,77 @@ class WooCommerceServer(Document):
 			),
 			"error": error,
 		}
+
+	def validate_payment_method_map(self):
+		"""
+		One row per payment method, and a Mode of Payment that a Payment Entry of the server's company can
+		be booked on
+		"""
+		seen = set()
+		for row in self.payment_method_map:
+			row.woocommerce_payment_method = cstr(row.woocommerce_payment_method).strip()
+			if row.woocommerce_payment_method in seen:
+				frappe.throw(
+					_("Row {0}: Payment method {1} is in the Payment Method Map more than once").format(
+						row.idx, frappe.bold(row.woocommerce_payment_method)
+					)
+				)
+			seen.add(row.woocommerce_payment_method)
+
+			if (
+				row.mode_of_payment
+				and self.company
+				and not get_mode_of_payment_account(row.mode_of_payment, self.company)
+			):
+				frappe.throw(
+					_("Row {0}: Mode of Payment {1} has no default account for company {2}").format(
+						row.idx, frappe.bold(row.mode_of_payment), frappe.bold(self.company)
+					)
+				)
+
+	def get_payment_method_row(self, payment_method: str | None):
+		"""
+		The row of the Payment Method Map for a WooCommerce payment method, or None
+		"""
+		if not payment_method:
+			return None
+		return next(
+			(row for row in self.payment_method_map if row.woocommerce_payment_method == payment_method),
+			None,
+		)
+
+	def fetch_payment_methods(self) -> tuple[dict[str, str], str | None]:
+		"""
+		The id and title of every payment gateway of the shop, the disabled ones included, as older orders
+		can have been paid with them
+		"""
+		return self.fetch_names("payment_gateways", "id", "title")
+
+	def get_payment_method_rows(self, live_methods: dict[str, str]) -> list[dict]:
+		existing = {row.woocommerce_payment_method for row in self.payment_method_map}
+		return [
+			{"woocommerce_payment_method": method, "woocommerce_payment_method_title": title or method}
+			for method, title in live_methods.items()
+			if method and method not in existing
+		]
+
+	def add_missing_payment_methods(self) -> list[dict]:
+		"""
+		Add a row, without a Mode of Payment, for each payment method of the shop the map lacks
+		"""
+		rows = self.get_payment_method_rows(self.fetch_payment_methods()[0])
+		for row in rows:
+			self.append("payment_method_map", row)
+		return rows
+
+	@frappe.whitelist()
+	def get_missing_payment_method_rows(self) -> dict:
+		"""
+		The rows the Payment Method Map lacks, for the form to add, and why the shop couldn't be read if
+		it couldn't
+		"""
+		live_methods, error = self.fetch_payment_methods()
+		return {"rows": self.get_payment_method_rows(live_methods), "error": error}
 
 	def validate_item_map(self):
 		"""

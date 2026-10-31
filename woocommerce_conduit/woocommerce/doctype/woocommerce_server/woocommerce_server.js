@@ -47,33 +47,18 @@ frappe.ui.form.on("WooCommerce Server", {
 
 	// Add the order statuses of the shop that the Order Status Map lacks
 	load_default_order_statuses: function (frm) {
-		frm.call({
-			doc: frm.doc,
-			method: "get_missing_order_status_rows",
-			callback: function (r) {
-				const { rows = [], error } = r.message || {};
-				rows.forEach((row) => frm.add_child("sales_order_status_map", row));
-				frm.refresh_field("sales_order_status_map");
-				if (error) {
-					frappe.show_alert(
-						{
-							message: __(
-								"Couldn't reach WooCommerce ({0}), only the core statuses were added",
-								[error],
-							),
-							indicator: "orange",
-						},
-						10,
-					);
-					return;
-				}
-				frappe.show_alert({
-					message: rows.length
-						? __("{0} statuses added", [rows.length])
-						: __("No statuses missing"),
-					indicator: rows.length ? "green" : "blue",
-				});
-			},
+		add_missing_rows(frm, "get_missing_order_status_rows", "sales_order_status_map", {
+			added: __("{0} statuses added"),
+			none: __("No statuses missing"),
+			unreachable: __("Couldn't reach WooCommerce ({0}), only the core statuses were added"),
+		});
+	},
+
+	load_payment_methods: function (frm) {
+		add_missing_rows(frm, "get_missing_payment_method_rows", "payment_method_map", {
+			added: __("{0} payment methods added"),
+			none: __("No payment methods missing"),
+			unreachable: __("Couldn't reach WooCommerce ({0}), no payment methods were added"),
 		});
 	},
 
@@ -132,3 +117,27 @@ frappe.ui.form.on("WooCommerce Server", {
 		d.show();
 	},
 });
+
+// Add the rows of a map table that the server says are missing, and say what happened
+function add_missing_rows(frm, method, table, messages) {
+	frm.call({
+		doc: frm.doc,
+		method: method,
+		callback: function (r) {
+			const { rows = [], error } = r.message || {};
+			rows.forEach((row) => frm.add_child(table, row));
+			frm.refresh_field(table);
+			if (error) {
+				frappe.show_alert(
+					{ message: messages.unreachable.replace("{0}", error), indicator: "orange" },
+					10,
+				);
+				return;
+			}
+			frappe.show_alert({
+				message: rows.length ? messages.added.replace("{0}", rows.length) : messages.none,
+				indicator: rows.length ? "green" : "blue",
+			});
+		},
+	});
+}

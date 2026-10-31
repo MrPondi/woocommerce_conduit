@@ -66,8 +66,14 @@ def make_server(rows=None, push=True, **fields):
 			"create_sales_invoice": 1,
 			"submit_sales_invoice": 1,
 			"enabled_payments_sync": 1,
-			"payment_method_bank_account_mapping": json.dumps({"stripe": "Stripe Bank", "cod": ""}),
-			"payment_method_gl_account_mapping": json.dumps({"stripe": "1100 - Bank - T"}),
+			"payment_method_map": [
+				{
+					"woocommerce_payment_method": "stripe",
+					"mode_of_payment": "Credit Card",
+					"bank_account": "Stripe Bank",
+				},
+				{"woocommerce_payment_method": "cod"},
+			],
 			**fields,
 		}
 	)
@@ -766,7 +772,9 @@ class TestInvoiceAndPayment(IntegrationTestCase):
 		sync.server = server or make_server()
 		return sync
 
-	def run_sync(self, sync, action=ACTION_SUBMIT_INVOICE, payment_reference_status=1):
+	def run_sync(
+		self, sync, action=ACTION_SUBMIT_INVOICE, payment_reference_status=1, account="1100 - Bank - T"
+	):
 		invoice = MagicMock()
 		invoice.name = "ACC-SINV-1"
 		payment_entry = MagicMock()
@@ -779,6 +787,7 @@ class TestInvoiceAndPayment(IntegrationTestCase):
 			else nullcontext(),
 			patch.object(order_payment, "make_sales_invoice", return_value=invoice) as make_sales_invoice,
 			patch.object(order_payment, "get_payment_entry", return_value=payment_entry) as get_payment_entry,
+			patch.object(order_payment, "get_mode_of_payment_account", return_value=account),
 		):
 			sync.sync_invoice_and_payment(action)
 		return invoice, payment_entry, make_sales_invoice, get_payment_entry
@@ -848,6 +857,7 @@ class TestInvoiceAndPayment(IntegrationTestCase):
 		self.assertEqual(payment_entry.posting_date, date(2026, 10, 30))
 		self.assertEqual(payment_entry.reference_no, "ch_1")
 		self.assertEqual(payment_entry.bank_account, "Stripe Bank")
+		self.assertEqual(payment_entry.mode_of_payment, "Credit Card")
 		payment_entry.insert.assert_called_once()
 		payment_entry.submit.assert_called_once()
 		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), "ACC-PAY-1")
@@ -883,21 +893,22 @@ class TestInvoiceAndPayment(IntegrationTestCase):
 			_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
 			get_payment_entry.assert_not_called()
 
-	def test_payment_method_without_a_bank_account_is_not_booked(self):
-		sync = self.make(make_server(create_sales_invoice=0))
-		sync.woocommerce_order.payment_method = "cod"
-		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
+	def test_payment_method_without_a_mode_of_payment_is_not_booked(self):
+		# cod has a row without a Mode of Payment, paypal has no row at all
+		for method in ("cod", "paypal"):
+			sync = self.make(make_server(create_sales_invoice=0))
+			sync.woocommerce_order.payment_method = method
+			_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
+
+			get_payment_entry.assert_not_called()
+			self.assertIsNone(self.linked(sync, "woocommerce_sync_issue"))
+
+	def test_mode_of_payment_without_an_account_is_flagged(self):
+		sync = self.make(make_server(create_sales_invoice=0), company="Test Company")
+		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY, account=None)
 
 		get_payment_entry.assert_not_called()
-		self.assertIsNone(self.linked(sync, "woocommerce_sync_issue"))
-
-	def test_payment_method_without_a_mapping_is_flagged(self):
-		sync = self.make(make_server(create_sales_invoice=0))
-		sync.woocommerce_order.payment_method = "paypal"
-		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
-
-		get_payment_entry.assert_not_called()
-		self.assertIn("paypal", self.linked(sync, "woocommerce_sync_issue"))
+		self.assertIn("Credit Card", self.linked(sync, "woocommerce_sync_issue"))
 
 	def test_a_step_that_fails_is_flagged_and_the_next_still_runs(self):
 		sync = self.make()
@@ -911,6 +922,7 @@ class TestInvoiceAndPayment(IntegrationTestCase):
 				order_payment, "make_sales_invoice", side_effect=frappe.ValidationError("No account")
 			),
 			patch.object(order_payment, "get_payment_entry", return_value=payment_entry),
+			patch.object(order_payment, "get_mode_of_payment_account", return_value="1100 - Bank - T"),
 		):
 			sync.sync_invoice_and_payment(ACTION_SUBMIT_INVOICE)
 

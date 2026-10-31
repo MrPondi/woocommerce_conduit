@@ -1,4 +1,3 @@
-import json
 from typing import TYPE_CHECKING
 
 import frappe
@@ -7,6 +6,9 @@ from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
 from frappe import _
 from frappe.utils import flt, getdate
 
+from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
+	get_mode_of_payment_account,
+)
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 	ACTION_SUBMIT_INVOICE,
 )
@@ -107,29 +109,26 @@ class SalesOrderPaymentMixin:
 		sales_order.db_set("woocommerce_sales_invoice", invoice.name, update_modified=False)
 
 	def create_payment_entry(self, wc_server) -> None:
+		"""
+		Book the payment of the order, when its payment method has a Mode of Payment in the server's Payment
+		Method Map and WooCommerce says it was paid. Methods without one, say cash on delivery or a payment
+		that only reserves a place, are booked by hand or not at all.
+		"""
 		sales_order, wc_order = self.sales_order, self.woocommerce_order
-		if sales_order.woocommerce_payment_entry or not (wc_order.payment_method and wc_order.date_paid):
+		method = wc_server.get_payment_method_row(wc_order.payment_method)
+		if not (method and method.mode_of_payment):
+			return
+		if not wc_order.date_paid or sales_order.woocommerce_payment_entry:
 			return
 		# Nothing was paid, so there is nothing to book
 		if flt(sales_order.grand_total) == 0:
 			return
 
-		bank_accounts = json.loads(wc_server.payment_method_bank_account_mapping or "{}")
-		gl_accounts = json.loads(wc_server.payment_method_gl_account_mapping or "{}")
-		if wc_order.payment_method not in bank_accounts:
+		account = get_mode_of_payment_account(method.mode_of_payment, sales_order.company)
+		if not account:
 			self.flag_sync_issue(
-				_("Payment method {0} is not in the payment mappings of the WooCommerce Server").format(
-					wc_order.payment_method
-				)
-			)
-			return
-		# A method without a bank account is one that isn't booked, say cash on delivery
-		if not bank_accounts[wc_order.payment_method]:
-			return
-		if not gl_accounts.get(wc_order.payment_method):
-			self.flag_sync_issue(
-				_("Payment method {0} has no G/L account in the payment mappings").format(
-					wc_order.payment_method
+				_("Mode of Payment {0} has no default account for company {1}").format(
+					method.mode_of_payment, sales_order.company
 				)
 			)
 			return
@@ -143,14 +142,13 @@ class SalesOrderPaymentMixin:
 
 		date_paid = getdate(wc_order.date_paid)
 		payment_entry = get_payment_entry(
-			reference_doctype,
-			reference_name,
-			bank_account=gl_accounts[wc_order.payment_method],
-			reference_date=date_paid,
+			reference_doctype, reference_name, bank_account=account, reference_date=date_paid
 		)
 		payment_entry.posting_date = date_paid
+		payment_entry.mode_of_payment = method.mode_of_payment
 		payment_entry.reference_no = wc_order.get("transaction_id") or wc_order.payment_method_title
-		payment_entry.bank_account = bank_accounts[wc_order.payment_method]
+		if method.bank_account:
+			payment_entry.bank_account = method.bank_account
 		payment_entry.flags.created_by_sync = True
 		payment_entry.insert()
 		if wc_server.submit_sales_invoice:

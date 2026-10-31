@@ -34,8 +34,8 @@
   "create_sales_invoice",
   "submit_sales_invoice",
   "enabled_payments_sync",
-  "payment_method_bank_account_mapping",
-  "payment_method_gl_account_mapping",
+  "load_payment_methods",
+  "payment_method_map",
   "shipping_methods_sync_section",
   "enabled_shipping_methods",
   "shipping_rule_map",
@@ -184,6 +184,7 @@
   },
   {
    "collapsible": 1,
+   "description": "WooCommerce doesn't round totals. Tick \"Disable Rounded Total\" in Global Defaults, or an invoice can keep a few cents outstanding after its payment.",
    "fieldname": "payment_sync_section",
    "fieldtype": "Section Break",
    "label": "Payment Sync"
@@ -210,20 +211,18 @@
    "label": "Enable Payments Sync"
   },
   {
-   "default": "{}",
    "depends_on": "eval: doc.enabled_payments_sync",
-   "fieldname": "payment_method_bank_account_mapping",
-   "fieldtype": "JSON",
-   "label": "Map Bank Accounts to Payment Methods",
-   "reqd": 1
+   "fieldname": "load_payment_methods",
+   "fieldtype": "Button",
+   "label": "Add Missing Payment Methods"
   },
   {
-   "default": "{}",
-   "depends_on": "eval: doc.enabled_payments_sync;",
-   "fieldname": "payment_method_gl_account_mapping",
-   "fieldtype": "JSON",
-   "label": "Map GL Accounts to Payment Methods",
-   "reqd": 1
+   "depends_on": "eval: doc.enabled_payments_sync",
+   "description": "A paid order gets a Payment Entry only when its payment method has a Mode of Payment here.",
+   "fieldname": "payment_method_map",
+   "fieldtype": "Table",
+   "label": "Payment Method Map",
+   "options": "WooCommerce Server Payment Method"
   },
   {
    "description": "This company will be used to create Sales Orders.",
