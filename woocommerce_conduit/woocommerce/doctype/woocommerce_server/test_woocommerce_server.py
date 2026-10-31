@@ -119,3 +119,35 @@ class TestWooCommerceServer(IntegrationTestCase):
 		)
 		with self.assertRaises(frappe.ValidationError):
 			server.validate_payment_method_map()
+
+	def test_new_server_starts_paused(self):
+		server = new_server(pause_order_sync=1)
+		with patch.object(frappe, "enqueue") as enqueue:
+			server.track_order_sync_pause()
+		self.assertTrue(server.order_sync_paused_since)
+		enqueue.assert_not_called()
+
+	def test_unpausing_syncs_what_changed_meanwhile(self):
+		server = new_server(pause_order_sync=0, order_sync_paused_since="2026-10-30 09:00:00")
+		server.name = "shop.example.com"
+		with (
+			patch.object(type(server), "is_new", return_value=False),
+			patch.object(type(server), "has_value_changed", return_value=True),
+			patch.object(frappe, "enqueue") as enqueue,
+		):
+			server.track_order_sync_pause()
+
+		kwargs = enqueue.call_args.kwargs
+		self.assertEqual(kwargs["woocommerce_server"], "shop.example.com")
+		self.assertEqual(kwargs["since"], "2026-10-30 09:00:00")
+		self.assertIsNone(server.order_sync_paused_since)
+
+	def test_saving_an_unpaused_server_syncs_nothing(self):
+		server = new_server(pause_order_sync=0)
+		with (
+			patch.object(type(server), "is_new", return_value=False),
+			patch.object(type(server), "has_value_changed", return_value=False),
+			patch.object(frappe, "enqueue") as enqueue,
+		):
+			server.track_order_sync_pause()
+		enqueue.assert_not_called()

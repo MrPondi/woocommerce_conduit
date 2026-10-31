@@ -282,6 +282,55 @@ class TestJobs(IntegrationTestCase):
 		self.assertNotIn(":", sync.get_lock_name())
 
 
+class TestPausedSync(IntegrationTestCase):
+	def paused(self, value=1):
+		return patch.object(
+			frappe,
+			"get_cached_value",
+			side_effect=lambda doctype, name, field: value if name == SERVER else 0,
+		)
+
+	def test_orders_of_a_paused_server_are_not_queued(self):
+		with self.paused(), patch.object(frappe, "enqueue") as enqueue:
+			enqueue_sales_order_sync(woocommerce_order_name=f"{SERVER}~12")
+			enqueue_sales_order_sync(woocommerce_order_name="two.example.com~12")
+		self.assertEqual(enqueue.call_count, 1)
+		self.assertEqual(enqueue.call_args.kwargs["woocommerce_order_name"], "two.example.com~12")
+
+	def test_paused_server_is_not_synced(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		with self.paused(), patch.object(sync, "load_orders") as load_orders:
+			sync.run()
+		load_orders.assert_not_called()
+
+	def test_sync_asked_for_in_the_form_says_it_is_paused(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		with (
+			self.paused(),
+			patch.object(frappe, "request", MagicMock(), create=True),
+			self.assertRaises(frappe.ValidationError),
+		):
+			sync.run()
+
+	def test_unpausing_syncs_the_orders_of_that_server(self):
+		with (
+			patch.object(
+				sync_sales_orders,
+				"get_names_of_wc_orders",
+				return_value=[f"{SERVER}~12", "two.example.com~5", f"{SERVER}~13"],
+			) as get_names,
+			patch.object(sync_sales_orders, "get_statuses_to_sync", return_value=["pending"]),
+			patch.object(sync_sales_orders, "enqueue_sales_order_sync") as enqueue,
+		):
+			sync_sales_orders.sync_paused_orders(SERVER, since="2026-10-30 09:00:00")
+
+		self.assertEqual(get_names.call_args.kwargs["date_time_from"], "2026-10-30 09:00:00")
+		self.assertEqual(
+			[c.kwargs["woocommerce_order_name"] for c in enqueue.call_args_list],
+			[f"{SERVER}~12", f"{SERVER}~13"],
+		)
+
+
 class TestHourlySync(IntegrationTestCase):
 	def run_hourly(self, names):
 		settings = MagicMock(wc_last_sync_date_orders="2026-10-30 09:00:00")

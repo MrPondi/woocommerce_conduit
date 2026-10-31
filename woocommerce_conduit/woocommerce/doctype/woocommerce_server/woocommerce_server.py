@@ -6,7 +6,7 @@ from urllib.parse import urlparse, urlunparse
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cstr
+from frappe.utils import cstr, now
 from frappe.utils.caching import redis_cache
 from jsonpath_ng.ext import parse
 
@@ -123,6 +123,7 @@ class WooCommerceServer(Document):
 
 	def validate(self):
 		self.validate_woocommerce_url()
+		self.track_order_sync_pause()
 		if self.enabled and self.credentials_need_testing():
 			self.test_api_credentials()
 		self.validate_so_status_map()
@@ -131,6 +132,24 @@ class WooCommerceServer(Document):
 
 		if not self.secret:
 			self.secret = frappe.generate_hash()
+
+	def track_order_sync_pause(self):
+		"""
+		Note when the order sync was paused, and when it is unpaused sync the orders that changed meanwhile
+		"""
+		if not self.pause_order_sync:
+			if not self.is_new() and self.has_value_changed("pause_order_sync"):
+				frappe.enqueue(
+					"woocommerce_conduit.tasks.sync_sales_orders.sync_paused_orders",
+					queue="long",
+					timeout=1500,
+					enqueue_after_commit=True,
+					woocommerce_server=self.name,
+					since=self.order_sync_paused_since,
+				)
+			self.order_sync_paused_since = None
+		elif self.is_new() or self.has_value_changed("pause_order_sync"):
+			self.order_sync_paused_since = now()
 
 	def credentials_need_testing(self) -> bool:
 		"""

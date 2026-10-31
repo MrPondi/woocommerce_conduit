@@ -16,6 +16,9 @@
   "secret",
   "view_webhook_config",
   "sales_orders_tab",
+  "order_sync_section",
+  "pause_order_sync",
+  "order_sync_paused_since",
   "sales_defaults_section",
   "uom",
   "item_group",
@@ -139,6 +142,27 @@
    "fieldname": "sales_orders_tab",
    "fieldtype": "Tab Break",
    "label": "Sales Orders"
+  },
+  {
+   "fieldname": "order_sync_section",
+   "fieldtype": "Section Break",
+   "label": "Order Sync"
+  },
+  {
+   "default": "1",
+   "description": "Orders aren't synced, and no Items are made for them, while this is ticked. Set up and link the Items first (Items tab, Check Order Items), then untick it: the orders changed in the meantime are synced then.",
+   "fieldname": "pause_order_sync",
+   "fieldtype": "Check",
+   "label": "Pause Order Sync"
+  },
+  {
+   "depends_on": "eval: doc.pause_order_sync",
+   "description": "Orders changed since then are synced when the sync is unpaused",
+   "fieldname": "order_sync_paused_since",
+   "fieldtype": "Datetime",
+   "label": "Paused Since",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "fieldname": "sales_defaults_section",

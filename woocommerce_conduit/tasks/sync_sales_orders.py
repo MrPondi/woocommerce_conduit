@@ -44,6 +44,7 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_settings.woocommerce_se
 from woocommerce_conduit.woocommerce.woocommerce_api import (
 	WooCommerceDocument,
 	generate_woocommerce_record_name_from_domain_and_id,
+	get_domain_and_id_from_woocommerce_record_name,
 )
 
 # The most orders one sync looks at, fetched 100 per request
@@ -83,6 +84,11 @@ def enqueue_sales_order_sync(
 	Sync an order in the background. The job gets names and loads the documents itself. A job that is
 	still waiting in the queue will pick up everything that changed, so a second one is dropped.
 	"""
+	# Picked up again when the sync is unpaused
+	if woocommerce_order_name and is_order_sync_paused(
+		get_domain_and_id_from_woocommerce_record_name(woocommerce_order_name)[0]
+	):
+		return
 	frappe.enqueue(
 		run_sales_order_sync,
 		queue="long",
@@ -132,6 +138,25 @@ def sync_woocommerce_orders_modified_since(date_time_from=None):
 	settings.wc_last_sync_date_orders = sync_started
 	settings.flags.ignore_mandatory = True
 	settings.save()
+
+
+def is_order_sync_paused(woocommerce_server: str | None) -> bool:
+	"""
+	Whether the orders of a server are left alone for now, while its Items are being set up
+	"""
+	return bool(
+		woocommerce_server
+		and frappe.get_cached_value("WooCommerce Server", woocommerce_server, "pause_order_sync")
+	)
+
+
+def sync_paused_orders(woocommerce_server: str, since=None):
+	"""
+	Sync the orders of a server that changed while its order sync was paused. Enqueued when it is unpaused.
+	"""
+	for order_name in get_names_of_wc_orders(date_time_from=since, status=get_statuses_to_sync()):
+		if get_domain_and_id_from_woocommerce_record_name(order_name)[0] == woocommerce_server:
+			enqueue_sales_order_sync(woocommerce_order_name=order_name)
 
 
 @frappe.whitelist()
@@ -209,6 +234,12 @@ class SynchroniseSalesOrder(
 		"""
 		One lock per WooCommerce Order, whichever side the sync starts from
 		"""
+		return "woocommerce_order_" + re.sub(r"[^\w.~-]", "_", self.get_record_name())
+
+	def get_record_name(self) -> str:
+		"""
+		The name of the WooCommerce Order, also when the sync starts from its Sales Order
+		"""
 		record_name = self.woocommerce_order_name
 		if not record_name:
 			link = frappe.db.get_value(
@@ -223,7 +254,7 @@ class SynchroniseSalesOrder(
 			record_name = generate_woocommerce_record_name_from_domain_and_id(
 				link.woocommerce_server, link.woocommerce_id
 			)
-		return "woocommerce_order_" + re.sub(r"[^\w.~-]", "_", record_name)
+		return record_name
 
 	def run(self):
 		"""
@@ -243,6 +274,17 @@ class SynchroniseSalesOrder(
 		sync and the Sales Order hook can't all create the Sales Order of the same WooCommerce Order, or
 		change it on top of each other.
 		"""
+		woocommerce_server = get_domain_and_id_from_woocommerce_record_name(self.get_record_name())[0]
+		if is_order_sync_paused(woocommerce_server):
+			# Asked for in the form, rather than by a job that was queued before the pause
+			if frappe.request:
+				frappe.throw(
+					_("The order sync of WooCommerce Server {0} is paused").format(
+						frappe.bold(woocommerce_server)
+					)
+				)
+			return
+
 		with filelock(self.get_lock_name(), timeout=120):
 			try:
 				self.load_orders()
