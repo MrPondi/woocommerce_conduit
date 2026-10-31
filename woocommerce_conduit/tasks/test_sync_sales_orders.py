@@ -2,6 +2,7 @@
 # See license.txt
 
 import json
+from contextlib import nullcontext
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
@@ -11,8 +12,15 @@ from frappe.tests import IntegrationTestCase
 
 from woocommerce_conduit import endpoint
 from woocommerce_conduit.exceptions import SyncDisabledError
-from woocommerce_conduit.tasks import order_payment, sync_sales_orders
-from woocommerce_conduit.tasks.order_payment import get_payment_method
+from woocommerce_conduit.tasks import order_lines, order_payment, sync_sales_orders
+from woocommerce_conduit.tasks.order_lines import (
+	build_charges,
+	get_line_rate,
+	get_product_id,
+	rates_match,
+	totals_differ,
+)
+from woocommerce_conduit.tasks.order_payment import get_payment_method, unlink_from_sales_order
 from woocommerce_conduit.tasks.order_status import (
 	enqueue_status_push_from_hook,
 	get_status_to_push,
@@ -473,7 +481,10 @@ class TestPullingStatus(IntegrationTestCase):
 			payment_method="stripe",
 			woocommerce_date_modified="2026-10-30T10:00:00",
 		)
-		with patch.object(sync, "apply_status_action", side_effect=lambda a: calls.append(a)):
+		with (
+			patch.object(sync, "apply_status_action", side_effect=lambda a: calls.append(a)),
+			patch.object(sync, "update_sales_order_items", side_effect=lambda: calls.append("lines")),
+		):
 			sync.update_sales_order(action)
 		return sync, calls
 
@@ -481,14 +492,18 @@ class TestPullingStatus(IntegrationTestCase):
 		sync, _calls = self.pull("pending", "wc-processing", ACTION_SUBMIT_INVOICE)
 		self.assertEqual(sync.sales_order.woocommerce_status, "processing")
 
-	def test_action_follows_the_save_when_the_status_changed(self):
+	def test_action_follows_the_lines_when_the_status_changed(self):
+		_sync, calls = self.pull("pending", "processing", ACTION_SUBMIT_INVOICE)
+		self.assertEqual(calls, ["save", "lines", ACTION_SUBMIT_INVOICE])
+
+	def test_lines_of_a_cancelled_order_are_left(self):
 		_sync, calls = self.pull("pending", "failed", ACTION_SKIP_CANCEL)
 		self.assertEqual(calls, ["save", ACTION_SKIP_CANCEL])
 
 	def test_action_is_not_repeated_for_other_changes(self):
 		# The note of an order was edited: a hold put on the Sales Order in ERPNext must stay
 		_sync, calls = self.pull("processing", "processing", ACTION_SUBMIT_INVOICE)
-		self.assertEqual(calls, ["save"])
+		self.assertEqual(calls, ["save", "lines"])
 
 
 class TestStatusActions(IntegrationTestCase):
@@ -759,7 +774,9 @@ class TestInvoiceAndPayment(IntegrationTestCase):
 		with (
 			patch.object(frappe, "get_cached_doc", return_value=sync.server),
 			patch.object(frappe, "log_error"),
-			patch.object(frappe.db, "get_value", return_value=payment_reference_status),
+			patch.object(frappe.db, "get_value", return_value=payment_reference_status)
+			if payment_reference_status is not None
+			else nullcontext(),
 			patch.object(order_payment, "make_sales_invoice", return_value=invoice) as make_sales_invoice,
 			patch.object(order_payment, "get_payment_entry", return_value=payment_entry) as get_payment_entry,
 		):
@@ -901,6 +918,35 @@ class TestInvoiceAndPayment(IntegrationTestCase):
 		self.assertIn("No account", self.linked(sync, "woocommerce_sync_issue"))
 		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), "ACC-PAY-1")
 
+	def test_paid_invoice_gets_no_second_payment(self):
+		# The Payment Entry of the sync was cancelled, and the invoice paid by hand
+		sync = self.make(woocommerce_sales_invoice="ACC-SINV-1")
+		values = {"docstatus": 1, "outstanding_amount": 0}
+		with patch.object(frappe.db, "get_value", side_effect=lambda dt, name, field: values[field]):
+			_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, payment_reference_status=None)
+		get_payment_entry.assert_not_called()
+
+	def test_paid_sales_order_gets_no_second_advance(self):
+		sync = self.make(make_server(create_sales_invoice=0), advance_paid=100)
+		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
+		get_payment_entry.assert_not_called()
+
+	def test_cancelling_unlinks_the_sales_order(self):
+		for doctype, fieldname in (
+			("Sales Invoice", "woocommerce_sales_invoice"),
+			("Payment Entry", "woocommerce_payment_entry"),
+		):
+			with (
+				patch.object(frappe, "get_all", return_value=["SAL-ORD-1"]) as get_all,
+				patch.object(frappe.db, "set_value") as set_value,
+			):
+				unlink_from_sales_order(_dict(doctype=doctype, name="DOC-1"))
+
+			self.assertEqual(get_all.call_args.kwargs["filters"], {fieldname: "DOC-1"})
+			set_value.assert_called_once_with(
+				"Sales Order", "SAL-ORD-1", fieldname, None, update_modified=False
+			)
+
 	def test_payment_method_title(self):
 		self.assertEqual(
 			get_payment_method(_dict(payment_method_title="Card", payment_method="stripe")), "Card"
@@ -910,3 +956,304 @@ class TestInvoiceAndPayment(IntegrationTestCase):
 			get_payment_method(_dict(payment_method_title="C" * 140, payment_method="stripe")), "stripe"
 		)
 		self.assertIsNone(get_payment_method(_dict(payment_method_title="", payment_method="")))
+
+
+def line(line_id, product_id, qty, total, total_tax=0, variation_id=0, name="Mug"):
+	return {
+		"id": line_id,
+		"name": name,
+		"product_id": product_id,
+		"variation_id": variation_id,
+		"quantity": qty,
+		"subtotal": str(total),
+		"total": str(total),
+		"total_tax": str(total_tax),
+	}
+
+
+class TestLineValues(IntegrationTestCase):
+	def test_product_id_is_the_variation_if_there_is_one(self):
+		self.assertEqual(get_product_id(line(1, 10, 1, 5, variation_id=11)), "11")
+		self.assertEqual(get_product_id(line(1, 10, 1, 5)), "10")
+		# Deleted in WooCommerce
+		self.assertEqual(get_product_id(line(1, 0, 1, 5)), "0")
+
+	def test_rate_is_after_coupons(self):
+		mug = {**line(1, 10, 2, 18, total_tax=3.78), "subtotal": "20.00"}
+		self.assertEqual(get_line_rate(mug, tax_inclusive=False), 9)
+		self.assertAlmostEqual(get_line_rate(mug, tax_inclusive=True), 10.89)
+		self.assertEqual(get_line_rate(line(1, 10, 0, 18), tax_inclusive=False), 0)
+
+	def test_rates_match_to_the_cent(self):
+		self.assertTrue(rates_match(3.33, 10 / 3))
+		self.assertFalse(rates_match(3.32, 10 / 3))
+
+	def test_totals_allow_for_rounded_rates(self):
+		lines = [line(1, 10, 3, 10)]
+		# 3 x 3.33 is 9.99
+		self.assertFalse(totals_differ(9.99, 10, lines))
+		self.assertTrue(totals_differ(9.90, 10, lines))
+
+
+class TestCharges(IntegrationTestCase):
+	def order(self, **values):
+		return _dict(
+			{
+				"shipping_total": 5,
+				"shipping_tax": 1.05,
+				"fee_lines": json.dumps([{"name": "Gift wrap", "total": "1.00", "total_tax": "0.21"}]),
+				"tax_lines": json.dumps(
+					[
+						{
+							"label": "VAT",
+							"rate_code": "PL-VAT-1",
+							"tax_total": "3.99",
+							"shipping_tax_total": "1.05",
+						},
+						{
+							"label": "Zero",
+							"rate_code": "PL-ZERO-2",
+							"tax_total": "0",
+							"shipping_tax_total": "0",
+						},
+					]
+				),
+				**values,
+			}
+		)
+
+	def server(self, **values):
+		return _dict(
+			{
+				"freight_and_forwarding_account": "Freight",
+				"tax_account": "VAT",
+				"use_actual_tax_type": 1,
+				**values,
+			}
+		)
+
+	def test_actual_tax_is_one_row_per_rate(self):
+		charges = build_charges(self.order(), self.server(fee_account="Fees"), with_shipping=True)
+
+		self.assertEqual(
+			[(c["account_head"], c["tax_amount"], c["description"]) for c in charges],
+			[("Freight", 5, "Shipping"), ("Fees", 1, "Gift wrap"), ("VAT", 5.04, "VAT")],
+		)
+		self.assertTrue(all(c["charge_type"] == "Actual" for c in charges))
+
+	def test_order_adds_up(self):
+		# 2 x 9 after a coupon, 5 shipping, a 1 fee and 5.04 tax, as WooCommerce totals it
+		lines = [line(1, 10, 2, 18, total_tax=3.78)]
+		item_total = sum(get_line_rate(row, False) * row["quantity"] for row in lines)
+		charges = build_charges(self.order(), self.server(), with_shipping=True)
+		self.assertAlmostEqual(item_total + sum(c["tax_amount"] for c in charges), 29.04)
+
+	def test_fees_fall_back_to_the_freight_account(self):
+		charges = build_charges(self.order(), self.server(), with_shipping=True)
+		self.assertEqual(charges[1]["account_head"], "Freight")
+
+	def test_shipping_rule_charges_the_shipping(self):
+		charges = build_charges(self.order(), self.server(), with_shipping=False)
+		self.assertNotIn("Shipping", [c["description"] for c in charges])
+
+	def test_template_taxes_the_lines_and_the_rest_is_added(self):
+		charges = build_charges(self.order(), self.server(use_actual_tax_type=0), with_shipping=True)
+		self.assertEqual(
+			[(c["account_head"], c["tax_amount"]) for c in charges],
+			[("Freight", 5), ("Freight", 1), ("VAT", 1.26)],
+		)
+
+
+class TestLines(IntegrationTestCase):
+	def make(self, lines, items=None, **sales_order_values):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.woocommerce_order = _dict(
+			name=f"{SERVER}~12",
+			woocommerce_server=SERVER,
+			line_items=json.dumps(lines),
+			total=sum(float(row["total"]) for row in lines),
+		)
+		sync.sales_order = MagicMock(
+			**{
+				"docstatus": 1,
+				"per_delivered": 0,
+				"per_billed": 0,
+				"delivery_date": "2026-11-06",
+				"items": items or [],
+				**sales_order_values,
+			}
+		)
+		sync.sales_order.name = "SAL-ORD-1"
+		sync.sales_order.grand_total = sync.woocommerce_order.total
+		return sync
+
+	def build(self, sync, item_codes):
+		with (
+			patch.object(order_lines, "find_item_code", side_effect=lambda server, pid: item_codes.get(pid)),
+			patch.object(order_lines, "get_placeholder_item", return_value=order_lines.PLACEHOLDER_ITEM),
+			patch.object(frappe, "get_cached_value", return_value="Mug (Item)"),
+		):
+			return sync.build_item_rows(
+				_dict(name=SERVER, warehouse="Stores", use_actual_tax_type=1), "2026-11-06"
+			)
+
+	def test_every_line_is_a_row(self):
+		sync = self.make([line(1, 10, 2, 18), line(2, 0, 1, 5, name="Gone")])
+		rows, issues = self.build(sync, {"10": "MUG"})
+
+		self.assertEqual([row["item_code"] for row in rows], ["MUG", order_lines.PLACEHOLDER_ITEM])
+		self.assertEqual(rows[0]["rate"], 9)
+		self.assertEqual(rows[0]["woocommerce_line_item_id"], "1")
+		self.assertEqual(rows[0]["woocommerce_id"], "10")
+		self.assertEqual(rows[0]["warehouse"], "Stores")
+		self.assertEqual(rows[0]["delivery_date"], "2026-11-06")
+		# The placeholder keeps the name the line has in WooCommerce
+		self.assertEqual(rows[1]["item_name"], "Gone")
+		self.assertEqual(len(issues), 1)
+
+	def test_product_without_an_item_is_flagged_too(self):
+		sync = self.make([line(1, 10, 1, 5)])
+		rows, issues = self.build(sync, {})
+		self.assertEqual(rows[0]["item_code"], order_lines.PLACEHOLDER_ITEM)
+		self.assertEqual(len(issues), 1)
+
+	def row(self, line_id, item_code, qty, rate, name):
+		return _dict(
+			name=name,
+			woocommerce_line_item_id=str(line_id),
+			item_code=item_code,
+			qty=qty,
+			rate=rate,
+			uom="Nos",
+			conversion_factor=1,
+		)
+
+	def wanted(self, line_id, item_code, qty, rate):
+		return {
+			"woocommerce_line_item_id": str(line_id),
+			"woocommerce_id": "10",
+			"item_code": item_code,
+			"qty": qty,
+			"rate": rate,
+			"warehouse": "Stores",
+			"delivery_date": "2026-11-06",
+		}
+
+	def update(self, sync, wanted):
+		with (
+			patch.object(sync, "get_wc_server", return_value=_dict(name=SERVER)),
+			patch.object(sync, "create_missing_items"),
+			patch.object(sync, "build_item_rows", return_value=(wanted, [])),
+			patch.object(order_lines, "update_child_qty_rate") as update_child_qty_rate,
+			patch.object(frappe.db, "set_value") as set_value,
+		):
+			sync.update_sales_order_items()
+		trans_items = (
+			json.loads(update_child_qty_rate.call_args.args[1]) if update_child_qty_rate.called else None
+		)
+		return trans_items, set_value
+
+	def test_unchanged_lines_are_left(self):
+		sync = self.make([line(1, 10, 2, 18)], items=[self.row(1, "MUG", 2, 9, "SOI-1")])
+		trans_items, _set_value = self.update(sync, [self.wanted(1, "MUG", 2, 9)])
+		self.assertIsNone(trans_items)
+
+	def test_changed_lines_update_the_sales_order(self):
+		sync = self.make(
+			[line(1, 10, 3, 27), line(3, 12, 1, 4)],
+			items=[self.row(1, "MUG", 2, 9, "SOI-1"), self.row(2, "CUP", 1, 5, "SOI-2")],
+		)
+		trans_items, _set_value = self.update(
+			sync, [self.wanted(1, "MUG", 3, 9), self.wanted(3, "PLATE", 1, 4)]
+		)
+
+		# Line 1 keeps its row with the new qty, line 2 is gone and line 3 is new
+		self.assertEqual(trans_items[0]["docname"], "SOI-1")
+		self.assertEqual(trans_items[0]["qty"], 3)
+		self.assertNotIn("docname", trans_items[1])
+		self.assertEqual(trans_items[1]["item_code"], "PLATE")
+		self.assertEqual(len(trans_items), 2)
+
+	def test_line_with_another_product_is_a_new_row(self):
+		sync = self.make([line(1, 11, 2, 18)], items=[self.row(1, "MUG", 2, 9, "SOI-1")])
+		trans_items, _set_value = self.update(sync, [self.wanted(1, "CUP", 2, 9)])
+		self.assertNotIn("docname", trans_items[0])
+
+	def test_new_rows_are_linked_to_their_line(self):
+		sync = self.make([line(1, 10, 2, 18), line(3, 12, 1, 4)], items=[self.row(1, "MUG", 2, 9, "SOI-1")])
+
+		def reload():
+			# What Update Items leaves: a new row without the custom fields
+			sync.sales_order.items = [
+				self.row(1, "MUG", 2, 9, "SOI-1"),
+				_dict(name="SOI-3", item_code="PLATE", woocommerce_line_item_id=None),
+			]
+
+		sync.sales_order.reload.side_effect = reload
+		_trans_items, set_value = self.update(
+			sync, [self.wanted(1, "MUG", 2, 9), self.wanted(3, "PLATE", 1, 4)]
+		)
+
+		set_value.assert_called_once()
+		self.assertEqual(set_value.call_args.args[:2], ("Sales Order Item", "SOI-3"))
+		self.assertEqual(set_value.call_args.args[2]["woocommerce_line_item_id"], "3")
+
+	def test_lines_of_a_delivered_or_invoiced_order_are_flagged(self):
+		for values in ({"per_delivered": 50}, {"per_billed": 100}, {"docstatus": 0}):
+			sync = self.make([line(1, 10, 3, 27)], items=[self.row(1, "MUG", 2, 9, "SOI-1")], **values)
+			trans_items, _set_value = self.update(sync, [self.wanted(1, "MUG", 3, 9)])
+
+			self.assertIsNone(trans_items)
+			self.assertEqual(sync.sales_order.db_set.call_args.args[0], "woocommerce_sync_issue")
+
+	def test_rows_without_a_line_are_flagged(self):
+		# Made before the rows were linked to their line
+		sync = self.make([line(1, 10, 3, 27)], items=[self.row(None, "MUG", 2, 9, "SOI-1")])
+		sync.sales_order.items[0].woocommerce_line_item_id = None
+		trans_items, _set_value = self.update(sync, [self.wanted(1, "MUG", 3, 9)])
+		self.assertIsNone(trans_items)
+
+	def test_totals_that_differ_are_flagged(self):
+		sync = self.make([line(1, 10, 2, 18)])
+		sync.sales_order.grand_total = 20
+		self.assertIn("18", sync.check_totals(sync.sales_order))
+		sync.sales_order.grand_total = 18
+		self.assertIsNone(sync.check_totals(sync.sales_order))
+
+
+class TestNewSalesOrderLines(IntegrationTestCase):
+	def test_lines_and_charges_of_a_new_sales_order(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.woocommerce_order = _dict(
+			name=f"{SERVER}~12",
+			woocommerce_server=SERVER,
+			line_items=json.dumps([line(1, 10, 2, 18)]),
+			shipping_total=5,
+			fee_lines="[]",
+			tax_lines="[]",
+		)
+		sales_order = frappe.new_doc("Sales Order")
+		server = make_server(
+			warehouse="Stores", use_actual_tax_type=1, freight_and_forwarding_account="Freight"
+		)
+		rows = [{"item_code": "MUG", "qty": 2, "rate": 9, "woocommerce_line_item_id": "1"}]
+		with (
+			patch.object(sync, "get_wc_server", return_value=server),
+			patch.object(sync, "build_item_rows", return_value=(rows, ["one issue"])),
+		):
+			sync.set_items_in_sales_order(sales_order)
+
+		self.assertEqual(sales_order.ignore_pricing_rule, 1)
+		self.assertEqual([row.item_code for row in sales_order.items], ["MUG"])
+		self.assertEqual([tax.description for tax in sales_order.taxes], ["Shipping"])
+		self.assertEqual(sync.line_issues, ["one issue"])
+
+	def test_an_order_without_lines_or_warehouse_is_an_error(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.woocommerce_order = _dict(name=f"{SERVER}~12", woocommerce_server=SERVER, line_items="[]")
+		for server in (make_server(warehouse="Stores"), make_server(warehouse=None)):
+			with (
+				patch.object(sync, "get_wc_server", return_value=server),
+				self.assertRaises(frappe.ValidationError),
+			):
+				sync.set_items_in_sales_order(frappe.new_doc("Sales Order"))

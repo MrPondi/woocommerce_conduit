@@ -103,6 +103,24 @@ class SalesOrderStatusMixin:
 	def flag_sync_issue(self, message: str) -> None:
 		self.sales_order.db_set("woocommerce_sync_issue", message, update_modified=False)
 
+	def run_flagged(self, step, message: str) -> None:
+		"""
+		Run a step that the Sales Order doesn't depend on. When it fails its changes are rolled back, and it
+		is logged and flagged on the Sales Order (`message` gets the error), instead of failing the sync and
+		with it the Sales Order.
+		"""
+		savepoint = "woocommerce_sync_step"
+		frappe.db.savepoint(savepoint)
+		try:
+			step()
+		except Exception as error:
+			frappe.db.rollback(save_point=savepoint)
+			frappe.log_error(
+				"WooCommerce Error",
+				f"{frappe.get_traceback()}\n\nSales Order: {self.sales_order.name}",
+			)
+			self.flag_sync_issue(message.format(error))
+
 	def hold_sales_order(self) -> None:
 		if self.sales_order.docstatus == 1 and self.sales_order.status not in ("On Hold", "Closed"):
 			self.sales_order.update_status("On Hold")

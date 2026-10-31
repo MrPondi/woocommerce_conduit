@@ -5,21 +5,18 @@ from typing import Literal
 
 import frappe
 import frappe.utils
-from erpnext.accounts.doctype.sales_taxes_and_charges_template.sales_taxes_and_charges_template import (
-	SalesTaxesandChargesTemplate,
-)
 from erpnext.selling.doctype.customer.customer import Customer
 from erpnext.selling.doctype.sales_order.sales_order import SalesOrder
 from erpnext.selling.doctype.sales_order_item.sales_order_item import SalesOrderItem
-from erpnext.stock.doctype.item.item import Item
-from frappe import ValidationError, _
+from frappe import _
 from frappe.contacts.doctype.address.address import Address
 from frappe.contacts.doctype.contact.contact import Contact
 from frappe.utils import get_datetime
-from frappe.utils.data import cstr, now
+from frappe.utils.data import now
 from frappe.utils.synchronization import filelock
 
 from woocommerce_conduit.exceptions import SyncDisabledError
+from woocommerce_conduit.tasks.order_lines import SalesOrderLinesMixin
 from woocommerce_conduit.tasks.order_payment import SalesOrderPaymentMixin, get_payment_method
 from woocommerce_conduit.tasks.order_status import (
 	SalesOrderStatusMixin,
@@ -27,7 +24,6 @@ from woocommerce_conduit.tasks.order_status import (
 	get_statuses_to_sync,
 )
 from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce
-from woocommerce_conduit.tasks.sync_items import run_item_sync
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import (
 	WooCommerceOrder,
 	get_address_data,
@@ -39,6 +35,7 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woo
 	ACTION_STATUS_ONLY,
 	ACTION_SUBMIT_HOLD,
 	CREATING_ACTIONS,
+	ENDING_ACTIONS,
 	normalise_status,
 )
 from woocommerce_conduit.woocommerce.doctype.woocommerce_settings.woocommerce_settings import (
@@ -189,7 +186,9 @@ def run_sales_order_sync(
 	return sync.sales_order, sync.woocommerce_order
 
 
-class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, SynchroniseWooCommerce):
+class SynchroniseSalesOrder(
+	SalesOrderStatusMixin, SalesOrderPaymentMixin, SalesOrderLinesMixin, SynchroniseWooCommerce
+):
 	"""
 	Class for managing synchronisation of a WooCommerce Order with an ERPNext Sales Order
 	"""
@@ -416,6 +415,11 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Synch
 			self.sales_order.flags.created_by_sync = True
 			self.sales_order.save()
 
+			# The lines of an order that is being cancelled or closed don't matter any more
+			if self.sales_order.docstatus == 1 and not (status_changed and action in ENDING_ACTIONS):
+				self.run_flagged(self.update_sales_order_items, _("The lines could not be updated: {0}"))
+				self.sales_order.reload()
+
 			# What a status means is done once, when it changes. Otherwise editing the note of an order would
 			# undo a hold that was put on its Sales Order in ERPNext.
 			if status_changed:
@@ -439,7 +443,9 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Synch
 
 		new_sales_order: SyncedOrder = frappe.new_doc("Sales Order")  # type: ignore
 		new_sales_order.customer = customer_docname
-		new_sales_order.po_no = new_sales_order.woocommerce_id = self.woocommerce_order.woocommerce_id
+		new_sales_order.woocommerce_id = self.woocommerce_order.woocommerce_id
+		# The number the customer sees, which plugins can make differ from the id
+		new_sales_order.po_no = self.woocommerce_order.number or self.woocommerce_order.woocommerce_id
 		if self.woocommerce_order.customer_note:
 			new_sales_order.woocommerce_customer_note = self.woocommerce_order.customer_note
 
@@ -463,14 +469,16 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Synch
 			and (shipping_lines := json.loads(self.woocommerce_order.shipping_lines))
 			and len(wc_server.shipping_rule_map) > 0
 		):
-			if self.woocommerce_order.shipping_lines != {}:
-				shipping_rule_mapping = next(
-					(
-						rule
-						for rule in wc_server.shipping_rule_map
-						if rule.wc_shipping_method_id == shipping_lines[0]["method_id"]
-					),
-				)
+			shipping_rule_mapping = next(
+				(
+					rule
+					for rule in wc_server.shipping_rule_map
+					if rule.wc_shipping_method_id == shipping_lines[0]["method_id"]
+				),
+				None,
+			)
+			# A method without a rule is charged as WooCommerce charged it
+			if shipping_rule_mapping:
 				new_sales_order.shipping_rule = shipping_rule_mapping.shipping_rule
 
 		self.set_items_in_sales_order(new_sales_order)
@@ -478,6 +486,13 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Synch
 		new_sales_order.flags.ignore_mandatory = True
 		new_sales_order.flags.created_by_sync = True
 		new_sales_order.insert()
+
+		# Kept, but flagged for a person to look at
+		issues = list(self.line_issues)
+		if issue := self.check_totals(new_sales_order):
+			issues.append(issue)
+		if issues:
+			new_sales_order.woocommerce_sync_issue = "; ".join(issues)
 		new_sales_order.submit()
 
 		new_sales_order.reload()
@@ -595,116 +610,6 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Synch
 			frappe.log_error("WooCommerce Error", error_message)
 
 		return customer.name
-
-	def create_missing_items(self):
-		"""
-		Searching for items linked to multiple WooCommerce sites
-		"""
-		for item_data in json.loads(self.woocommerce_order.line_items):
-			item_woo_com_id = cstr(item_data.get("variation_id") or item_data.get("product_id"))
-
-			# Deleted items will have a "0" for variation_id/product_id
-			if item_woo_com_id != "0":
-				woocommerce_product_name = generate_woocommerce_record_name_from_domain_and_id(
-					self.woocommerce_order.woocommerce_server, item_woo_com_id
-				)
-				run_item_sync(woocommerce_product_name=woocommerce_product_name)
-
-	def set_items_in_sales_order(self, new_sales_order: SyncedOrder):
-		"""
-		Customised version of set_items_in_sales_order to allow searching for items linked to
-		multiple WooCommerce sites
-		"""
-		wc_server: WooCommerceServer = frappe.get_cached_doc(
-			"WooCommerce Server", new_sales_order.woocommerce_server
-		)  # type: ignore
-		if not wc_server.warehouse:
-			frappe.throw(_("Please set Warehouse in WooCommerce Server"))
-
-		for item in json.loads(self.woocommerce_order.line_items):
-			woocomm_item_id = item.get("variation_id") or item.get("product_id")
-
-			# Deleted items will have a "0" for variation_id/product_id
-			if woocomm_item_id == 0:
-				found_item = create_placeholder_item(new_sales_order)
-			else:
-				iws = frappe.qb.DocType("Item WooCommerce Server")
-				itm = frappe.qb.DocType("Item")
-				item_codes = (  # pyright: ignore[reportCallIssue]
-					frappe.qb.from_(iws)
-					.join(itm)
-					.on(iws.parent == itm.name)
-					.where(
-						(iws.woocommerce_id == cstr(woocomm_item_id))
-						& (iws.woocommerce_server == new_sales_order.woocommerce_server)
-						& (itm.disabled == 0)
-					)
-					.select(iws.parent)
-					.limit(1)
-				).run(as_dict=True)
-
-				found_item: Item | None = frappe.get_doc("Item", item_codes[0].parent) if item_codes else None  # type: ignore
-
-			if found_item:
-				# If we are applying a Sales Taxes and Charges Template (as opposed to Actual Tax), then we need to
-				# determine if the item price should include tax or not
-				tax_template: SalesTaxesandChargesTemplate | None = None
-				if not wc_server.use_actual_tax_type:
-					tax_template = frappe.get_cached_doc(
-						"Sales Taxes and Charges Template", wc_server.sales_taxes_and_charges_template
-					)  # type: ignore
-
-				item = {
-					"item_code": found_item.name,
-					"item_name": found_item.item_name,
-					"description": found_item.item_name,
-					"qty": item.get("quantity"),
-					"rate": item.get("price")
-					if wc_server.use_actual_tax_type
-					or (tax_template and not tax_template.taxes[0].included_in_print_rate)
-					else get_tax_inc_price_for_woocommerce_line_item(item),
-					"warehouse": wc_server.warehouse,
-					"discount_percentage": 100 if item.get("price") == 0 else 0,
-				}
-				if new_sales_order.delivery_date:
-					item["delivery_date"] = new_sales_order.delivery_date
-				wc_server.sales_taxes_and_charges_template
-				new_sales_order.append("items", item)
-
-				if not wc_server.use_actual_tax_type:
-					new_sales_order.taxes_and_charges = wc_server.sales_taxes_and_charges_template
-
-					# Trigger taxes calculation
-					new_sales_order.set_missing_lead_customer_details()
-				else:
-					ordered_items_tax = item.get("total_tax")
-					add_tax_details(
-						new_sales_order, ordered_items_tax, "Ordered Item tax", wc_server.tax_account
-					)
-
-		# If a Shipping Rule is added, shipping charges will be determined by the Shipping Rule. If not, then
-		# get it from the WooCommerce Order
-		if not new_sales_order.shipping_rule:
-			if self.woocommerce_order.shipping_total != 0:
-				add_tax_details(
-					new_sales_order,
-					self.woocommerce_order.shipping_tax,
-					"Shipping Tax",
-					wc_server.freight_and_forwarding_account,
-				)
-			add_tax_details(
-				new_sales_order,
-				self.woocommerce_order.shipping_total,
-				"Shipping Total",
-				wc_server.freight_and_forwarding_account,
-			)
-
-		# Handle scenario where Woo Order has no items, then manually set the total
-		if len(new_sales_order.items) == 0:
-			new_sales_order.base_grand_total = float(self.woocommerce_order.total)
-			new_sales_order.grand_total = float(self.woocommerce_order.total)
-			new_sales_order.base_rounded_total = float(self.woocommerce_order.total)
-			new_sales_order.rounded_total = float(self.woocommerce_order.total)
 
 	def create_or_update_address(self, billing: dict, shipping: dict) -> Address:
 		"""
@@ -946,11 +851,15 @@ def create_contact(data, billing_address, customer):
 	if not email and not phone:
 		return
 
+	# Every order of a customer would otherwise add one more Contact
+	if existing := get_contact_of_customer(customer.name, email, phone):
+		return frappe.get_doc("Contact", existing)
+
 	contact: Contact = frappe.new_doc("Contact")  # type: ignore
 	contact.first_name = data.get("first_name")
 	contact.last_name = data.get("last_name")
 	contact.is_primary_contact = 1
-	contact.address = billing_address
+	contact.address = billing_address.name
 
 	if phone:
 		contact.add_phone(phone, is_primary_mobile_no=1, is_primary_phone=1)
@@ -966,48 +875,20 @@ def create_contact(data, billing_address, customer):
 	return contact
 
 
-def add_tax_details(sales_order, price, desc, tax_account_head):
-	sales_order.append(
-		"taxes",
-		{
-			"charge_type": "Actual",
-			"account_head": tax_account_head,
-			"tax_amount": price,
-			"description": desc,
-		},
-	)
-
-
-def get_tax_inc_price_for_woocommerce_line_item(line_item: dict):
+def get_contact_of_customer(customer_name: str, email: str | None, phone: str | None) -> str | None:
 	"""
-	WooCommerce's Line Item "price" field will always show the tax excluding amount.
-	This function calculates the tax inclusive rate for an item
+	The Contact of the Customer with this email, or with this phone when there is no email
 	"""
-	return (float(line_item.get("subtotal")) + float(line_item.get("subtotal_tax"))) / float(  # type: ignore
-		line_item.get("quantity")  # type: ignore
-	)
-
-
-def create_placeholder_item(sales_order: SyncedOrder):
-	"""
-	Create a placeholder Item for deleted WooCommerce Products
-	"""
-	wc_server: WooCommerceServer = frappe.get_cached_doc("WooCommerce Server", sales_order.woocommerce_server)  # type: ignore
-	if not frappe.db.exists("Item", "DELETED_WOOCOMMERCE_PRODUCT"):
-		item: Item = frappe.new_doc("Item")  # type: ignore
-		item.item_code = "DELETED_WOOCOMMERCE_PRODUCT"
-		item.item_name = "Deletet WooCommerce Product"
-		item.description = "Deletet WooCommerce Product"
-		item.item_group = "All Item Groups"
-		item.stock_uom = wc_server.uom
-		item.is_stock_item = 0
-		item.is_fixed_asset = 0
-		item.opening_stock = 0
-		item.flags.created_by_sync = True
-		item.save()
+	filters = [
+		["Dynamic Link", "link_doctype", "=", "Customer"],
+		["Dynamic Link", "link_name", "=", customer_name],
+	]
+	if email:
+		filters.append(["Contact Email", "email_id", "=", email])
 	else:
-		item: Item = frappe.get_doc("Item", "DELETED_WOOCOMMERCE_PRODUCT")  # type: ignore
-	return item
+		filters.append(["Contact Phone", "phone", "=", phone])
+	contacts = frappe.get_all("Contact", filters=filters, pluck="name", limit=1)
+	return contacts[0] if contacts else None
 
 
 def get_addresses_linking_to(doctype, docname, fields=None):

@@ -21,6 +21,24 @@ if TYPE_CHECKING:
 # The field the title of the payment method is stored in is this long
 PAYMENT_METHOD_LENGTH = 140
 
+# The fields of a Sales Order that link to the documents the sync made for it
+SALES_ORDER_LINK_FIELDS = {
+	"Sales Invoice": "woocommerce_sales_invoice",
+	"Payment Entry": "woocommerce_payment_entry",
+}
+
+
+def unlink_from_sales_order(doc, method=None):
+	"""
+	Intended to be triggered by the on_cancel of a Sales Invoice or Payment Entry. The Sales Order that links
+	to it no longer has it, and Frappe would refuse the cancel while a submitted Sales Order links to it.
+	"""
+	fieldname = SALES_ORDER_LINK_FIELDS.get(doc.doctype)
+	if not fieldname:
+		return
+	for sales_order in frappe.get_all("Sales Order", filters={fieldname: doc.name}, pluck="name"):
+		frappe.db.set_value("Sales Order", sales_order, fieldname, None, update_modified=False)
+
 
 def get_payment_method(wc_order) -> str | None:
 	"""
@@ -60,23 +78,13 @@ class SalesOrderPaymentMixin:
 			"WooCommerce Server", self.woocommerce_order.woocommerce_server
 		)  # type: ignore
 		if wc_server.create_sales_invoice and action == ACTION_SUBMIT_INVOICE:
-			self.run_payment_step(self.create_sales_invoice, wc_server, _("Sales Invoice"))
-		if wc_server.enabled_payments_sync:
-			self.run_payment_step(self.create_payment_entry, wc_server, _("Payment Entry"))
-
-	def run_payment_step(self, step, wc_server, document: str) -> None:
-		savepoint = "woocommerce_payment_step"
-		frappe.db.savepoint(savepoint)
-		try:
-			step(wc_server)
-		except Exception as error:
-			frappe.db.rollback(save_point=savepoint)
-			frappe.log_error(
-				"WooCommerce Error",
-				f"{frappe.get_traceback()}\n\nSales Order: {self.sales_order.name}\n"
-				f"WC Order: {self.woocommerce_order.name}",
+			self.run_flagged(
+				lambda: self.create_sales_invoice(wc_server), _("The Sales Invoice could not be made: {0}")
 			)
-			self.flag_sync_issue(_("The {0} could not be made: {1}").format(document, error))
+		if wc_server.enabled_payments_sync:
+			self.run_flagged(
+				lambda: self.create_payment_entry(wc_server), _("The Payment Entry could not be made: {0}")
+			)
 
 	def create_sales_invoice(self, wc_server) -> None:
 		sales_order = self.sales_order
@@ -129,6 +137,9 @@ class SalesOrderPaymentMixin:
 		reference_doctype, reference_name = self.get_payment_reference()
 		if not reference_name:
 			return
+		# Paid in some other way, say after a Payment Entry of the sync was cancelled and made again by hand
+		if self.is_paid(reference_doctype, reference_name):
+			return
 
 		date_paid = getdate(wc_order.date_paid)
 		payment_entry = get_payment_entry(
@@ -146,6 +157,11 @@ class SalesOrderPaymentMixin:
 			payment_entry.submit()
 
 		sales_order.db_set("woocommerce_payment_entry", payment_entry.name, update_modified=False)
+
+	def is_paid(self, reference_doctype: str, reference_name: str) -> bool:
+		if reference_doctype == "Sales Invoice":
+			return flt(frappe.db.get_value("Sales Invoice", reference_name, "outstanding_amount")) <= 0
+		return flt(self.sales_order.advance_paid) >= flt(self.sales_order.grand_total)
 
 	def get_payment_reference(self) -> tuple[str, str | None]:
 		"""

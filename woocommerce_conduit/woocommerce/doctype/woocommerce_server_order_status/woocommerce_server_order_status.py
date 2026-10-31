@@ -18,6 +18,8 @@ ACTION_STATUS_ONLY = "Status only"
 # that was never synced stays out of ERPNext, so no Customer, Address or Contact is made for it either.
 CREATING_ACTIONS = (ACTION_SUBMIT, ACTION_SUBMIT_INVOICE, ACTION_SUBMIT_HOLD)
 CANCELLING_ACTIONS = (ACTION_CANCEL, ACTION_SKIP_CANCEL)
+# The actions after which a Sales Order is not changed any more
+ENDING_ACTIONS = (*CANCELLING_ACTIONS, ACTION_CLOSE)
 
 # The payment gateway decides on these, so ERPNext must not push them over the gateway's
 PAYMENT_OWNED_STATUSES = ("checkout-draft", "pending", "failed", "on-hold", "processing")

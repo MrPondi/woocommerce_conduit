@@ -176,7 +176,13 @@ doc_events = {
 	},
 	"Sales Invoice": {
 		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+		"on_cancel": [
+			"woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+			"woocommerce_conduit.tasks.order_payment.unlink_from_sales_order",
+		],
+	},
+	"Payment Entry": {
+		"on_cancel": "woocommerce_conduit.tasks.order_payment.unlink_from_sales_order",
 	},
 	"Purchase Invoice": {
 		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
