@@ -269,3 +269,69 @@ class TestPrimaryConnection(IntegrationTestCase):
 
 		self.assertEqual(item.item_name, "Mug")
 		set_sync_hash.assert_called_once()
+
+
+class TestItemTaxTemplate(IntegrationTestCase):
+	def server(self, **values):
+		return frappe.get_doc({"doctype": "WooCommerce Server", **values})
+
+	def net_server(self, **values):
+		return self.server(
+			**values,
+			tax_class_map=[
+				{"woocommerce_tax_class": "standard", "item_tax_template": "VAT 23%"},
+				{"woocommerce_tax_class": "zerowa-stawka", "item_tax_template": "VAT 0%"},
+				{"woocommerce_tax_class": "obnizona-stawka"},
+			],
+		)
+
+	def set_template(self, server, item=None, **product_values):
+		item = item or frappe.new_doc("Item")
+		sync = make_sync(woocommerce_product=make_product(type="simple", **product_values))
+		changed = sync._set_item_tax_template(item, server)
+		return item, changed
+
+	def templates(self, item):
+		return [(row.item_tax_template, row.tax_category or None) for row in item.taxes]
+
+	def test_items_get_the_template_of_their_class(self):
+		server = self.net_server()
+		# WooCommerce leaves the standard class empty
+		self.assertEqual(self.templates(self.set_template(server, tax_class="")[0]), [("VAT 23%", None)])
+		self.assertEqual(
+			self.templates(self.set_template(server, tax_class="zerowa-stawka")[0]), [("VAT 0%", None)]
+		)
+
+	def test_a_class_without_a_template_gets_the_default_one(self):
+		server = self.net_server(default_item_tax_template="VAT 8%")
+		self.assertEqual(
+			self.templates(self.set_template(server, tax_class="obnizona-stawka")[0]), [("VAT 8%", None)]
+		)
+		# A class that isn't in the map at all
+		self.assertEqual(self.templates(self.set_template(server, tax_class="nowa")[0]), [("VAT 8%", None)])
+
+	def test_without_any_template_the_item_is_left(self):
+		item, changed = self.set_template(self.net_server(), tax_class="obnizona-stawka")
+		self.assertFalse(changed)
+		self.assertEqual(item.taxes, [])
+
+	def test_only_the_row_without_a_tax_category_is_set(self):
+		item = frappe.new_doc("Item")
+		item.append("taxes", {"item_tax_template": "VAT 8%", "tax_category": "Export"})
+		item.append("taxes", {"item_tax_template": "VAT 8%"})
+
+		item, changed = self.set_template(self.net_server(), item=item, tax_class="")
+
+		self.assertTrue(changed)
+		self.assertEqual(self.templates(item), [("VAT 8%", "Export"), ("VAT 23%", None)])
+		self.assertFalse(self.set_template(self.net_server(), item=item, tax_class="")[1])
+
+	def test_a_variation_in_its_parents_class_gets_the_parents_template(self):
+		item = frappe.new_doc("Item")
+		item.variant_of = "MOWER"
+		parent = _dict(taxes=[_dict(item_tax_template="VAT 0%", tax_category=None)])
+
+		with patch.object(frappe, "get_cached_doc", return_value=parent):
+			item, _changed = self.set_template(self.net_server(), item=item, tax_class="parent")
+
+		self.assertEqual(self.templates(item), [("VAT 0%", None)])

@@ -48,6 +48,8 @@ class WooCommerceProduct(WooCommerceDocument):
 		status: DF.Literal["draft", "pending", "private", "publish", "trash"]
 		stock_quantity: DF.Int
 		stock_status: DF.Literal["instock", "outofstock", "onbackorder"]
+		tax_class: DF.Data | None
+		tax_status: DF.Data | None
 		total_sales: DF.Int
 		upsell_ids: DF.JSON | None
 		virtual: DF.Check

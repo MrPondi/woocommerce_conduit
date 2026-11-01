@@ -587,6 +587,7 @@ class TestStatusActions(IntegrationTestCase):
 				"per_delivered": 0,
 				"per_billed": 0,
 				"woocommerce_payment_entry": None,
+				"woocommerce_sync_issue": None,
 				"flags": _dict(),
 				**values,
 			}
@@ -838,6 +839,7 @@ class InvoiceAndPaymentCase(IntegrationTestCase):
 			payment_method_title="Card",
 			transaction_id="ch_1",
 			date_paid="2026-10-30T10:00:00",
+			total="100.00",
 		)
 		sync.server = server or make_server()
 		return sync
@@ -970,6 +972,14 @@ class TestInvoiceAndPayment(InvoiceAndPaymentCase):
 			_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
 			get_payment_entry.assert_not_called()
 
+	def test_payment_of_an_order_that_does_not_add_up_is_not_booked(self):
+		# Taxed more in ERPNext than in WooCommerce, so the Payment Entry would be for more than was paid
+		sync = self.make(make_server(create_sales_invoice=0), grand_total=117.07)
+		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
+
+		get_payment_entry.assert_not_called()
+		self.assertIn("117.07", self.linked(sync, "woocommerce_sync_issue"))
+
 	def test_payment_method_without_a_mode_of_payment_is_not_booked(self):
 		# cod has a row without a Mode of Payment, paypal has no row at all
 		for method in ("cod", "paypal"):
@@ -1072,6 +1082,8 @@ class TestLineValues(IntegrationTestCase):
 		self.assertEqual(get_line_rate(mug, tax_inclusive=False), 9)
 		self.assertAlmostEqual(get_line_rate(mug, tax_inclusive=True), 10.89)
 		self.assertEqual(get_line_rate(line(1, 10, 0, 18), tax_inclusive=False), 0)
+		# A shop that charges no tax itself: the price the customer paid, VAT in it
+		self.assertEqual(get_line_rate(line(1, 10, 2, 520), tax_inclusive=True), 260)
 
 	def test_rates_match_to_the_cent(self):
 		self.assertTrue(rates_match(3.33, 10 / 3))
@@ -1112,45 +1124,58 @@ class TestCharges(IntegrationTestCase):
 		)
 
 	def server(self, **values):
-		return _dict(
-			{
-				"freight_and_forwarding_account": "Freight",
-				"tax_account": "VAT",
-				"use_actual_tax_type": 1,
-				**values,
-			}
-		)
+		return _dict({"freight_and_forwarding_account": "Freight", **values})
 
-	def test_actual_tax_is_one_row_per_rate(self):
-		charges = build_charges(self.order(), self.server(fee_account="Fees"), with_shipping=True)
+	VAT = [("VAT", 21.0)]  # noqa: RUF012
+
+	def test_net_charges_get_the_vat_woocommerce_charged(self):
+		charges = build_charges(self.order(), self.server(fee_account="Fees"), True, self.VAT, False)
 
 		self.assertEqual(
 			[(c["account_head"], c["tax_amount"], c["description"]) for c in charges],
-			[("Freight", 5, "Shipping"), ("Fees", 1, "Gift wrap"), ("VAT", 5.04, "VAT")],
+			[("Freight", 5, "Shipping"), ("Fees", 1, "Gift wrap"), ("VAT", 1.26, "VAT on shipping and fees")],
 		)
 		self.assertTrue(all(c["charge_type"] == "Actual" for c in charges))
+		# Kept out of the VAT rate of the lines, which ERPNext reads from the last row on each account
+		self.assertTrue(all(c["set_by_item_tax_template"] for c in charges))
 
 	def test_order_adds_up(self):
 		# 2 x 9 after a coupon, 5 shipping, a 1 fee and 5.04 tax, as WooCommerce totals it
 		lines = [line(1, 10, 2, 18, total_tax=3.78)]
 		item_total = sum(get_line_rate(row, False) * row["quantity"] for row in lines)
-		charges = build_charges(self.order(), self.server(), with_shipping=True)
-		self.assertAlmostEqual(item_total + sum(c["tax_amount"] for c in charges), 29.04)
+		# The template's 21% on the lines
+		item_tax = item_total * 0.21
+		charges = build_charges(self.order(), self.server(), True, self.VAT, False)
+		self.assertAlmostEqual(item_total + item_tax + sum(c["tax_amount"] for c in charges), 29.04)
 
 	def test_fees_fall_back_to_the_freight_account(self):
-		charges = build_charges(self.order(), self.server(), with_shipping=True)
+		charges = build_charges(self.order(), self.server(), True, self.VAT, False)
 		self.assertEqual(charges[1]["account_head"], "Freight")
 
 	def test_shipping_rule_charges_the_shipping(self):
-		charges = build_charges(self.order(), self.server(), with_shipping=False)
+		charges = build_charges(self.order(), self.server(), False, self.VAT, False)
 		self.assertNotIn("Shipping", [c["description"] for c in charges])
+		# Only the tax on the fee is left
+		self.assertEqual(charges[-1]["tax_amount"], 0.21)
 
-	def test_template_taxes_the_lines_and_the_rest_is_added(self):
-		charges = build_charges(self.order(), self.server(use_actual_tax_type=0), with_shipping=True)
+	def test_inclusive_charges_have_the_vat_taken_out(self):
+		order = self.order(
+			shipping_total=20,
+			shipping_tax=0,
+			fee_lines=json.dumps([{"name": "Gift wrap", "total": "1.23", "total_tax": "0"}]),
+		)
+		charges = build_charges(order, self.server(), True, [("VAT", 23.0)], True)
+
 		self.assertEqual(
 			[(c["account_head"], c["tax_amount"]) for c in charges],
-			[("Freight", 5), ("Freight", 1), ("VAT", 1.26)],
+			[("Freight", 16.26), ("Freight", 1.0), ("VAT", 3.97)],
 		)
+		self.assertAlmostEqual(sum(c["tax_amount"] for c in charges), 21.23)
+
+	def test_inclusive_charges_without_vat_rows_stay_whole(self):
+		order = self.order(shipping_total=20, shipping_tax=0, fee_lines="[]")
+		charges = build_charges(order, self.server(), True, [], True)
+		self.assertEqual([(c["account_head"], c["tax_amount"]) for c in charges], [("Freight", 20)])
 
 
 class TestLines(IntegrationTestCase):
@@ -1169,6 +1194,7 @@ class TestLines(IntegrationTestCase):
 				"per_billed": 0,
 				"delivery_date": "2026-11-06",
 				"items": items or [],
+				"woocommerce_sync_issue": None,
 				**sales_order_values,
 			}
 		)
@@ -1176,15 +1202,13 @@ class TestLines(IntegrationTestCase):
 		sync.sales_order.grand_total = sync.woocommerce_order.total
 		return sync
 
-	def build(self, sync, item_codes):
+	def build(self, sync, item_codes, **server):
 		with (
 			patch.object(order_lines, "find_item_code", side_effect=lambda server, pid: item_codes.get(pid)),
 			patch.object(order_lines, "get_placeholder_item", return_value=order_lines.PLACEHOLDER_ITEM),
 			patch.object(frappe, "get_cached_value", return_value="Mug (Item)"),
 		):
-			return sync.build_item_rows(
-				_dict(name=SERVER, warehouse="Stores", use_actual_tax_type=1), "2026-11-06"
-			)
+			return sync.build_item_rows(_dict(name=SERVER, warehouse="Stores", **server), "2026-11-06")
 
 	def test_every_line_is_a_row(self):
 		sync = self.make([line(1, 10, 2, 18), line(2, 0, 1, 5, name="Gone")])
@@ -1199,6 +1223,12 @@ class TestLines(IntegrationTestCase):
 		# The placeholder keeps the name the line has in WooCommerce
 		self.assertEqual(rows[1]["item_name"], "Gone")
 		self.assertEqual(len(issues), 1)
+
+	def test_inclusive_rows_are_what_the_customer_paid(self):
+		sync = self.make([line(1, 10, 2, 400, total_tax=92)])
+		with patch.object(order_lines, "prices_include_tax", return_value=True):
+			rows, _issues = self.build(sync, {"10": "MOWER"})
+		self.assertEqual(rows[0]["rate"], 246)
 
 	def test_product_without_an_item_is_flagged_too(self):
 		sync = self.make([line(1, 10, 1, 5)])
@@ -1322,9 +1352,7 @@ class TestNewSalesOrderLines(IntegrationTestCase):
 			tax_lines="[]",
 		)
 		sales_order = frappe.new_doc("Sales Order")
-		server = make_server(
-			warehouse="Stores", use_actual_tax_type=1, freight_and_forwarding_account="Freight"
-		)
+		server = make_server(warehouse="Stores", freight_and_forwarding_account="Freight")
 		rows = [{"item_code": "MUG", "qty": 2, "rate": 9, "woocommerce_line_item_id": "1"}]
 		with (
 			patch.object(sync, "get_wc_server", return_value=server),
@@ -1336,6 +1364,37 @@ class TestNewSalesOrderLines(IntegrationTestCase):
 		self.assertEqual([row.item_code for row in sales_order.items], ["MUG"])
 		self.assertEqual([tax.description for tax in sales_order.taxes], ["Shipping"])
 		self.assertEqual(sync.line_issues, ["one issue"])
+
+	def test_inclusive_shipping_has_its_vat_taken_out(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.woocommerce_order = _dict(
+			name=f"{SERVER}~12",
+			woocommerce_server=SERVER,
+			line_items=json.dumps([line(1, 10, 1, 123)]),
+			shipping_total=20,
+			shipping_tax=0,
+			fee_lines="[]",
+		)
+		sales_order = frappe.new_doc("Sales Order")
+		server = make_server(
+			warehouse="Stores",
+			freight_and_forwarding_account="Freight",
+			default_item_tax_template="VAT 23%",
+		)
+		rows = [{"item_code": "MUG", "qty": 1, "rate": 100, "woocommerce_line_item_id": "1"}]
+		with (
+			patch.object(sync, "get_wc_server", return_value=server),
+			patch.object(sync, "build_item_rows", return_value=(rows, [])),
+			patch.object(order_lines, "get_vat_rates", return_value=[("VAT", 23.0)]) as get_vat_rates,
+			patch.object(order_lines, "prices_include_tax", return_value=True),
+		):
+			sync.set_items_in_sales_order(sales_order)
+
+		get_vat_rates.assert_called_once_with(server, "VAT 23%")
+		self.assertEqual(
+			[(tax.account_head, tax.tax_amount) for tax in sales_order.taxes],
+			[("Freight", 16.26), ("VAT", 3.74)],
+		)
 
 	def test_an_order_without_lines_or_warehouse_is_an_error(self):
 		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
@@ -1394,6 +1453,20 @@ class TestCompletedOrders(InvoiceAndPaymentCase):
 
 		self.assertIn("Not enough stock", self.linked(sync, "woocommerce_sync_issue"))
 		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), "ACC-PAY-1")
+
+	def test_delivery_that_fails_keeps_what_was_flagged_before(self):
+		sync = self.make(per_delivered=0, woocommerce_sync_issue="The Sales Order totals 117.07")
+		self.delivery_note.submit.side_effect = frappe.ValidationError("Not enough stock")
+		self.run_sync(sync, action=ACTION_COMPLETE)
+
+		issue = self.linked(sync, "woocommerce_sync_issue")
+		self.assertIn("117.07", issue)
+		self.assertIn("Not enough stock", issue)
+
+	def test_an_issue_is_flagged_once(self):
+		sync = self.make(woocommerce_sync_issue="Not enough stock")
+		sync.flag_sync_issue("Not enough stock")
+		sync.sales_order.db_set.assert_not_called()
 
 
 class TestInvoiceAndHold(InvoiceAndPaymentCase):

@@ -33,6 +33,10 @@
   "column_break_ovbi",
   "date_on_sale_from",
   "date_on_sale_to",
+  "section_break_tax",
+  "tax_status",
+  "column_break_tax",
+  "tax_class",
   "inventory_tab",
   "sku",
   "manage_stock",
@@ -421,6 +425,28 @@
   {
    "fieldname": "image_gallery",
    "fieldtype": "Attachment Gallery",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_tax",
+   "fieldtype": "Section Break"
+  },
+  {
+   "description": "taxable, shipping (only the shipping is taxed) or none",
+   "fieldname": "tax_status",
+   "fieldtype": "Data",
+   "label": "Tax Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_tax",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Empty for the standard class, parent for a variation that has its product's class",
+   "fieldname": "tax_class",
+   "fieldtype": "Data",
+   "label": "Tax Class",
    "read_only": 1
   }
  ],

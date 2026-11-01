@@ -43,6 +43,14 @@ frappe.ui.form.on("WooCommerce Server", {
 				},
 			};
 		};
+
+		// Only the tax templates of the server's company
+		const tax_template_query = () => ({
+			filters: { company: frm.doc.company, disabled: 0 },
+		});
+		frm.set_query("sales_taxes_and_charges_template", tax_template_query);
+		frm.set_query("default_item_tax_template", tax_template_query);
+		frm.set_query("item_tax_template", "tax_class_map", tax_template_query);
 	},
 
 	// Add the order statuses of the shop that the Order Status Map lacks
@@ -63,6 +71,14 @@ frappe.ui.form.on("WooCommerce Server", {
 			added: __("{0} payment methods added"),
 			none: __("No payment methods missing"),
 			unreachable: __("Couldn't reach WooCommerce ({0}), no payment methods were added"),
+		});
+	},
+
+	load_tax_classes: function (frm) {
+		add_missing_rows(frm, "get_missing_tax_class_rows", "tax_class_map", {
+			added: __("{0} tax classes added"),
+			none: __("No tax classes missing"),
+			unreachable: __("Couldn't reach WooCommerce ({0}), no tax classes were added"),
 		});
 	},
 

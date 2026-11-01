@@ -10,6 +10,7 @@ from frappe.utils import cstr, now
 from frappe.utils.caching import redis_cache
 from jsonpath_ng.ext import parse
 
+from woocommerce_conduit.tasks.taxes import get_vat_rows, normalise_tax_class
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 	PAYMENT_OWNED_STATUSES,
 	get_default_status_rows,
@@ -62,6 +63,9 @@ class WooCommerceServer(Document):
 		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_shipping_rule.woocommerce_server_shipping_rule import (
 			WooCommerceServerShippingRule,
 		)
+		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_tax_class.woocommerce_server_tax_class import (
+			WooCommerceServerTaxClass,
+		)
 		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_warehouse.woocommerce_server_warehouse import (
 			WooCommerceServerWarehouse,
 		)
@@ -71,6 +75,7 @@ class WooCommerceServer(Document):
 		company: DF.Link
 		create_sales_invoice: DF.Check
 		creation_user: DF.Link
+		default_item_tax_template: DF.Link | None
 		delivery_after_days: DF.Int
 		enable_image_sync: DF.Check
 		enable_price_list_sync: DF.Check
@@ -93,16 +98,15 @@ class WooCommerceServer(Document):
 		push_zero_stock_for_disabled_items: DF.Check
 		sales_order_status_map: DF.Table[WooCommerceServerOrderStatus]
 		sales_price_list: DF.Link | None
-		sales_taxes_and_charges_template: DF.Link | None
+		sales_taxes_and_charges_template: DF.Link
 		secret: DF.SmallText | None
 		shipping_rule_map: DF.Table[WooCommerceServerShippingRule]
 		submit_sales_invoice: DF.Check
 		subtract_reserved_stock: DF.Check
 		sync_prices_for_disabled_items: DF.Check
 		sync_so_items_to_wc: DF.Check
-		tax_account: DF.Link | None
+		tax_class_map: DF.Table[WooCommerceServerTaxClass]
 		uom: DF.Link
-		use_actual_tax_type: DF.Check
 		warehouse: DF.Link
 		warehouses: DF.TableMultiSelect[WooCommerceServerWarehouse]
 		woocommerce_server_url: DF.Data
@@ -126,6 +130,8 @@ class WooCommerceServer(Document):
 			self.add_default_order_statuses()
 		if not self.payment_method_map and not frappe.flags.in_test:
 			self.add_missing_payment_methods()
+		if not self.tax_class_map and not frappe.flags.in_test:
+			self.add_missing_tax_classes()
 
 	def validate(self):
 		self.validate_woocommerce_url()
@@ -134,6 +140,8 @@ class WooCommerceServer(Document):
 			self.test_api_credentials()
 		self.validate_so_status_map()
 		self.validate_payment_method_map()
+		self.validate_tax_class_map()
+		self.validate_tax_templates()
 		self.validate_item_map()
 
 		if not self.secret:
@@ -375,6 +383,95 @@ class WooCommerceServer(Document):
 		"""
 		live_methods, error = self.fetch_payment_methods()
 		return {"rows": self.get_payment_method_rows(live_methods), "error": error}
+
+	def validate_tax_class_map(self):
+		"""
+		One row per tax class. The standard class is stored by its slug, as WooCommerce has it in the list.
+		"""
+		seen = set()
+		for row in self.tax_class_map:
+			row.woocommerce_tax_class = normalise_tax_class(row.woocommerce_tax_class)
+			if row.woocommerce_tax_class in seen:
+				frappe.throw(
+					_("Row {0}: Tax class {1} is in the Tax Class Map more than once").format(
+						row.idx, frappe.bold(row.woocommerce_tax_class)
+					)
+				)
+			seen.add(row.woocommerce_tax_class)
+
+	def get_item_tax_template(self, tax_class: str | None) -> str | None:
+		"""
+		The Item Tax Template for the Items of products in a tax class: the one the Tax Class Map has for
+		the class, else the default one
+		"""
+		tax_class = normalise_tax_class(tax_class)
+		return (
+			next(
+				(
+					row.item_tax_template
+					for row in self.tax_class_map
+					if row.woocommerce_tax_class == tax_class and row.item_tax_template
+				),
+				None,
+			)
+			or self.default_item_tax_template
+		)
+
+	def validate_tax_templates(self):
+		"""
+		Warn about an Item Tax Template that doesn't set the rate of every VAT row of the Sales Taxes and
+		Charges Template: such a row charges its own rate on the Item as well.
+		"""
+		accounts = {row.account_head for row in get_vat_rows(self)}
+		if not accounts:
+			return
+		templates = {self.default_item_tax_template} | {row.item_tax_template for row in self.tax_class_map}
+		for template in sorted(filter(None, templates)):
+			covered = {row.tax_type for row in frappe.get_cached_doc("Item Tax Template", template).taxes}
+			if missing := accounts - covered:
+				frappe.msgprint(
+					_(
+						"Item Tax Template {0} doesn't set a rate for {1}, so Items with it are also taxed at that row's rate in {2}"
+					).format(
+						frappe.bold(template),
+						", ".join(frappe.bold(account) for account in sorted(missing)),
+						frappe.bold(self.sales_taxes_and_charges_template),
+					),
+					indicator="orange",
+					alert=True,
+				)
+
+	def fetch_tax_classes(self) -> tuple[dict[str, str], str | None]:
+		"""
+		The slug and name of every tax class of the shop
+		"""
+		return self.fetch_names("taxes/classes", "slug", "name")
+
+	def get_tax_class_rows(self, live_classes: dict[str, str]) -> list[dict]:
+		existing = {row.woocommerce_tax_class for row in self.tax_class_map}
+		return [
+			{"woocommerce_tax_class": tax_class, "woocommerce_tax_class_title": title or tax_class}
+			for tax_class, title in live_classes.items()
+			if tax_class and tax_class not in existing
+		]
+
+	def add_missing_tax_classes(self) -> list[dict]:
+		"""
+		Add a row, without an Item Tax Template, for each tax class of the shop the map lacks
+		"""
+		rows = self.get_tax_class_rows(self.fetch_tax_classes()[0])
+		for row in rows:
+			self.append("tax_class_map", row)
+		return rows
+
+	@frappe.whitelist()
+	def get_missing_tax_class_rows(self) -> dict:
+		"""
+		The rows the Tax Class Map lacks, for the form to add, and why the shop couldn't be read if it
+		couldn't
+		"""
+		live_classes, error = self.fetch_tax_classes()
+		return {"rows": self.get_tax_class_rows(live_classes), "error": error}
 
 	def validate_item_map(self):
 		"""

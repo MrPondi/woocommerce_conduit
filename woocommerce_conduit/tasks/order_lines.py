@@ -7,6 +7,7 @@ from frappe import _
 from frappe.utils import cstr, flt
 
 from woocommerce_conduit.tasks.sync_items import run_item_sync
+from woocommerce_conduit.tasks.taxes import get_vat_rates, prices_include_tax, split_vat
 from woocommerce_conduit.woocommerce.woocommerce_api import (
 	generate_woocommerce_record_name_from_domain_and_id,
 )
@@ -40,7 +41,8 @@ def get_product_id(line: dict) -> str:
 def get_line_rate(line: dict, tax_inclusive: bool) -> float:
 	"""
 	The rate of a line after coupons: WooCommerce's `total` is what is left of the `subtotal` after the
-	discounts. Including tax when the taxes of the Sales Order are included in the rate.
+	discounts. When the template's VAT is included in the rate, it is what the customer paid, so with any
+	tax WooCommerce charged itself.
 	"""
 	qty = flt(line.get("quantity"))
 	if not qty:
@@ -87,39 +89,48 @@ def actual_charge(amount, account: str | None, description: str) -> dict:
 		"account_head": account,
 		"tax_amount": flt(amount),
 		"description": description,
+		# ERPNext takes the VAT rate of a line from the last row on each account. Without this the VAT on
+		# shipping, on the template's VAT account, would set the rate of the lines to nothing.
+		"set_by_item_tax_template": 1,
 	}
 
 
-def build_charges(wc_order, wc_server, with_shipping: bool) -> list[dict]:
+def build_charges(
+	wc_order, wc_server, with_shipping: bool, vat_rates: list[tuple[str, float]], tax_inclusive: bool
+) -> list[dict]:
 	"""
 	The rows of the Sales Taxes and Charges that WooCommerce charged on top of the lines: shipping (unless
-	a Shipping Rule works it out), fees, and the taxes. With Actual tax every tax rate of the order is one
-	row. With a template the template taxes the lines, so only the tax on shipping and fees is added.
+	a Shipping Rule works it out) and fees, and the VAT on them. The template taxes the lines, but not
+	these. `vat_rates` are the account and rate of each VAT row of the template.
+
+	When the template's VAT is included in the rate, so it is in shipping and fees, and it is taken out of
+	them at these rates: ERPNext can't include tax in an Actual charge. Otherwise they are net, and the VAT
+	on them is what WooCommerce charged.
 	"""
 	freight_account = wc_server.freight_and_forwarding_account
 	fee_account = wc_server.get("fee_account") or freight_account
-	tax_account = wc_server.tax_account or freight_account
+
+	amounts = []
+	if with_shipping:
+		amounts.append((wc_order.shipping_total, wc_order.shipping_tax, freight_account, _("Shipping")))
+	for fee in get_json_lines(wc_order, "fee_lines"):
+		amounts.append((fee.get("total"), fee.get("total_tax"), fee_account, fee.get("name") or _("Fee")))
 
 	charges = []
-	if with_shipping and flt(wc_order.shipping_total):
-		charges.append(actual_charge(wc_order.shipping_total, freight_account, _("Shipping")))
+	vat = {}
+	for amount, tax, account, description in amounts:
+		if tax_inclusive:
+			amount, tax_rows = split_vat(flt(amount) + flt(tax), vat_rates)
+		else:
+			tax_rows = [(vat_rates[0][0] if vat_rates else freight_account, flt(tax))]
+		if flt(amount):
+			charges.append(actual_charge(amount, account, description))
+		for tax_account, tax_amount in tax_rows:
+			vat[tax_account] = flt(vat.get(tax_account)) + flt(tax_amount)
 
-	fees = get_json_lines(wc_order, "fee_lines")
-	for fee in fees:
-		if flt(fee.get("total")):
-			charges.append(actual_charge(fee.get("total"), fee_account, fee.get("name") or _("Fee")))
-
-	if wc_server.use_actual_tax_type:
-		for tax in get_json_lines(wc_order, "tax_lines"):
-			amount = flt(tax.get("tax_total")) + flt(tax.get("shipping_tax_total"))
-			if amount:
-				charges.append(actual_charge(amount, tax_account, tax.get("label") or tax.get("rate_code")))
-	else:
-		tax_on_charges = sum(flt(fee.get("total_tax")) for fee in fees)
-		if with_shipping:
-			tax_on_charges += flt(wc_order.shipping_tax)
-		if tax_on_charges:
-			charges.append(actual_charge(tax_on_charges, tax_account, _("Tax on shipping and fees")))
+	for tax_account, tax_amount in vat.items():
+		if flt(tax_amount, 2):
+			charges.append(actual_charge(flt(tax_amount, 2), tax_account, _("VAT on shipping and fees")))
 	return charges
 
 
@@ -174,17 +185,6 @@ class SalesOrderLinesMixin:
 	def get_wc_server(self) -> "WooCommerceServer":
 		return frappe.get_cached_doc("WooCommerce Server", self.woocommerce_order.woocommerce_server)  # type: ignore
 
-	def prices_include_tax(self, wc_server) -> bool:
-		"""
-		Whether the rates have to include tax: when a template is used whose tax is included in the rate
-		"""
-		if wc_server.use_actual_tax_type or not wc_server.sales_taxes_and_charges_template:
-			return False
-		template = frappe.get_cached_doc(
-			"Sales Taxes and Charges Template", wc_server.sales_taxes_and_charges_template
-		)
-		return bool(template.taxes and template.taxes[0].included_in_print_rate)
-
 	def create_missing_items(self):
 		"""
 		Pull the products of the lines that aren't linked to an Item yet
@@ -205,7 +205,7 @@ class SalesOrderLinesMixin:
 		A row for every line of the order, and what to flag about them. A line is never left out, as the
 		Sales Order would not add up: one whose product is gone gets the placeholder Item.
 		"""
-		tax_inclusive = self.prices_include_tax(wc_server)
+		tax_inclusive = prices_include_tax(wc_server)
 		rows, issues = [], []
 		for line in get_line_items(self.woocommerce_order):
 			product_id = get_product_id(line)
@@ -246,13 +246,17 @@ class SalesOrderLinesMixin:
 		for row in rows:
 			new_sales_order.append("items", row)
 
-		if not wc_server.use_actual_tax_type:
-			# Adds the rows of the template, which it only does while there are no taxes
-			new_sales_order.taxes_and_charges = wc_server.sales_taxes_and_charges_template
-			new_sales_order.set_missing_lead_customer_details()
+		# Adds the rows of the template, which it only does while there are no taxes
+		new_sales_order.taxes_and_charges = wc_server.sales_taxes_and_charges_template
+		new_sales_order.set_missing_lead_customer_details()
 
+		# Shipping and fees are taxed at the rate of the default Item Tax Template
 		for charge in build_charges(
-			self.woocommerce_order, wc_server, with_shipping=not new_sales_order.shipping_rule
+			self.woocommerce_order,
+			wc_server,
+			with_shipping=not new_sales_order.shipping_rule,
+			vat_rates=get_vat_rates(wc_server, wc_server.default_item_tax_template),
+			tax_inclusive=prices_include_tax(wc_server),
 		):
 			new_sales_order.append("taxes", charge)
 

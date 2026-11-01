@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cstr, flt
 
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 	ACTION_CANCEL,
@@ -105,7 +105,13 @@ class SalesOrderStatusMixin:
 			self.close_sales_order()
 
 	def flag_sync_issue(self, message: str) -> None:
-		self.sales_order.db_set("woocommerce_sync_issue", message, update_modified=False)
+		# Added to the issues flagged before, so a later step doesn't hide one a person still has to look at
+		flagged = cstr(self.sales_order.woocommerce_sync_issue)
+		if message in flagged:
+			return
+		self.sales_order.db_set(
+			"woocommerce_sync_issue", f"{flagged}; {message}" if flagged else message, update_modified=False
+		)
 
 	def run_flagged(self, step, message: str) -> None:
 		"""

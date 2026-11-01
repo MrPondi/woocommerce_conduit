@@ -1,0 +1,54 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-10-31 20:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "woocommerce_tax_class",
+  "woocommerce_tax_class_title",
+  "item_tax_template"
+ ],
+ "fields": [
+  {
+   "columns": 3,
+   "description": "The slug of the tax class as WooCommerce has it, for example standard",
+   "fieldname": "woocommerce_tax_class",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "WooCommerce Tax Class",
+   "reqd": 1
+  },
+  {
+   "columns": 3,
+   "fieldname": "woocommerce_tax_class_title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Title",
+   "read_only": 1
+  },
+  {
+   "columns": 4,
+   "description": "Put on the Items of the products in this class. Leave it empty to have the Sales Taxes and Charges Template's own rates apply.",
+   "fieldname": "item_tax_template",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Tax Template",
+   "options": "Item Tax Template"
+  }
+ ],
+ "grid_page_length": 50,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-31 20:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "WooCommerce",
+ "name": "WooCommerce Server Tax Class",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -18,6 +18,7 @@
   "sales_orders_tab",
   "order_sync_section",
   "pause_order_sync",
+  "column_break_bnkn",
   "order_sync_paused_since",
   "sales_defaults_section",
   "uom",
@@ -28,11 +29,13 @@
   "delivery_after_days",
   "sync_so_items_to_wc",
   "accounting_details_section",
-  "use_actual_tax_type",
-  "tax_account",
   "sales_taxes_and_charges_template",
+  "default_item_tax_template",
   "column_break_fjij",
   "freight_and_forwarding_account",
+  "tax_class_section",
+  "load_tax_classes",
+  "tax_class_map",
   "payment_sync_section",
   "create_sales_invoice",
   "submit_sales_invoice",
@@ -158,7 +161,6 @@
   },
   {
    "default": "1",
-   "description": "Orders aren't synced, and no Items are made for them, while this is ticked. Set up and link the Items first (Items tab, Check Order Items), then untick it: the orders changed in the meantime are synced then.",
    "fieldname": "pause_order_sync",
    "fieldtype": "Check",
    "label": "Pause Order Sync"
@@ -216,7 +218,6 @@
   },
   {
    "collapsible": 1,
-   "description": "WooCommerce doesn't round totals. Tick \"Disable Rounded Total\" in Global Defaults, or an invoice can keep a few cents outstanding after its payment.",
    "fieldname": "payment_sync_section",
    "fieldtype": "Section Break",
    "label": "Payment Sync"
@@ -285,21 +286,6 @@
    "label": "Accounting Details"
   },
   {
-   "depends_on": "eval: doc.use_actual_tax_type",
-   "fieldname": "tax_account",
-   "fieldtype": "Link",
-   "label": "Tax account",
-   "mandatory_depends_on": "eval: doc.use_actual_tax_type",
-   "options": "Account"
-  },
-  {
-   "default": "1",
-   "description": "If checked, a 'Sales Taxes and Charges' line of type 'Actual' will be added for every WooCommerce Line Item with tax",
-   "fieldname": "use_actual_tax_type",
-   "fieldtype": "Check",
-   "label": "Use 'Actual' Tax Type"
-  },
-  {
    "fieldname": "freight_and_forwarding_account",
    "fieldtype": "Link",
    "label": "Freight and Forwarding Account",
@@ -307,12 +293,11 @@
    "reqd": 1
   },
   {
-   "depends_on": "eval: !doc.use_actual_tax_type",
    "fieldname": "sales_taxes_and_charges_template",
    "fieldtype": "Link",
    "label": "Sales Taxes and Charges Template",
-   "mandatory_depends_on": "eval: !doc.use_actual_tax_type",
-   "options": "Sales Taxes and Charges Template"
+   "options": "Sales Taxes and Charges Template",
+   "reqd": 1
   },
   {
    "fieldname": "column_break_fjij",
@@ -341,21 +326,19 @@
    "collapsible": 1,
    "fieldname": "sales_order_status_sync_section",
    "fieldtype": "Section Break",
-   "label": "Order Status Sync",
-   "description": "What a WooCommerce Order means in ERPNext depends on its status. WooCommerce has the final say while it changes the order, so a payment that comes in is never undone. Under Settings > Products > Inventory, 'Hold stock (minutes)' makes WooCommerce cancel unpaid orders, which cancels them here too."
+   "label": "Order Status Sync"
   },
   {
    "default": "0",
+   "description": "Set the WooCommerce Order to the status in the table below when the Sales Order reaches the status in the last column.",
    "fieldname": "enabled_order_status",
    "fieldtype": "Check",
-   "label": "Push Sales Order status changes to WooCommerce",
-   "description": "Set the WooCommerce Order to the status in the table below when the Sales Order reaches the status in the last column."
+   "label": "Push Sales Order status changes to WooCommerce"
   },
   {
    "fieldname": "load_default_order_statuses",
    "fieldtype": "Button",
-   "label": "Add Missing Statuses",
-   "description": "Adds the statuses the shop has and the table lacks. Rows that are there stay as they are."
+   "label": "Add Missing Statuses"
   },
   {
    "fieldname": "sales_order_status_map",
@@ -372,8 +355,8 @@
    "description": "When set, adding/removing/changing Sales Order Lines will be synchronised back to the WooCommerce Order",
    "fieldname": "sync_so_items_to_wc",
    "fieldtype": "Check",
-   "label": "Synchronise Sales Order Line changes back",
-   "hidden": 1
+   "hidden": 1,
+   "label": "Synchronise Sales Order Line changes back"
   },
   {
    "fieldname": "endpoint_section",
@@ -470,13 +453,41 @@
    "fieldname": "push_zero_stock_for_disabled_items",
    "fieldtype": "Check",
    "label": "Push Zero Stock for Disabled Items"
+  },
+  {
+   "description": "Put on the Items of products whose tax class has no Item Tax Template in the Tax Class Map",
+   "fieldname": "default_item_tax_template",
+   "fieldtype": "Link",
+   "label": "Default Item Tax Template",
+   "options": "Item Tax Template"
+  },
+  {
+   "fieldname": "tax_class_section",
+   "fieldtype": "Section Break",
+   "label": "Tax Classes"
+  },
+  {
+   "fieldname": "load_tax_classes",
+   "fieldtype": "Button",
+   "label": "Add Missing Tax Classes"
+  },
+  {
+   "description": "An Item synced from WooCommerce gets the Item Tax Template of its product's tax class, else the Default Item Tax Template.",
+   "fieldname": "tax_class_map",
+   "fieldtype": "Table",
+   "label": "Tax Class Map",
+   "options": "WooCommerce Server Tax Class"
+  },
+  {
+   "fieldname": "column_break_bnkn",
+   "fieldtype": "Column Break"
   }
  ],
  "grid_page_length": 50,
  "icon": "server-plus",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-30 14:19:23.521133",
+ "modified": "2026-11-01 01:02:00.631503",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",

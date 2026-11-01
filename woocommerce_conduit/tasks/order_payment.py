@@ -168,6 +168,11 @@ class SalesOrderPaymentMixin:
 		# Nothing was paid, so there is nothing to book
 		if flt(sales_order.grand_total) == 0:
 			return
+		# The Payment Entry is for the Sales Order's total, so one that isn't what was paid is left to a
+		# person, like its invoice
+		if issue := self.check_totals(sales_order):
+			self.flag_sync_issue(issue)
+			return
 
 		account = get_mode_of_payment_account(method.mode_of_payment, sales_order.company)
 		if not account:

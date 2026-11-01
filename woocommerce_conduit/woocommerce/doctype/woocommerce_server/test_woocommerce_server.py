@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from woocommerce_conduit.woocommerce.doctype.woocommerce_server import woocommerce_server
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	normalise_server_url,
 )
@@ -20,6 +21,7 @@ IGNORE_TEST_RECORD_DEPENDENCIES = [
 	"Warehouse",
 	"Account",
 	"Sales Taxes and Charges Template",
+	"Item Tax Template",
 	"Shipping Rule",
 	"Mode of Payment",
 	"Bank Account",
@@ -119,6 +121,75 @@ class TestWooCommerceServer(IntegrationTestCase):
 		)
 		with self.assertRaises(frappe.ValidationError):
 			server.validate_payment_method_map()
+
+	def test_missing_tax_classes_are_read_from_the_shop(self):
+		server = new_server(
+			tax_class_map=[{"woocommerce_tax_class": "standard", "item_tax_template": "VAT 23%"}]
+		)
+		response = MagicMock(status_code=200)
+		response.json.return_value = [
+			{"slug": "standard", "name": "Standardowa stawka"},
+			{"slug": "zerowa-stawka", "name": "Zerowa stawka"},
+		]
+		api = MagicMock()
+		api.get.return_value = response
+		with patch.object(type(server), "get_api", return_value=api):
+			result = server.get_missing_tax_class_rows()
+
+		api.get.assert_called_once_with("taxes/classes")
+		self.assertEqual(
+			result["rows"],
+			[{"woocommerce_tax_class": "zerowa-stawka", "woocommerce_tax_class_title": "Zerowa stawka"}],
+		)
+
+	def test_tax_class_is_mapped_once(self):
+		# WooCommerce has the standard class empty on a product, and as "standard" in the list
+		server = new_server(
+			tax_class_map=[{"woocommerce_tax_class": ""}, {"woocommerce_tax_class": "standard"}]
+		)
+		with self.assertRaises(frappe.ValidationError):
+			server.validate_tax_class_map()
+
+	def test_item_tax_template_of_a_tax_class(self):
+		server = new_server(
+			tax_class_map=[
+				{"woocommerce_tax_class": "standard", "item_tax_template": "VAT 23%"},
+				{"woocommerce_tax_class": "zerowa-stawka", "item_tax_template": "VAT 0%"},
+				{"woocommerce_tax_class": "obnizona-stawka"},
+			],
+		)
+		self.assertEqual(server.get_item_tax_template(""), "VAT 23%")
+		self.assertEqual(server.get_item_tax_template("zerowa-stawka"), "VAT 0%")
+		self.assertIsNone(server.get_item_tax_template("obnizona-stawka"))
+
+		# The default is for the classes without a template
+		server.default_item_tax_template = "VAT 8%"
+		self.assertEqual(server.get_item_tax_template("obnizona-stawka"), "VAT 8%")
+		self.assertEqual(server.get_item_tax_template("zerowa-stawka"), "VAT 0%")
+
+	def test_item_tax_template_that_leaves_out_a_vat_row_is_warned_about(self):
+		server = new_server(
+			default_item_tax_template="VAT 23%", sales_taxes_and_charges_template="Poland VAT"
+		)
+		rows = [frappe._dict(account_head="VAT 23% - PG"), frappe._dict(account_head="VAT 8% - PG")]
+		templates = {
+			"VAT 23%": frappe._dict(taxes=[frappe._dict(tax_type="VAT 23% - PG")]),
+			"Both": frappe._dict(
+				taxes=[frappe._dict(tax_type="VAT 23% - PG"), frappe._dict(tax_type="VAT 8% - PG")]
+			),
+		}
+		with (
+			patch.object(woocommerce_server, "get_vat_rows", return_value=rows),
+			patch.object(frappe, "get_cached_doc", side_effect=lambda doctype, name: templates[name]),
+			patch.object(frappe, "msgprint") as msgprint,
+		):
+			server.validate_tax_templates()
+			self.assertIn("VAT 8% - PG", msgprint.call_args.args[0])
+
+			msgprint.reset_mock()
+			server.default_item_tax_template = "Both"
+			server.validate_tax_templates()
+			msgprint.assert_not_called()
 
 	def test_new_server_starts_paused(self):
 		server = new_server(pause_order_sync=1)

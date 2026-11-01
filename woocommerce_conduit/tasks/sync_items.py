@@ -11,6 +11,7 @@ from jsonpath_ng.ext import parse
 
 from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce
+from woocommerce_conduit.tasks.taxes import PARENT_TAX_CLASS
 from woocommerce_conduit.woocommerce.doctype.item_woocommerce_server.item_woocommerce_server import (
 	ItemWooCommerceServer,
 )
@@ -415,6 +416,8 @@ class SynchroniseItem(SynchroniseWooCommerce):
 			self.item.item.image = self.woocommerce_product.image
 			item_dirty = True
 
+		item_dirty |= self._set_item_tax_template(self.item.item, wc_server)
+
 		if item_dirty or fields_updated:
 			self.item.item.flags.created_by_sync = True
 			self.item.item.save()
@@ -441,6 +444,7 @@ class SynchroniseItem(SynchroniseWooCommerce):
 
 		# Set core item fields
 		self._set_core_item_fields(item, wc_server)
+		self._set_item_tax_template(item, wc_server)
 
 		# Set mapped fields from WooCommerce
 		_modified, item = self.set_item_fields(item=item)
@@ -504,6 +508,31 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		# The price came from WooCommerce, so don't push it straight back
 		item_price.flags.created_by_sync = True
 		item_price.insert()
+
+	def _set_item_tax_template(self, item: SyncedItem, wc_server: WooCommerceServer) -> bool:
+		"""
+		Put the Item Tax Template of the product's tax class in the Item's tax row without a tax category.
+		Rows with a tax category are left as they are. Returns whether the Item changed.
+		"""
+		if not (template := self.get_item_tax_template(item, wc_server)):
+			return False
+		row = next((row for row in item.get("taxes", []) if not row.tax_category), None)
+		if row and row.item_tax_template == template:
+			return False
+		if not row:
+			row = item.append("taxes")
+		row.item_tax_template = template
+		return True
+
+	def get_item_tax_template(self, item: SyncedItem, wc_server: WooCommerceServer) -> str | None:
+		product = self.woocommerce_product
+		if not product:
+			return None
+		# A variation in its product's class has the template of the product's Item
+		if product.tax_class == PARENT_TAX_CLASS and item.variant_of:
+			parent = frappe.get_cached_doc("Item", item.variant_of)
+			return next((row.item_tax_template for row in parent.taxes if not row.tax_category), None)
+		return wc_server.get_item_tax_template(product.tax_class)
 
 	def _handle_product_variants(self, item: SyncedItem):
 		"""
