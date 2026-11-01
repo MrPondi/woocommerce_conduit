@@ -37,13 +37,57 @@ Sales Orders follow ERPNext's naming series, and the shop's order number goes in
 
 Start at: `SynchroniseSalesOrder.create_sales_order`.
 
-### Shipment tracking
+### Free lines on a new Sales Order
 
-Fusion reads and writes the tracking numbers of the Advanced Shipment Tracking plugin (`orders/{id}/shipment-trackings`) from the Sales Order. Conduit has nothing for tracking.
+A line that WooCommerce sold for nothing (a 100% coupon, a free gift) is added with a rate of 0, and ERPNext replaces a rate of 0 with the price list rate when the Item has one (`calculate_item_rate` in `erpnext/controllers/taxes_and_totals.py`). The Sales Order then totals more than the order and is flagged, which stops its invoice and payment. Fusion sets `discount_percentage` to 100 on such a line. Update Items, which later line changes go through, keeps the 0, as it works out the discount itself.
 
-Start at: Fusion's `woocommerce_order.py` (`get_additional_order_attributes`, `update_shipment_tracking`).
+The price list rate is that of Selling Settings' default price list, which `new_doc` puts on every Sales Order, so the discount a line shows is against that list. Fusion uses the customer's default price list when it is in the order's currency (`get_customer_selling_price_list`). The server's Price List, which the shop's prices come from, would do too.
+
+Start at: `order_lines.build_item_row`, `SalesOrderLinesMixin.set_items_in_sales_order`.
+
+### Vouchers and untaxed fees
+
+Every fee line is booked on the Fee Account, a negative one too. Germanized for WooCommerce turns a coupon marked as a voucher into a negative fee, so redeeming a voucher lowers the fee income rather than the account its sale was booked on. Fusion books negative fees on an account of their own (`account_for_negative_order_fee_lines`).
+
+With a template whose VAT is included in the rate, the sync also takes VAT out of every fee at the rates of the default Item Tax Template, including a fee that WooCommerce charged no tax on, such as an untaxed voucher, and the VAT of the order drops.
+
+Start at: `order_lines.build_charges`.
+
+### Payment reference and paid date per payment method
+
+A Payment Entry's reference is the order's `transaction_id`, else the title of its payment method. Some gateways keep their id in the order's meta instead: Fusion reads Yoco's `yoco_order_payment_id`. A meta key on each row of the Payment Method Map would cover any gateway. The order's `meta_data` isn't fetched yet.
+
+A mapped method is booked once `date_paid` is set, which WooCommerce does when a payment completes or the order reaches processing or completed. An order that a gateway or plugin marks paid with a status of its own isn't booked until it is completed. Fusion can ignore the date for a whole server (`ignore_date_paid`), which books pending orders as well. Say per method, or per status of the Order Status Map, what counts as paid instead.
+
+Start at: `SalesOrderPaymentMixin.create_payment_entry`, `woocommerce_server_payment_method.json`, and `woocommerce_order.json` for `meta_data`.
+
+## Customers
+
+### The shop in the Customer lookup
+
+A Customer is found by its `woocommerce_identifier` alone: `Guest-{order id}` for a guest, the username for an account. Both repeat across shops. A second shop's guest order 1234 lands on the first shop's `Guest-1234` Customer and overwrites its name and addresses, and accounts with the same username in two shops share one Customer. Fusion has a `Customer-woocommerce_server` Link field for this, which it no longer reads. The existing guests need a patch. Whether a person who buys in two shops should be one Customer is under Open questions.
+
+Start at: `SynchroniseSalesOrder.create_or_link_customer_and_address`, `fixtures/custom_field.json`.
+
+### Duplicate Customers report
+
+Fusion's WooCommerce Duplicate Customers report groups the Customers that look like the same buyer, by email, by name or by company email domain (the big free mail providers left out), with each one's Sales Orders and their total, oldest first, so they can be merged by hand. It changes nothing. Conduit makes a Customer for every guest order, so the report is of use whichever way Guest customers (Open questions) is decided.
+
+Start at: Fusion's `report/woocommerce_duplicate_customers/`. Conduit has no `woocommerce_is_guest` field, but a guest's identifier starts with `Guest-`, and as the identifier of an account is its username, the email is the Customer's `email_id`, from its primary Contact.
+
+### Company customers by email domain
+
+Every account in the shop becomes a Customer of its own, so a B2B shop gets one for each employee who orders. Fusion attaches an order from an email domain listed on the server (`customer_matching_email_domains`) to the oldest Customer of that domain, and leaves that Customer's name and details alone. Only listed domains are matched, as matching every domain would put all users of a free mail provider on one Customer. Conduit would match the domain on the Customer's `email_id`.
+
+Start at: `SynchroniseSalesOrder.create_or_link_customer_and_address`, Fusion's `find_customer_by_email_domain`.
 
 ## Items
+
+### Meta data, categories and tags in the Item Field Map
+
+The Item Field Map reads the product as the doctype has it: `load_from_db` asks WooCommerce for the doctype's fields only (`get_wc_fields`), and `to_dict` returns no others. So a mapping can't reach `meta_data` (a GTIN, a brand, any plugin's field) or `categories` (for the Item Group, say), and finds nothing without saying so. Fusion's WooCommerce Product has `meta_data`, `categories` and `tags` as JSON fields. `validate_item_map` could also refuse a path into a field the doctype doesn't have. The field transforms below build on this.
+
+Start at: `woocommerce_product.json`, `WooCommerceProduct.after_load_from_db`, `SynchroniseItem.set_item_fields`.
 
 ### Field transforms and order line field mapping
 
@@ -56,6 +100,18 @@ Start at: `SynchroniseItem.set_item_fields`, `order_lines.build_item_row`.
 `sync_woocommerce_products_modified_since` imports a shop's products, but it can only be run by hand (`bench execute`). A button on the server form that enqueues it and reports progress (`frappe.publish_progress`) would make a shop's first import self-service.
 
 Start at: `sync_items.sync_woocommerce_products_modified_since`, `woocommerce_server.js`.
+
+### Products whose Item code is taken
+
+`create_item` inserts the Item without looking for one with its code. If there is one, made by hand, by another shop with the same SKU, or (with WooCommerce ID naming) for another shop's product with the same id, the insert fails. `create_missing_items` only lets a `DoesNotExistError` pass, so the sync of every order with that product fails too, until the product is linked by hand in Check Order Items. Fusion links the product to the Item of that code instead (`link_existing_item`), and can match the SKU of a product that isn't linked yet to an Item code (`match_items_by_sku`). Do that for an SKU, with `item_parity.suggest_item`, which looks at barcodes too. An id that is taken belongs to another shop's product, which needs a code of its own.
+
+Start at: `SynchroniseItem.create_item`, `_set_core_item_fields`.
+
+### HTML entities in names
+
+WordPress stores term names HTML-escaped, so categories, tags and the options of global attributes come back as `Sleeves &amp; Toploader`, and so do product names saved by a user without the `unfiltered_html` capability. They reach Item names, Item Attribute values and mapped fields like that. Fusion unescapes the names and mapped values it takes from WooCommerce (`unescape_woocommerce_value`).
+
+Start at: `sync_items.to_item_name`, `SynchroniseItem.create_or_update_item_attributes`, `set_item_fields`.
 
 ## API and lists
 
@@ -79,6 +135,26 @@ Start at: `WooCommerceDocument.get_list_of_records`.
 
 Start at: `woocommerce_server.json`, `endpoint.validate_request`, and `view_webhook_config` in `woocommerce_server.js`, which shows the secret.
 
+### Roles beyond System Manager
+
+Every doctype of the app is for System Manager only. A Sales User doesn't get the Sales Order's WooCommerce Order button, which checks read access, an Item Manager can't open the product from the Item's WooCommerce tab, and neither can pick a WooCommerce Server in a filter. Fusion gives read and write on WooCommerce Order to Sales User and Sales Manager, on WooCommerce Product to Item Manager and the Stock roles, and select on WooCommerce Server to all of them. Mind that writing a WooCommerce Order pushes its status to the shop.
+
+Start at: the `permissions` of `woocommerce_order.json`, `woocommerce_product.json` and `woocommerce_server.json`.
+
+## Desk
+
+### A WooCommerce workspace
+
+The app opens on the WooCommerce Server list. Fusion has a workspace with its servers, orders, products and logs. Conduit's could have the servers and settings, the WooCommerce Orders and Products, the Integration Requests of the WooCommerce service, and a count of the Sales Orders with a `woocommerce_sync_issue`, which wait for a person.
+
+Start at: Fusion's `workspace/woocommerce/woocommerce.json`, `app_home` and `add_to_apps_screen` in `hooks.py`.
+
+### The shop's admin from the forms
+
+Fusion's Sales Order has Open in WooCommerce, which opens the order in wp-admin, and Sync this Order. Conduit's Sales Order gets to the sync through its WooCommerce Order, and no form opens the shop's admin. With HPOS an order's admin page is `admin.php?page=wc-orders&action=edit&id=…` rather than `post.php?post=…&action=edit`.
+
+Start at: `public/js/sales_order.js`, `woocommerce_order.js`, `woocommerce_product.js`.
+
 ## Testing and documentation
 
 ### Integration tests against a real WooCommerce
@@ -95,3 +171,4 @@ These need a decision before anything is built.
 
 - **A deleted regular price.** Deleting the server's Price List price for an Item leaves the shop's old price in place, while deleting a sale price ends the sale. Clearing the regular price would make the product unpurchasable, so leaving it may be right.
 - **Guest customers.** Each guest order gets its own Customer (`Guest-{order id}`). Fusion merges guests by email and has a Duplicate Customers report. Merging would change how existing guests are found.
+- **One customer in several shops.** With the shop in the Customer lookup, a person who buys in two shops gets a Customer in each. Matching across shops by email, as Fusion does, makes them one, but then the Customer's name and addresses follow whichever shop it last ordered in.
