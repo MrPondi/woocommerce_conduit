@@ -6,3 +6,4 @@
 # Patches added in this section will be executed after doctypes are migrated
 woocommerce_conduit.patches.v1.remove_sales_order_link_fields
 woocommerce_conduit.patches.v1.set_customer_woocommerce_server
+woocommerce_conduit.patches.v1.unescape_woocommerce_names
