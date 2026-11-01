@@ -4,13 +4,37 @@ import frappe
 from frappe import _dict
 from frappe.tests import IntegrationTestCase
 
-from woocommerce_conduit.tasks.field_map import fit_value, get_first_field_names, parse_path
+from woocommerce_conduit.tasks import field_map
+from woocommerce_conduit.tasks.field_map import (
+	LOGGED_PROBLEMS_FLAG,
+	fit_value,
+	get_first_field_names,
+	get_mapped_values,
+	get_transforms,
+	parse_path,
+	validate_map_row,
+)
 
 
 def field(fieldtype, **values):
 	return _dict(
 		{"fieldname": "target", "fieldtype": fieldtype, "reqd": 0, "length": 0, "options": None, **values}
 	)
+
+
+def join_names(value, row, record):
+	return ", ".join(entry["name"] for entry in value)
+
+
+def no_value(value, row, record):
+	return None
+
+
+def broken(value, row, record):
+	raise ValueError("broken")
+
+
+TRANSFORMS = {name: f"{__name__}.{name}" for name in ("join_names", "no_value", "broken")}
 
 
 class TestPaths(IntegrationTestCase):
@@ -71,3 +95,61 @@ class TestFittingValues(IntegrationTestCase):
 			self.assertEqual(fit_value(link, "mowers"), ("Mowers", None))
 		with patch.object(frappe.db, "exists", return_value=None):
 			self.assertIsNotNone(fit_value(link, "Gone")[1])
+
+
+class TestTransforms(IntegrationTestCase):
+	def test_the_registry_takes_the_app_loaded_last(self):
+		with patch(
+			"frappe.get_hooks", return_value={"one": ["app_a.one"], "two": ["app_a.two", "app_b.two"]}
+		):
+			self.assertEqual(get_transforms(), {"one": "app_a.one", "two": "app_b.two"})
+
+	def test_without_the_hook_there_are_no_transforms(self):
+		with patch("frappe.get_hooks", side_effect=lambda hook, default=None: default):
+			self.assertEqual(get_transforms(), {})
+
+	def map_tags(self, transform):
+		row = _dict(
+			erpnext_field_name="item_name | Item Name", woocommerce_field_name="$.tags", transform=transform
+		)
+		record = {"name": "one.example.com~1", "tags": [{"name": "Garden &amp; Patio"}, {"name": "Tools"}]}
+		frappe.flags.pop(LOGGED_PROBLEMS_FLAG, None)
+		with (
+			patch.object(field_map, "get_transforms", return_value=TRANSFORMS),
+			patch.object(frappe, "log_error") as log_error,
+		):
+			values = get_mapped_values([row], record, frappe.get_meta("Item"), record["name"])
+		return values, log_error
+
+	def test_a_transform_gets_the_value_before_it_is_unescaped(self):
+		values, _log_error = self.map_tags("join_names")
+
+		# A list such as the tags only becomes text in the transform, so the text is unescaped after it
+		self.assertEqual(values, {"item_name": "Garden & Patio, Tools"})
+
+	def test_a_transform_that_returns_nothing_leaves_the_field(self):
+		values, log_error = self.map_tags("no_value")
+
+		self.assertEqual(values, {})
+		log_error.assert_not_called()
+
+	def test_a_transform_that_fails_or_is_gone_leaves_the_field_and_is_logged(self):
+		for transform in ("broken", "uninstalled"):
+			with self.subTest(transform=transform):
+				values, log_error = self.map_tags(transform)
+
+				self.assertEqual(values, {})
+				log_error.assert_called_once()
+
+	def test_a_row_names_a_transform_an_app_registers(self):
+		row = _dict(
+			erpnext_field_name="item_name | Item Name",
+			woocommerce_field_name="$.sku",
+			transform="uninstalled",
+			idx=1,
+		)
+		with (
+			patch.object(field_map, "get_transforms", return_value=TRANSFORMS),
+			self.assertRaises(frappe.ValidationError),
+		):
+			validate_map_row(row, "Item Field Map", "Item", {"item_name"})

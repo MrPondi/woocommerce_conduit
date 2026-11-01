@@ -61,6 +61,18 @@ doc_events = {
 # Return the values to push, or None to keep them. Only WooCommerce Product writable_fields are written.
 # Call woocommerce_conduit.tasks.stock_update.enqueue_stock_update(item_code) to push again when the
 # data the method reads changes.
+#
+# Change a value of the Item Field Map before it is set, e.g. a number with a decimal comma, which Frappe
+# would read without its comma (12,5 as 125). Declare in the other app's hooks.py:
+#
+# woocommerce_field_transforms = {"Decimal comma": "my_app.woocommerce.decimal_comma"}
+#
+# def decimal_comma(value, row, record):
+# 	return value.replace(",", ".") if isinstance(value, str) else value
+#
+# The name can then be picked in a map row's Transform. The method gets the value the row's JSONPath found,
+# as WooCommerce has it (HTML-escaped text is unescaped afterwards), the row, and the record the path ran
+# on. It returns the value to set, or None to leave the field as it is.
 
 # Scheduled Tasks
 # ---------------

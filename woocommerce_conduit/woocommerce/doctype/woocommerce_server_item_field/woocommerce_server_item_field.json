@@ -8,7 +8,8 @@
  "field_order": [
   "erpnext_field_name",
   "column_break_bzuc",
-  "woocommerce_field_name"
+  "woocommerce_field_name",
+  "transform"
  ],
  "fields": [
   {
@@ -29,13 +30,19 @@
    "in_list_view": 1,
    "label": "JSONPath on WooCommerce Product",
    "reqd": 1
+  },
+  {
+   "description": "Changes the value before it is set: a method that an installed app registers under the <code>woocommerce_field_transforms</code> hook",
+   "fieldname": "transform",
+   "fieldtype": "Select",
+   "label": "Transform"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-11-01 21:20:00.000000",
+ "modified": "2026-11-01 22:00:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server Item Field",

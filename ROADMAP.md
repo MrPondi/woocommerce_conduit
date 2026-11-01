@@ -72,11 +72,11 @@ Start at: `SynchroniseSalesOrder.create_or_link_customer_and_address`, Fusion's 
 
 ## Items
 
-### Field transforms and order line field mapping
+### Order line field mapping
 
-The Item Field Map copies a JSONPath value as it is. Fusion can transform the value (`tasks/field_transforms.py`, registered through a hook) and also maps order line fields to Sales Order Item fields (`WooCommerce Server Order Item Field`).
+The Item Field Map copies product values into Items; nothing does the same for order lines. Fusion maps order line fields to Sales Order Item fields (`WooCommerce Server Order Item Field`), a plugin's line meta data into a custom field, say.
 
-Start at: `SynchroniseItem.set_item_fields`, `order_lines.build_item_row`.
+Start at: `tasks/field_map.py`, `order_lines.build_item_row`.
 
 ### Bulk product import from the form
 

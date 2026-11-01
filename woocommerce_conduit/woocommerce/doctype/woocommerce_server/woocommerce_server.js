@@ -49,6 +49,14 @@ frappe.ui.form.on("WooCommerce Server", {
 				options
 			);
 		});
+
+		// The transforms the installed apps register, after a blank for none
+		const transforms = ["", ...(frm.doc.__onload?.field_transforms || [])].join("\n");
+		frm.fields_dict.item_field_map.grid.update_docfield_property(
+			"transform",
+			"options",
+			transforms
+		);
 	},
 
 	// Add the order statuses of the shop that the Order Status Map lacks

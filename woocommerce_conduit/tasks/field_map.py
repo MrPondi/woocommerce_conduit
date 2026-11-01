@@ -1,6 +1,8 @@
 """
 The field maps of a WooCommerce Server. A row copies a value of a WooCommerce record, found with a JSONPath,
-into a field of an ERPNext document: the Item Field Map from a product into its Item.
+into a field of an ERPNext document: the Item Field Map from a product into its Item. A row can have the
+value changed first by a transform, a method another app registers under the `woocommerce_field_transforms`
+hook (see hooks.py).
 """
 
 import json
@@ -35,6 +37,9 @@ REFUSED_ITEM_FIELDS = (
 # Kept in frappe.flags, so a request or job logs each problem of a map once rather than once per record
 LOGGED_PROBLEMS_FLAG = "woocommerce_logged_map_problems"
 
+# Other apps register their transforms under this hook, as {"Name": "dotted.path.to.method"}
+TRANSFORMS_HOOK = "woocommerce_field_transforms"
+
 
 @lru_cache(maxsize=256)
 def parse_path(path: str):
@@ -43,6 +48,18 @@ def parse_path(path: str):
 	map for every record.
 	"""
 	return parse(path)
+
+
+def get_transforms() -> dict[str, str]:
+	"""
+	The transforms the installed apps register, by name. Frappe lists a dict hook's values per app, so when two
+	apps register a name, the one loaded last wins, as with Frappe's own overrides.
+	"""
+	return {
+		name: paths[-1] if isinstance(paths, list | tuple) else paths
+		for name, paths in frappe.get_hooks(TRANSFORMS_HOOK, default={}).items()
+		if paths
+	}
 
 
 def get_target_fieldname(row) -> str:
@@ -105,6 +122,13 @@ def validate_map_row(
 			)
 		)
 
+	if row.get("transform") and row.transform not in get_transforms():
+		frappe.throw(
+			_("{0} row {1}: no installed app registers the transform {2}").format(
+				map_label, row.idx, frappe.bold(row.transform)
+			)
+		)
+
 	path = cstr(row.woocommerce_field_name)
 	try:
 		parse_path(path)
@@ -137,11 +161,13 @@ def validate_map_row(
 
 def get_mapped_values(rows, record: dict, meta, record_name: str) -> dict:
 	"""
-	The value each row's JSONPath finds in `record` (its first match), for the field of `meta` the row names.
-	A row whose path finds nothing is left out, and so is a value the field can't take, which is logged under
+	The value each row's JSONPath finds in `record` (its first match), changed by the row's transform, for the
+	field of `meta` the row names. A row whose path finds nothing, or whose transform returns None, is left
+	out, and so is a value the field can't take or a transform that fails, which is logged under
 	`record_name`: a mapped value must never fail the document it goes into.
 	"""
 	values = {}
+	transforms = get_transforms() if any(row.get("transform") for row in rows or []) else {}
 	for row in rows or []:
 		fieldname = get_target_fieldname(row)
 		try:
@@ -153,6 +179,20 @@ def get_mapped_values(rows, record: dict, meta, record_name: str) -> dict:
 			continue
 
 		df, value = meta.get_field(fieldname), matches[0].value
+		# The transform gets the value as WooCommerce has it, and the record it was found in
+		if row.get("transform"):
+			if row.transform not in transforms:
+				log_problem(
+					row, _("no installed app registers the transform {0}").format(row.transform), record_name
+				)
+				continue
+			try:
+				value = frappe.get_attr(transforms[row.transform])(value, row=row, record=record)
+			except Exception:
+				log_problem(row, frappe.get_traceback(), record_name)
+				continue
+			if value is None:
+				continue
 		# WordPress keeps names HTML-escaped. In an HTML field the escaped text is right as it is, and
 		# unescaped it could turn into markup.
 		if df and df.fieldtype not in HTML_FIELDTYPES:

@@ -12,6 +12,7 @@ from woocommerce_conduit.tasks.field_map import (
 	REFUSED_ITEM_FIELDS,
 	get_item_map_fields,
 	get_product_fields,
+	get_transforms,
 	validate_map_row,
 )
 from woocommerce_conduit.tasks.taxes import get_vat_rows, normalise_tax_class
@@ -154,8 +155,10 @@ class WooCommerceServer(Document):
 			self.secret = frappe.generate_hash()
 
 	def onload(self):
-		# The Item fields the Item Field Map may not write, which the form leaves out of its choices
+		# The Item fields the Item Field Map may not write, which the form leaves out of its choices, and the
+		# transforms the installed apps register, which it offers
 		self.set_onload("refused_item_fields", REFUSED_ITEM_FIELDS)
+		self.set_onload("field_transforms", sorted(get_transforms()))
 
 	def on_update(self):
 		# The clients built earlier in this request may have the old URL or credentials

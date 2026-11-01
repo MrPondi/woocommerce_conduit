@@ -14,11 +14,15 @@ class WooCommerceServerItemField(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		erpnext_field_name: DF.Literal[None]  # type: ignore
+		erpnext_field_name: DF.Literal[None]
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
+		transform: DF.Literal[None]
 		woocommerce_field_name: DF.Data
-		# end: auto-generated types
+	# end: auto-generated types
+
+	if TYPE_CHECKING:
+		# Selects whose options the form sets, which the generated types can't know
 		erpnext_field_name: str
-	pass
+		transform: str
