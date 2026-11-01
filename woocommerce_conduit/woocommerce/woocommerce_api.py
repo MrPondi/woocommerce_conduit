@@ -8,7 +8,7 @@ import frappe
 import frappe.utils
 from frappe import _
 from frappe.deferred_insert import deferred_insert
-from frappe.model import no_value_fields
+from frappe.model import no_value_fields, numeric_fieldtypes
 from frappe.model.document import Document
 from frappe.utils import cint
 from frappe.utils.caching import request_cache
@@ -22,7 +22,6 @@ WC_RESOURCE_DELIMITER = "~"
 LOGGED_RESPONSE_LENGTH = 64 * 1024
 # The most records WooCommerce returns for one request
 WC_PAGE_LIMIT = 100
-NUMERIC_FIELDTYPES = ("Currency", "Float", "Int", "Percent", "Check")
 
 
 class WooCommerceAPI(API):
@@ -169,7 +168,7 @@ def value_changed(df, value, old_value) -> bool:
 	Whether a field's value changed. Numbers are compared by value and empty values are alike, so "10" and
 	10.0, or None and "", are no change.
 	"""
-	if df.fieldtype in NUMERIC_FIELDTYPES:
+	if df.fieldtype in numeric_fieldtypes:
 		return frappe.utils.flt(value) != frappe.utils.flt(old_value)
 	return not (value == old_value or (value or None) == (old_value or None))
 

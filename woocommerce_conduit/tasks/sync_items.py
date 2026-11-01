@@ -83,10 +83,7 @@ def sync_woocommerce_products_modified_since(date_time_from=None):
 		except Exception as e:
 			frappe.log_error("Item sync error", f"There was an exception when syncing an item: {e!s}")
 
-	settings.reload()
-	settings.wc_last_sync_date_items = sync_started_at
-	settings.flags.ignore_mandatory = True
-	settings.save()
+	frappe.db.set_single_value("WooCommerce Settings", "wc_last_sync_date_items", sync_started_at)
 
 
 @frappe.whitelist(methods=["POST"])

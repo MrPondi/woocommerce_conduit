@@ -29,6 +29,7 @@ from woocommerce_conduit.tasks.order_status import (
 from woocommerce_conduit.tasks.sync_sales_orders import (
 	SynchroniseSalesOrder,
 	enqueue_sales_order_sync,
+	get_changed_order_names,
 	get_names_of_wc_orders,
 	sync_woocommerce_orders_modified_since,
 	wc_order_changed,
@@ -210,9 +211,12 @@ class TestSyncHash(IntegrationTestCase):
 		)
 		sync.update_sales_order()
 
-		self.assertEqual(sync.sales_order.woocommerce_last_sync_hash, "2026-10-30T10:00:00")
+		# The first write; the lines that follow are flagged, as the Sales Order is a mock
+		bookkeeping = sync.sales_order.db_set.call_args_list[0]
+		self.assertEqual(bookkeeping.args[0]["woocommerce_last_sync_hash"], datetime(2026, 10, 30, 10, 0, 0))
+		self.assertEqual(bookkeeping.kwargs, {"update_modified": False})
 		self.assertTrue(sync.sales_order.flags.created_by_sync)
-		sync.sales_order.save.assert_called_once()
+		sync.sales_order.save.assert_not_called()
 
 
 class TestOrderLookup(IntegrationTestCase):
@@ -351,8 +355,10 @@ class TestHourlySync(IntegrationTestCase):
 			patch.object(sync_sales_orders, "now", return_value="2026-10-30 11:00:00"),
 			patch.object(sync_sales_orders, "get_names_of_wc_orders", side_effect=get_names),
 			patch.object(sync_sales_orders, "enqueue_sales_order_sync") as enqueue,
+			patch.object(frappe.db, "set_single_value") as set_single_value,
 		):
 			sync_woocommerce_orders_modified_since()
+		self.set_single_value = set_single_value
 		return settings, seen, enqueue
 
 	def test_syncs_since_the_last_run_and_moves_the_cursor(self):
@@ -368,8 +374,9 @@ class TestHourlySync(IntegrationTestCase):
 			],
 		)
 		# The time before fetching, so nothing modified in the meantime is skipped
-		self.assertEqual(settings.wc_last_sync_date_orders, "2026-10-30 11:00:00")
-		settings.save.assert_called_once()
+		self.set_single_value.assert_called_once_with(
+			"WooCommerce Settings", "wc_last_sync_date_orders", "2026-10-30 11:00:00"
+		)
 
 	def test_failed_fetch_keeps_the_cursor(self):
 		settings = MagicMock(wc_last_sync_date_orders="2026-10-30 09:00:00")
@@ -377,13 +384,28 @@ class TestHourlySync(IntegrationTestCase):
 			patch.object(frappe, "get_cached_doc", return_value=settings),
 			patch.object(sync_sales_orders, "get_names_of_wc_orders", side_effect=ConnectionError),
 			patch.object(sync_sales_orders, "enqueue_sales_order_sync") as enqueue,
+			patch.object(frappe.db, "set_single_value") as set_single_value,
 			self.assertRaises(ConnectionError),
 		):
 			sync_woocommerce_orders_modified_since()
 
-		self.assertEqual(settings.wc_last_sync_date_orders, "2026-10-30 09:00:00")
-		settings.save.assert_not_called()
+		set_single_value.assert_not_called()
 		enqueue.assert_not_called()
+
+	def test_orders_the_webhook_synced_already_are_left_out(self):
+		records = [
+			{"name": "a~1", "woocommerce_date_modified": "2026-10-30T10:00:00"},
+			{"name": "a~2", "woocommerce_date_modified": "2026-10-30T10:30:00"},
+			{"name": "a~3", "woocommerce_date_modified": "2026-10-30T10:00:00"},
+		]
+		sales_orders = [
+			# Synced by the webhook
+			_dict(woocommerce_id="1", woocommerce_last_sync_hash=datetime(2026, 10, 30, 10, 0, 0)),
+			# Changed again since
+			_dict(woocommerce_id="2", woocommerce_last_sync_hash=datetime(2026, 10, 30, 10, 0, 0)),
+		]
+		with patch.object(frappe, "get_all", return_value=sales_orders):
+			self.assertEqual(get_changed_order_names(records), ["a~2", "a~3"])
 
 
 class TestStatusMap(IntegrationTestCase):
@@ -547,7 +569,13 @@ class TestPullingStatus(IntegrationTestCase):
 			woocommerce_payment_entry="ACC-PAY-1",
 			flags=_dict(),
 		)
-		sync.sales_order.save.side_effect = lambda: calls.append("save")
+
+		def db_set(values, **kwargs):
+			calls.append("save")
+			for fieldname, value in values.items():
+				setattr(sync.sales_order, fieldname, value)
+
+		sync.sales_order.db_set.side_effect = db_set
 		sync.woocommerce_order = _dict(
 			status=status,
 			customer_note=None,

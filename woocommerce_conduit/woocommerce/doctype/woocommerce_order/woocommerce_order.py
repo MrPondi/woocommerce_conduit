@@ -158,8 +158,9 @@ class WooCommerceOrder(WooCommerceDocument):
 		)
 
 	def on_update(self):
-		# The status was changed in the form and written to WooCommerce, the Sales Order follows
-		if self.has_value_changed("status"):
+		# The status was changed in the form and written to WooCommerce, the Sales Order follows. A status
+		# pushed from the Sales Order is there already.
+		if self.has_value_changed("status") and not self.flags.created_by_sync:
 			from woocommerce_conduit.tasks.sync_sales_orders import enqueue_sales_order_sync
 
 			enqueue_sales_order_sync(woocommerce_order_name=self.name)

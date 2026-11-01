@@ -1,5 +1,6 @@
 import json
 import re
+from collections import defaultdict
 from datetime import datetime
 from typing import Literal
 
@@ -11,7 +12,7 @@ from erpnext.selling.doctype.sales_order_item.sales_order_item import SalesOrder
 from frappe import _
 from frappe.contacts.doctype.address.address import Address
 from frappe.contacts.doctype.contact.contact import Contact
-from frappe.utils import get_datetime
+from frappe.utils import cstr, get_datetime
 from frappe.utils.data import now
 from frappe.utils.synchronization import filelock
 
@@ -129,10 +130,7 @@ def sync_woocommerce_orders_modified_since(date_time_from=None):
 	for order_name in get_names_of_wc_orders(date_time_from=date_time_from, status=get_statuses_to_sync()):
 		enqueue_sales_order_sync(woocommerce_order_name=order_name)
 
-	settings.reload()
-	settings.wc_last_sync_date_orders = sync_started
-	settings.flags.ignore_mandatory = True
-	settings.save()
+	frappe.db.set_single_value("WooCommerce Settings", "wc_last_sync_date_orders", sync_started)
 
 
 def is_order_sync_paused(woocommerce_server: str | None) -> bool:
@@ -411,6 +409,8 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		if normalise_status(self.woocommerce_order.status) != status:
 			self.woocommerce_order.status = status
 			self.woocommerce_order.flags.ignore_permissions = True
+			# The Sales Order has the status already, it needn't be pulled for it
+			self.woocommerce_order.flags.created_by_sync = True
 			self.woocommerce_order.save()
 
 		# The date that WooCommerce gave back for the change is what the next pull compares with
@@ -431,25 +431,22 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 
 		# Ignore cancelled Sales Orders
 		if self.sales_order.docstatus != 2:
-			# Update the woocommerce_status field if necessary
 			wc_order_status = normalise_status(self.woocommerce_order.status)
 			status_changed = normalise_status(self.sales_order.woocommerce_status) != wc_order_status
-			self.sales_order.woocommerce_status = wc_order_status
+			values = {
+				"woocommerce_status": wc_order_status,
+				# Always note what was seen, so an unchanged WooCommerce Order isn't looked at again
+				"woocommerce_last_sync_hash": get_datetime(self.woocommerce_order.woocommerce_date_modified),
+			}
+			if self.woocommerce_order.customer_note:
+				values["woocommerce_customer_note"] = self.woocommerce_order.customer_note
+			if payment_method := get_payment_method(self.woocommerce_order):
+				values["woocommerce_payment_method"] = payment_method
 
-			if (
-				self.woocommerce_order.customer_note
-				and self.sales_order.woocommerce_customer_note != self.woocommerce_order.customer_note
-			):
-				self.sales_order.woocommerce_customer_note = self.woocommerce_order.customer_note
-
-			payment_method = get_payment_method(self.woocommerce_order)
-			if payment_method and self.sales_order.woocommerce_payment_method != payment_method:
-				self.sales_order.woocommerce_payment_method = payment_method
-
-			# Always note what was seen, so an unchanged WooCommerce Order isn't looked at again
-			self.sales_order.woocommerce_last_sync_hash = self.woocommerce_order.woocommerce_date_modified
+			# Only the sync's own fields change, so they are written without a save of the submitted Sales
+			# Order, which would validate it again and keep a Version of every pull
 			self.sales_order.flags.created_by_sync = True
-			self.sales_order.save()
+			self.sales_order.db_set(values, update_modified=False)
 
 			# The lines of an order that is being cancelled or closed don't matter any more
 			if self.sales_order.docstatus == 1 and not (status_changed and action in ENDING_ACTIONS):
@@ -838,7 +835,8 @@ def get_names_of_wc_orders(
 ) -> list[str]:
 	"""
 	The names of the WooCommerce Orders on all enabled servers that were modified after `date_time_from`
-	and created after the minimum creation date of the settings, with one of the statuses.
+	and created after the minimum creation date of the settings, with one of the statuses. Orders whose
+	Sales Order has seen that change already are left out.
 
 	Raises when WooCommerce can't be reached, so an unreachable shop isn't taken for one without orders.
 	"""
@@ -869,7 +867,40 @@ def get_names_of_wc_orders(
 			"strict": True,
 		}
 	)
-	return [record["name"] for record in records]
+	return get_changed_order_names(records)
+
+
+def get_changed_order_names(records: list[dict]) -> list[str]:
+	"""
+	The names of the orders that changed since their Sales Order last saw them (the sync hash). The webhook
+	syncs most orders before the hourly sync lists them, and those needn't be loaded again.
+	"""
+	ids_by_server = defaultdict(set)
+	for record in records:
+		server, order_id = get_domain_and_id_from_woocommerce_record_name(record["name"])
+		ids_by_server[server].add(cstr(order_id))
+
+	last_seen = {}
+	for server, order_ids in ids_by_server.items():
+		for row in frappe.get_all(
+			"Sales Order",
+			filters={"woocommerce_server": server, "woocommerce_id": ["in", list(order_ids)]},
+			fields=["woocommerce_id", "woocommerce_last_sync_hash"],
+		):
+			if not row.woocommerce_last_sync_hash:
+				continue
+			key = (server, row.woocommerce_id)
+			last_seen[key] = max(
+				last_seen.get(key) or row.woocommerce_last_sync_hash, row.woocommerce_last_sync_hash
+			)
+
+	names = []
+	for record in records:
+		server, order_id = get_domain_and_id_from_woocommerce_record_name(record["name"])
+		date_modified = record.get("woocommerce_date_modified")
+		if not date_modified or wc_order_changed(date_modified, last_seen.get((server, cstr(order_id)))):
+			names.append(record["name"])
+	return names
 
 
 def create_contact(data, billing_address, customer):

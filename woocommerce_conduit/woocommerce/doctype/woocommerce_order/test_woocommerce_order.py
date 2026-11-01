@@ -67,6 +67,14 @@ class TestWooCommerceOrderForm(IntegrationTestCase):
 			order.on_update()
 		enqueue.assert_not_called()
 
+	def test_a_status_pushed_from_the_sales_order_is_not_pulled_back(self):
+		order = make_order(status="completed")
+		order._doc_before_save = make_order(status="processing")
+		order.flags.created_by_sync = True
+		with patch.object(sync_sales_orders, "enqueue_sales_order_sync") as enqueue:
+			order.on_update()
+		enqueue.assert_not_called()
+
 	def test_only_the_status_is_written(self):
 		order = make_order()
 		self.assertEqual(

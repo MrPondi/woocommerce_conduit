@@ -3,29 +3,23 @@
 
 frappe.ui.form.on("WooCommerce Server", {
 	refresh(frm) {
-		// Set the Options for erpnext_field_name field on 'Fields Mapping' child table
-		frappe.call({
-			method: "get_item_docfields",
-			doc: frm.doc,
-			callback: function (r) {
-				// Sort the array of objects alphabetically by the label property
-				r.message.sort((a, b) => a.label.localeCompare(b.label));
-
-				// Use map to create an array of strings in the desired format
-				const formattedStrings = r.message.map(
-					(fields) => `${fields.fieldname} | ${fields.label}`,
-				);
-
-				// Join the strings with newline characters to create the final string
-				const options = formattedStrings.join("\n");
-
-				// Set the Options property
-				frm.fields_dict.item_field_map.grid.update_docfield_property(
-					"erpnext_field_name",
-					"options",
-					options,
-				);
-			},
+		// The Item fields a WooCommerce field can be mapped to, from Item's meta (custom fields included)
+		frappe.model.with_doctype("Item", () => {
+			const options = frappe.meta
+				.get_docfields("Item")
+				.filter(
+					(df) =>
+						!frappe.model.no_value_type.includes(df.fieldtype) &&
+						!frappe.model.table_fields.includes(df.fieldtype),
+				)
+				.sort((a, b) => (a.label || a.fieldname).localeCompare(b.label || b.fieldname))
+				.map((df) => `${df.fieldname} | ${df.label || df.fieldname}`)
+				.join("\n");
+			frm.fields_dict.item_field_map.grid.update_docfield_property(
+				"erpnext_field_name",
+				"options",
+				options,
+			);
 		});
 
 		// Only list enabled warehouses

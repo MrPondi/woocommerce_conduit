@@ -7,7 +7,6 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cstr, now
-from frappe.utils.caching import redis_cache
 from jsonpath_ng.ext import parse
 
 from woocommerce_conduit.tasks.taxes import get_vat_rows, normalise_tax_class
@@ -521,34 +520,3 @@ class WooCommerceServer(Document):
 				for field in disallowed_fields:
 					if field in jsonpath_expr:
 						frappe.throw(_("Field '{0}' is not allowed in JSONPath expression").format(field))
-
-	@frappe.whitelist()
-	@redis_cache(ttl=600)
-	def get_item_docfields(self):
-		"""
-		Get a list of DocFields for the Item Doctype
-		"""
-		invalid_field_types = [
-			"Column Break",
-			"Fold",
-			"Heading",
-			"Read Only",
-			"Section Break",
-			"Tab Break",
-			"Table",
-			"Table MultiSelect",
-		]
-		docfields = frappe.get_all(
-			"DocField",
-			fields=["label", "name", "fieldname"],
-			filters=[
-				["fieldtype", "not in", invalid_field_types],
-				["parent", "=", "Item"],
-			],
-		)
-		custom_fields = frappe.get_all(
-			"Custom Field",
-			fields=["label", "name", "fieldname"],
-			filters=[["fieldtype", "not in", invalid_field_types], ["dt", "=", "Item"]],
-		)
-		return docfields + custom_fields
