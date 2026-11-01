@@ -145,37 +145,47 @@ class SalesOrderStatusMixin:
 
 	def cancel_sales_order(self) -> None:
 		"""
-		Cancel the Sales Order, and the Sales Invoice made for it, as long as nothing was paid or delivered.
-		Otherwise close it and flag it, as what to do about money and goods is for a person to decide.
+		Cancel the Sales Order, and its Sales Invoices, as long as nothing was paid or delivered and the
+		invoices bill nothing but this order. Otherwise close it and flag it, as what to do about money and
+		goods is for a person to decide.
 		"""
 		sales_order = self.sales_order
 		if sales_order.docstatus != 1:
 			return
 
-		invoice = self.get_unpaid_sales_invoice()
-		billed_elsewhere = flt(sales_order.per_billed) > 0 and not invoice
-		if sales_order.woocommerce_payment_entry or flt(sales_order.per_delivered) > 0 or billed_elsewhere:
+		invoices = [invoice for invoice in self.get_invoices() if invoice.docstatus == 1]
+		if (
+			flt(sales_order.per_delivered) > 0
+			or flt(sales_order.advance_paid) > 0
+			or self.get_payment_entries()
+			or not all(self.can_be_cancelled_with_the_order(invoice) for invoice in invoices)
+		):
 			self.close_sales_order()
 			self.flag_sync_issue(
 				_("Cancelled in WooCommerce, but it was already paid, invoiced or delivered. It is closed.")
 			)
 			return
 
-		if invoice:
-			invoice.cancel()
+		for invoice in invoices:
+			invoice_doc = frappe.get_doc("Sales Invoice", invoice.name)
+			invoice_doc.flags.created_by_sync = True
+			invoice_doc.cancel()
+		if invoices:
 			sales_order.reload()
 		sales_order.cancel()
 
-	def get_unpaid_sales_invoice(self):
+	def can_be_cancelled_with_the_order(self, invoice) -> bool:
 		"""
-		The Sales Invoice made for the Sales Order if nothing was paid on it, otherwise None
+		Whether a submitted Sales Invoice of the order can be cancelled with it: it isn't a return, nothing was
+		paid on it, and it bills nothing but this Sales Order
 		"""
-		name = self.sales_order.get("woocommerce_sales_invoice")
-		if not name or not frappe.db.exists("Sales Invoice", {"name": name, "docstatus": 1}):
-			return None
-
-		invoice = frappe.get_doc("Sales Invoice", name)
-		if flt(invoice.outstanding_amount) < flt(invoice.rounded_total or invoice.grand_total):
-			return None
-		invoice.flags.created_by_sync = True
-		return invoice
+		if invoice.is_return or flt(invoice.outstanding_amount) < flt(
+			invoice.rounded_total or invoice.grand_total
+		):
+			return False
+		billed_orders = frappe.get_all(
+			"Sales Invoice Item",
+			filters={"parent": invoice.name, "parenttype": "Sales Invoice"},
+			pluck="sales_order",
+		)
+		return set(billed_orders) == {self.sales_order.name}

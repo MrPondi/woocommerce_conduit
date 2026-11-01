@@ -20,7 +20,11 @@ from woocommerce_conduit.tasks.order_lines import (
 	rates_match,
 	totals_differ,
 )
-from woocommerce_conduit.tasks.order_payment import get_payment_method, unlink_from_sales_order
+from woocommerce_conduit.tasks.order_payment import (
+	get_order_invoices,
+	get_order_payment_entries,
+	get_payment_method,
+)
 from woocommerce_conduit.tasks.order_status import (
 	enqueue_status_push_from_hook,
 	get_status_to_push,
@@ -82,6 +86,23 @@ def make_server(rows=None, push=True, **fields):
 
 def make_sync(**kwargs) -> SynchroniseSalesOrder:
 	return SynchroniseSalesOrder(**kwargs)
+
+
+def invoice_row(name="ACC-SINV-1", docstatus=1, **values):
+	"""
+	A Sales Invoice of the Sales Order as get_order_invoices returns it, unpaid
+	"""
+	return _dict(
+		{
+			"name": name,
+			"docstatus": docstatus,
+			"is_return": 0,
+			"outstanding_amount": 100,
+			"grand_total": 100,
+			"rounded_total": 100,
+			**values,
+		}
+	)
 
 
 class TestFilterMapping(IntegrationTestCase):
@@ -199,7 +220,6 @@ class TestSyncHash(IntegrationTestCase):
 			woocommerce_status="Processing",
 			woocommerce_customer_note=None,
 			woocommerce_payment_method="Card",
-			woocommerce_payment_entry="ACC-PAY-1",
 			flags=_dict(),
 		)
 		sync.woocommerce_order = _dict(
@@ -566,7 +586,6 @@ class TestPullingStatus(IntegrationTestCase):
 			woocommerce_status=previous_status,
 			woocommerce_customer_note=None,
 			woocommerce_payment_method="Card",
-			woocommerce_payment_entry="ACC-PAY-1",
 			flags=_dict(),
 		)
 
@@ -609,21 +628,23 @@ class TestPullingStatus(IntegrationTestCase):
 
 
 class TestStatusActions(IntegrationTestCase):
-	def make(self, **values):
+	def make(self, invoices=(), payment_entries=(), **values):
 		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.get_invoices = MagicMock(return_value=list(invoices))
+		sync.get_payment_entries = MagicMock(return_value=list(payment_entries))
 		sync.sales_order = MagicMock(
 			**{
 				"docstatus": 1,
 				"status": "To Deliver and Bill",
 				"per_delivered": 0,
 				"per_billed": 0,
-				"woocommerce_payment_entry": None,
+				"advance_paid": 0,
 				"woocommerce_sync_issue": None,
 				"flags": _dict(),
 				**values,
 			}
 		)
-		sync.sales_order.get.return_value = values.get("invoice")
+		sync.sales_order.name = "SAL-ORD-1"
 		return sync
 
 	def test_changes_are_not_pushed_back(self):
@@ -654,22 +675,25 @@ class TestStatusActions(IntegrationTestCase):
 		sync.sales_order.update_status.assert_not_called()
 
 	def test_unpaid_invoice_is_cancelled_first(self):
-		invoice = MagicMock(outstanding_amount=100, rounded_total=100, grand_total=100, flags=_dict())
-		sync = self.make(invoice="ACC-SINV-1", per_billed=100)
+		# Made by the sync or by hand, the same goes for either
+		invoice = MagicMock(flags=_dict())
+		sync = self.make(invoices=[invoice_row()], per_billed=100)
 		with (
-			patch.object(frappe.db, "exists", return_value=True),
+			patch.object(frappe, "get_all", return_value=["SAL-ORD-1"]),
 			patch.object(frappe, "get_doc", return_value=invoice),
 		):
 			sync.apply_status_action(ACTION_CANCEL)
 
 		invoice.cancel.assert_called_once()
+		self.assertTrue(invoice.flags.created_by_sync)
 		sync.sales_order.cancel.assert_called_once()
 
 	def test_paid_order_is_closed_and_flagged(self):
 		for values in (
-			{"woocommerce_payment_entry": "ACC-PAY-1"},
+			{"payment_entries": ["ACC-PAY-1"]},
 			{"per_delivered": 50},
-			{"per_billed": 100},
+			{"advance_paid": 50},
+			{"invoices": [invoice_row(is_return=1)]},
 		):
 			sync = self.make(**values)
 			sync.apply_status_action(ACTION_CANCEL)
@@ -680,16 +704,25 @@ class TestStatusActions(IntegrationTestCase):
 			self.assertEqual(sync.sales_order.db_set.call_args.args[0], "woocommerce_sync_issue")
 
 	def test_invoice_with_a_payment_closes_the_order(self):
-		invoice = MagicMock(outstanding_amount=40, rounded_total=100, grand_total=100, flags=_dict())
-		sync = self.make(invoice="ACC-SINV-1", per_billed=100)
+		invoice = MagicMock(flags=_dict())
+		sync = self.make(invoices=[invoice_row(outstanding_amount=40)], per_billed=100)
+		with patch.object(frappe, "get_doc", return_value=invoice):
+			sync.apply_status_action(ACTION_CANCEL)
+
+		invoice.cancel.assert_not_called()
+		sync.sales_order.cancel.assert_not_called()
+		sync.sales_order.update_status.assert_called_once_with("Closed")
+
+	def test_invoice_that_bills_another_order_too_closes_the_order(self):
+		invoice = MagicMock(flags=_dict())
+		sync = self.make(invoices=[invoice_row()], per_billed=100)
 		with (
-			patch.object(frappe.db, "exists", return_value=True),
+			patch.object(frappe, "get_all", return_value=["SAL-ORD-1", "SAL-ORD-2"]),
 			patch.object(frappe, "get_doc", return_value=invoice),
 		):
 			sync.apply_status_action(ACTION_CANCEL)
 
 		invoice.cancel.assert_not_called()
-		sync.sales_order.cancel.assert_not_called()
 		sync.sales_order.update_status.assert_called_once_with("Closed")
 
 
@@ -846,14 +879,15 @@ class InvoiceAndPaymentCase(IntegrationTestCase):
 	def setUp(self):
 		self.delivery_note = MagicMock(flags=_dict())
 
-	def make(self, server=None, **sales_order_values):
+	def make(self, server=None, invoices=(), payment_entries=(), **sales_order_values):
 		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		# What ERPNext links to the Sales Order already
+		sync.get_invoices = MagicMock(return_value=list(invoices))
+		sync.get_payment_entries = MagicMock(return_value=list(payment_entries))
 		sync.sales_order = MagicMock(
 			**{
 				"docstatus": 1,
 				"status": "To Deliver and Bill",
-				"woocommerce_sales_invoice": None,
-				"woocommerce_payment_entry": None,
 				"woocommerce_sync_issue": None,
 				"per_billed": 0,
 				"grand_total": 100,
@@ -916,7 +950,6 @@ class TestInvoiceAndPayment(InvoiceAndPaymentCase):
 		self.assertEqual(invoice.posting_date, "2026-10-29")
 		invoice.insert.assert_called_once()
 		invoice.submit.assert_called_once()
-		self.assertEqual(self.linked(sync, "woocommerce_sales_invoice"), "ACC-SINV-1")
 
 	def test_invoice_is_left_a_draft_when_submitting_is_off(self):
 		sync = self.make(make_server(enabled_payments_sync=0, submit_sales_invoice=0))
@@ -936,7 +969,7 @@ class TestInvoiceAndPayment(InvoiceAndPaymentCase):
 
 	def test_invoice_is_made_once_and_not_for_billed_or_flagged_orders(self):
 		for values in (
-			{"woocommerce_sales_invoice": "ACC-SINV-9"},
+			{"invoices": [invoice_row("ACC-SINV-9", docstatus=0)]},
 			{"per_billed": 100},
 			{"woocommerce_sync_issue": "Totals differ"},
 		):
@@ -958,7 +991,7 @@ class TestInvoiceAndPayment(InvoiceAndPaymentCase):
 		get_payment_entry.assert_not_called()
 
 	def test_payment_is_booked_against_the_invoice(self):
-		sync = self.make(woocommerce_sales_invoice="ACC-SINV-1")
+		sync = self.make(invoices=[invoice_row()])
 		_inv, payment_entry, _msi, get_payment_entry = self.run_sync(sync)
 
 		get_payment_entry.assert_called_once_with(
@@ -970,11 +1003,10 @@ class TestInvoiceAndPayment(InvoiceAndPaymentCase):
 		self.assertEqual(payment_entry.mode_of_payment, "Credit Card")
 		payment_entry.insert.assert_called_once()
 		payment_entry.submit.assert_called_once()
-		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), "ACC-PAY-1")
 
 	def test_payment_waits_for_the_invoice_to_be_submitted(self):
-		sync = self.make(woocommerce_sales_invoice="ACC-SINV-1")
-		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, payment_reference_status=0)
+		sync = self.make(invoices=[invoice_row(docstatus=0)])
+		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync)
 		get_payment_entry.assert_not_called()
 
 	def test_payment_without_an_invoice_is_an_advance_on_the_sales_order(self):
@@ -988,12 +1020,12 @@ class TestInvoiceAndPayment(InvoiceAndPaymentCase):
 
 		make_sales_invoice.assert_called_once()
 		get_payment_entry.assert_called_once()
-		self.assertEqual(self.linked(sync, "woocommerce_sales_invoice"), invoice.name)
-		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), payment_entry.name)
+		invoice.insert.assert_called_once()
+		payment_entry.insert.assert_called_once()
 
 	def test_payment_is_not_made_twice_or_for_nothing(self):
 		for values, order_values in (
-			({"woocommerce_payment_entry": "ACC-PAY-9"}, {}),
+			({"payment_entries": ["ACC-PAY-9"]}, {}),
 			({"grand_total": 0}, {}),
 			({}, {"date_paid": None}),
 			({}, {"payment_method": None}),
@@ -1046,11 +1078,11 @@ class TestInvoiceAndPayment(InvoiceAndPaymentCase):
 
 		log_error.assert_called_once()
 		self.assertIn("No account", self.linked(sync, "woocommerce_sync_issue"))
-		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), "ACC-PAY-1")
+		payment_entry.insert.assert_called_once()
 
 	def test_paid_invoice_gets_no_second_payment(self):
 		# The Payment Entry of the sync was cancelled, and the invoice paid by hand
-		sync = self.make(woocommerce_sales_invoice="ACC-SINV-1")
+		sync = self.make(invoices=[invoice_row()])
 		values = {"docstatus": 1, "outstanding_amount": 0}
 		with patch.object(frappe.db, "get_value", side_effect=lambda dt, name, field: values[field]):
 			_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, payment_reference_status=None)
@@ -1061,21 +1093,31 @@ class TestInvoiceAndPayment(InvoiceAndPaymentCase):
 		_inv, _pe, _msi, get_payment_entry = self.run_sync(sync, action=ACTION_STATUS_ONLY)
 		get_payment_entry.assert_not_called()
 
-	def test_cancelling_unlinks_the_sales_order(self):
-		for doctype, fieldname in (
-			("Sales Invoice", "woocommerce_sales_invoice"),
-			("Payment Entry", "woocommerce_payment_entry"),
-		):
-			with (
-				patch.object(frappe, "get_all", return_value=["SAL-ORD-1"]) as get_all,
-				patch.object(frappe.db, "set_value") as set_value,
-			):
-				unlink_from_sales_order(_dict(doctype=doctype, name="DOC-1"))
+	def test_invoices_are_found_through_their_items(self):
+		with patch.object(frappe, "get_all", return_value=[]) as get_all:
+			get_order_invoices("SAL-ORD-1")
 
-			self.assertEqual(get_all.call_args.kwargs["filters"], {fieldname: "DOC-1"})
-			set_value.assert_called_once_with(
-				"Sales Order", "SAL-ORD-1", fieldname, None, update_modified=False
-			)
+		self.assertEqual(get_all.call_args.args[0], "Sales Invoice")
+		self.assertEqual(
+			get_all.call_args.kwargs["filters"],
+			[["Sales Invoice Item", "sales_order", "=", "SAL-ORD-1"], ["docstatus", "<", 2]],
+		)
+
+	def test_payments_of_the_order_and_of_its_invoices_are_found(self):
+		with patch.object(
+			frappe, "get_all", side_effect=[["ACC-PAY-2"], ["ACC-PAY-1", "ACC-PAY-2"]]
+		) as get_all:
+			payment_entries = get_order_payment_entries("SAL-ORD-1", ["ACC-SINV-1"])
+
+		self.assertEqual(payment_entries, ["ACC-PAY-1", "ACC-PAY-2"])
+		self.assertEqual(
+			[
+				(call.kwargs["filters"]["reference_doctype"], call.kwargs["filters"]["reference_name"])
+				for call in get_all.call_args_list
+			],
+			[("Sales Order", ["in", ["SAL-ORD-1"]]), ("Sales Invoice", ["in", ["ACC-SINV-1"]])],
+		)
+		self.assertEqual(get_all.call_args.kwargs["filters"]["docstatus"], ["<", 2])
 
 	def test_payment_method_title(self):
 		self.assertEqual(
@@ -1453,11 +1495,7 @@ class TestCompletedOrders(InvoiceAndPaymentCase):
 
 	def test_order_completed_in_woocommerce_later_gets_what_it_lacks(self):
 		# Invoiced and paid while pending and processing, then completed in WooCommerce by mistake
-		sync = self.make(
-			per_delivered=0,
-			woocommerce_sales_invoice="ACC-SINV-1",
-			woocommerce_payment_entry="ACC-PAY-1",
-		)
+		sync = self.make(per_delivered=0, invoices=[invoice_row()], payment_entries=["ACC-PAY-1"])
 		_inv, _pe, make_sales_invoice, get_payment_entry = self.run_sync(sync, action=ACTION_COMPLETE)
 
 		make_sales_invoice.assert_not_called()
@@ -1470,7 +1508,7 @@ class TestCompletedOrders(InvoiceAndPaymentCase):
 		self.delivery_note.insert.assert_not_called()
 
 	def test_processing_after_pending_only_adds_the_payment(self):
-		sync = self.make(woocommerce_sales_invoice="ACC-SINV-1")
+		sync = self.make(invoices=[invoice_row()])
 		_inv, _pe, make_sales_invoice, get_payment_entry = self.run_sync(sync)
 
 		make_sales_invoice.assert_not_called()
@@ -1480,10 +1518,10 @@ class TestCompletedOrders(InvoiceAndPaymentCase):
 	def test_delivery_that_fails_is_flagged(self):
 		sync = self.make(per_delivered=0)
 		self.delivery_note.submit.side_effect = frappe.ValidationError("Not enough stock")
-		self.run_sync(sync, action=ACTION_COMPLETE)
+		_inv, payment_entry, *_ = self.run_sync(sync, action=ACTION_COMPLETE)
 
 		self.assertIn("Not enough stock", self.linked(sync, "woocommerce_sync_issue"))
-		self.assertEqual(self.linked(sync, "woocommerce_payment_entry"), "ACC-PAY-1")
+		payment_entry.insert.assert_called_once()
 
 	def test_delivery_that_fails_keeps_what_was_flagged_before(self):
 		sync = self.make(per_delivered=0, woocommerce_sync_issue="The Sales Order totals 117.07")
@@ -1518,11 +1556,11 @@ class TestInvoiceAndHold(InvoiceAndPaymentCase):
 		return calls
 
 	def test_order_is_invoiced_before_it_is_held(self):
-		sync = self.make(woocommerce_payment_entry="ACC-PAY-9")
+		sync = self.make(payment_entries=["ACC-PAY-9"])
 		self.assertEqual(self.invoice_and_hold(sync), ["invoice", "On Hold"])
 
 	def test_held_order_is_resumed_to_be_invoiced(self):
-		sync = self.make(status="On Hold", woocommerce_payment_entry="ACC-PAY-9")
+		sync = self.make(status="On Hold", payment_entries=["ACC-PAY-9"])
 		calls = self.invoice_and_hold(sync)
 		self.assertEqual(calls[:2], ["Draft", "invoice"])
 

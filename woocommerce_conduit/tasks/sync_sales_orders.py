@@ -67,8 +67,6 @@ class SyncedOrder(SalesOrder):
 		woocommerce_last_sync_hash: DF.Datetime
 		woocommerce_status: DF.Data
 		woocommerce_payment_method: DF.Data
-		woocommerce_payment_entry: DF.Data
-		woocommerce_sales_invoice: DF.Data
 		woocommerce_sync_issue: DF.SmallText
 		woocommerce_customer_note: DF.Data
 		items: DF.Table[SyncedOrderItem]  # pyright: ignore[reportIncompatibleVariableOverride]

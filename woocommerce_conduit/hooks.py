@@ -57,13 +57,7 @@ doc_events = {
 	},
 	"Sales Invoice": {
 		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-		"on_cancel": [
-			"woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-			"woocommerce_conduit.tasks.order_payment.unlink_from_sales_order",
-		],
-	},
-	"Payment Entry": {
-		"on_cancel": "woocommerce_conduit.tasks.order_payment.unlink_from_sales_order",
+		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
 	},
 	"Purchase Invoice": {
 		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
@@ -122,10 +116,8 @@ fixtures = [
 					"Sales Order-woocommerce_server",
 					"Sales Order-woocommerce_status",
 					"Sales Order-woocommerce_payment_method",
-					"Sales Order-woocommerce_payment_entry",
 					"Sales Order-woocommerce_last_sync_hash",
 					"Sales Order-woocommerce_customer_note",
-					"Sales Order-woocommerce_sales_invoice",
 					"Sales Order-woocommerce_sync_issue",
 					"Sales Order Item-woocommerce_id",
 					"Sales Order Item-woocommerce_line_item_id",

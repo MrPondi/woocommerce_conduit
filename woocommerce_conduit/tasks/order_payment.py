@@ -24,23 +24,44 @@ if TYPE_CHECKING:
 # The field the title of the payment method is stored in is this long
 PAYMENT_METHOD_LENGTH = 140
 
-# The fields of a Sales Order that link to the documents the sync made for it
-SALES_ORDER_LINK_FIELDS = {
-	"Sales Invoice": "woocommerce_sales_invoice",
-	"Payment Entry": "woocommerce_payment_entry",
-}
+
+def get_order_invoices(sales_order: str) -> list:
+	"""
+	The Sales Invoices that bill a Sales Order, as ERPNext links their items to it: drafts included and
+	cancelled ones not, the newest first
+	"""
+	return frappe.get_all(
+		"Sales Invoice",
+		filters=[["Sales Invoice Item", "sales_order", "=", sales_order], ["docstatus", "<", 2]],
+		fields=["name", "docstatus", "is_return", "outstanding_amount", "grand_total", "rounded_total"],
+		order_by="creation desc",
+		distinct=True,
+	)
 
 
-def unlink_from_sales_order(doc, method=None):
+def get_order_payment_entries(sales_order: str, invoices: list[str]) -> list[str]:
 	"""
-	Intended to be triggered by the on_cancel of a Sales Invoice or Payment Entry. The Sales Order that links
-	to it no longer has it, and Frappe would refuse the cancel while a submitted Sales Order links to it.
+	The Payment Entries that pay a Sales Order or one of its invoices: drafts included and cancelled ones not
 	"""
-	fieldname = SALES_ORDER_LINK_FIELDS.get(doc.doctype)
-	if not fieldname:
-		return
-	for sales_order in frappe.get_all("Sales Order", filters={fieldname: doc.name}, pluck="name"):
-		frappe.db.set_value("Sales Order", sales_order, fieldname, None, update_modified=False)
+	references = [("Sales Order", [sales_order])]
+	if invoices:
+		references.append(("Sales Invoice", invoices))
+
+	payment_entries = set()
+	for reference_doctype, reference_names in references:
+		payment_entries.update(
+			frappe.get_all(
+				"Payment Entry Reference",
+				filters={
+					"parenttype": "Payment Entry",
+					"reference_doctype": reference_doctype,
+					"reference_name": ["in", reference_names],
+					"docstatus": ["<", 2],
+				},
+				pluck="parent",
+			)
+		)
+	return sorted(payment_entries)
 
 
 def get_payment_method(wc_order) -> str | None:
@@ -64,8 +85,9 @@ class SalesOrderPaymentMixin:
 	def sync_invoice_and_payment(self, action: str) -> None:
 		"""
 		Make the Sales Invoice when the status of the order says so, and the Payment Entry when it was paid.
-		Every step is done once: it is skipped when the Sales Order is linked to its document already. A step
-		that fails is flagged on the Sales Order and logged, as the order itself is still worth keeping.
+		Every step is done once: it is skipped when the Sales Order has its document already, whoever made it
+		(ERPNext's own links say so). A step that fails is flagged on the Sales Order and logged, as the order
+		itself is still worth keeping.
 
 		A completed order gets its Delivery Note too, whether it was completed in WooCommerce before ERPNext
 		saw it or by mistake after, so ERPNext doesn't drift from the shop.
@@ -114,12 +136,19 @@ class SalesOrderPaymentMixin:
 			sales_order.flags.created_by_sync = True
 		self.hold_sales_order()
 
+	def get_invoices(self) -> list:
+		return get_order_invoices(self.sales_order.name)
+
+	def get_payment_entries(self) -> list[str]:
+		return get_order_payment_entries(
+			self.sales_order.name, [invoice.name for invoice in self.get_invoices()]
+		)
+
 	def create_sales_invoice(self, wc_server) -> None:
 		sales_order = self.sales_order
-		# One invoice per order. Something billed by hand, or an order that is flagged, is left to a person.
-		if sales_order.woocommerce_sales_invoice or flt(sales_order.per_billed) > 0:
-			return
-		if sales_order.woocommerce_sync_issue:
+		# One invoice per order. An order with an invoice already (made by hand, or a draft), or one that is
+		# flagged, is left to a person.
+		if sales_order.woocommerce_sync_issue or flt(sales_order.per_billed) > 0 or self.get_invoices():
 			return
 
 		invoice = make_sales_invoice(sales_order.name)
@@ -131,8 +160,6 @@ class SalesOrderPaymentMixin:
 		invoice.insert()
 		if wc_server.submit_sales_invoice:
 			invoice.submit()
-
-		sales_order.db_set("woocommerce_sales_invoice", invoice.name, update_modified=False)
 
 	def create_delivery_note(self) -> None:
 		"""
@@ -163,7 +190,7 @@ class SalesOrderPaymentMixin:
 		method = wc_server.get_payment_method_row(wc_order.payment_method)
 		if not (method and method.mode_of_payment):
 			return
-		if not wc_order.date_paid or sales_order.woocommerce_payment_entry:
+		if not wc_order.date_paid or self.get_payment_entries():
 			return
 		# Nothing was paid, so there is nothing to book
 		if flt(sales_order.grand_total) == 0:
@@ -204,8 +231,6 @@ class SalesOrderPaymentMixin:
 		if wc_server.submit_sales_invoice:
 			payment_entry.submit()
 
-		sales_order.db_set("woocommerce_payment_entry", payment_entry.name, update_modified=False)
-
 	def is_paid(self, reference_doctype: str, reference_name: str) -> bool:
 		if reference_doctype == "Sales Invoice":
 			return flt(frappe.db.get_value("Sales Invoice", reference_name, "outstanding_amount")) <= 0
@@ -216,16 +241,7 @@ class SalesOrderPaymentMixin:
 		What the payment is booked against: the Sales Invoice of the order if there is one (it has to be
 		submitted first), otherwise the Sales Order as an advance
 		"""
-		sales_order = self.sales_order
-		invoice = sales_order.woocommerce_sales_invoice
-		if not invoice and flt(sales_order.per_billed) > 0:
-			# Invoiced by hand
-			invoice = frappe.db.get_value(
-				"Sales Invoice Item", {"sales_order": sales_order.name, "docstatus": 1}, "parent"
-			)
-
-		if not invoice:
-			return "Sales Order", sales_order.name
-		if frappe.db.get_value("Sales Invoice", invoice, "docstatus") != 1:
-			return "Sales Invoice", None
-		return "Sales Invoice", invoice
+		invoices = [invoice for invoice in self.get_invoices() if not invoice.is_return]
+		if not invoices:
+			return "Sales Order", self.sales_order.name
+		return "Sales Invoice", next((invoice.name for invoice in invoices if invoice.docstatus == 1), None)
