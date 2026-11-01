@@ -213,6 +213,18 @@ class TestWooCommerceServer(IntegrationTestCase):
 		self.assertEqual(kwargs["since"], "2026-10-30 09:00:00")
 		self.assertIsNone(server.order_sync_paused_since)
 
+	def test_unpausing_without_a_pause_date_syncs_nothing(self):
+		server = new_server(pause_order_sync=0)
+		with (
+			patch.object(type(server), "is_new", return_value=False),
+			patch.object(type(server), "has_value_changed", return_value=True),
+			patch.object(frappe, "enqueue") as enqueue,
+			patch.object(frappe, "msgprint") as msgprint,
+		):
+			server.track_order_sync_pause()
+		enqueue.assert_not_called()
+		msgprint.assert_called_once()
+
 	def test_saving_an_unpaused_server_syncs_nothing(self):
 		server = new_server(pause_order_sync=0)
 		with (

@@ -151,10 +151,13 @@ def is_order_sync_paused(woocommerce_server: str | None) -> bool:
 	)
 
 
-def sync_paused_orders(woocommerce_server: str, since=None):
+def sync_paused_orders(woocommerce_server: str, since):
 	"""
 	Sync the orders of a server that changed while its order sync was paused. Enqueued when it is unpaused.
 	"""
+	# Without a date every order of the shop would be synced
+	if not since:
+		return
 	for order_name in get_names_of_wc_orders(date_time_from=since, status=get_statuses_to_sync()):
 		if get_domain_and_id_from_woocommerce_record_name(order_name)[0] == woocommerce_server:
 			enqueue_sales_order_sync(woocommerce_order_name=order_name)

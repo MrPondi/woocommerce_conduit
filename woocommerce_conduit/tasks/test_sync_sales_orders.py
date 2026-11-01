@@ -82,11 +82,10 @@ def make_server(rows=None, push=True, **fields):
 
 def make_sync(**kwargs) -> SynchroniseSalesOrder:
 	# Neither the servers nor the settings are looked up
-	with (
-		patch.object(SynchroniseWooCommerce, "get_wc_servers", return_value=[]),
-		patch.object(frappe, "get_cached_doc", return_value=_dict()),
-	):
-		return SynchroniseSalesOrder(**kwargs)
+	with patch.object(frappe, "get_cached_doc", return_value=_dict()):
+		sync = SynchroniseSalesOrder(**kwargs)
+	sync.servers = []
+	return sync
 
 
 class TestFilterMapping(IntegrationTestCase):
@@ -304,6 +303,16 @@ class TestPausedSync(IntegrationTestCase):
 			sync.run()
 		load_orders.assert_not_called()
 
+	def test_paused_sync_does_not_load_the_servers(self):
+		# A job queued before the pause should end at once, there can be thousands of them
+		with (
+			patch.object(SynchroniseWooCommerce, "get_wc_servers") as get_wc_servers,
+			patch.object(frappe, "get_cached_doc", return_value=_dict()),
+			self.paused(),
+		):
+			SynchroniseSalesOrder(woocommerce_order_name=f"{SERVER}~12").run()
+		get_wc_servers.assert_not_called()
+
 	def test_sync_asked_for_in_the_form_says_it_is_paused(self):
 		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
 		with (
@@ -330,6 +339,15 @@ class TestPausedSync(IntegrationTestCase):
 			[c.kwargs["woocommerce_order_name"] for c in enqueue.call_args_list],
 			[f"{SERVER}~12", f"{SERVER}~13"],
 		)
+
+	def test_unpausing_without_a_date_does_not_sync_the_whole_shop(self):
+		with (
+			patch.object(sync_sales_orders, "get_names_of_wc_orders") as get_names,
+			patch.object(sync_sales_orders, "enqueue_sales_order_sync") as enqueue,
+		):
+			sync_sales_orders.sync_paused_orders(SERVER, since=None)
+		get_names.assert_not_called()
+		enqueue.assert_not_called()
 
 
 class TestHourlySync(IntegrationTestCase):

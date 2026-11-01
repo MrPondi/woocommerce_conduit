@@ -1,3 +1,5 @@
+from functools import cached_property
+
 import frappe
 from frappe import _, _dict
 from frappe.utils import now
@@ -20,10 +22,16 @@ class SynchroniseWooCommerce:
 	Class for managing synchronisation of WooCommerce data with ERPNext data
 	"""
 
-	servers: list[WooCommerceServer | _dict]
-
 	def __init__(self, servers: list[WooCommerceServer | _dict] | None = None) -> None:
-		self.servers = servers if servers else self.get_wc_servers()
+		if servers:
+			self.servers = servers
+
+	@cached_property
+	def servers(self) -> list[WooCommerceServer | _dict]:
+		"""
+		Loaded when first used, so a sync that stops early (a paused order sync) doesn't query them
+		"""
+		return self.get_wc_servers()
 
 	@staticmethod
 	def get_wc_servers() -> list[WooCommerceServer | _dict]:

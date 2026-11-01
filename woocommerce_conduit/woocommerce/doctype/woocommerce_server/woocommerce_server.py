@@ -153,17 +153,31 @@ class WooCommerceServer(Document):
 		"""
 		if not self.pause_order_sync:
 			if not self.is_new() and self.has_value_changed("pause_order_sync"):
-				frappe.enqueue(
-					"woocommerce_conduit.tasks.sync_sales_orders.sync_paused_orders",
-					queue="long",
-					timeout=1500,
-					enqueue_after_commit=True,
-					woocommerce_server=self.name,
-					since=self.order_sync_paused_since,
-				)
+				self.sync_orders_changed_while_paused()
 			self.order_sync_paused_since = None
 		elif self.is_new() or self.has_value_changed("pause_order_sync"):
 			self.order_sync_paused_since = now()
+
+	def sync_orders_changed_while_paused(self):
+		if not self.order_sync_paused_since:
+			# Paused without a date (set in the database or by a fixture), so every order of the shop would be
+			# synced
+			frappe.msgprint(
+				_(
+					"It isn't known since when the order sync was paused, so the orders changed meanwhile aren't"
+					" synced. Each one is synced when it changes again."
+				),
+				indicator="orange",
+			)
+			return
+		frappe.enqueue(
+			"woocommerce_conduit.tasks.sync_sales_orders.sync_paused_orders",
+			queue="long",
+			timeout=1500,
+			enqueue_after_commit=True,
+			woocommerce_server=self.name,
+			since=self.order_sync_paused_since,
+		)
 
 	def credentials_need_testing(self) -> bool:
 		"""
