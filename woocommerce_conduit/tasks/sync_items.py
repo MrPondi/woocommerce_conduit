@@ -11,6 +11,7 @@ from frappe.utils import convert_utc_to_system_timezone, cstr, flt, get_datetime
 
 from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.tasks.field_map import get_mapped_values
+from woocommerce_conduit.tasks.sync import unescape_text
 from woocommerce_conduit.tasks.taxes import PARENT_TAX_CLASS
 from woocommerce_conduit.woocommerce.doctype.item_woocommerce_server.item_woocommerce_server import (
 	ItemWooCommerceServer,
@@ -604,16 +605,16 @@ class SynchroniseItem:
 
 		# Handle variants based on product type
 		if self.woocommerce_product.type in ["variable", "variation"]:
-			self.create_or_update_item_attributes()
+			spellings = self.create_or_update_item_attributes()
 
 			# Add attributes to item
-			if self.woocommerce_product.get("attributes"):
-				wc_attributes = json.loads(self.woocommerce_product.attributes)
-				for wc_attribute in wc_attributes:
-					row = item.append("attributes")
-					row.attribute = wc_attribute["name"]
-					if self.woocommerce_product.type == "variation":
-						row.attribute_value = wc_attribute["option"]
+			for wc_attribute in self.get_product_attributes():
+				row = item.append("attributes")
+				row.attribute = wc_attribute["name"]
+				if self.woocommerce_product.type == "variation":
+					# As the Item Attribute spells it: ERPNext refuses a variant value it doesn't have exactly
+					option = wc_attribute["option"]
+					row.attribute_value = spellings.get(wc_attribute["name"], {}).get(option.lower(), option)
 
 		# Set up variant configuration
 		if self.woocommerce_product.type == "variable":
@@ -679,16 +680,30 @@ class SynchroniseItem:
 		if wc_server.enable_image_sync and self.woocommerce_product.image:
 			item.image = self.woocommerce_product.image
 
-	def create_or_update_item_attributes(self):
+	def get_product_attributes(self) -> list[dict]:
 		"""
-		Create or update Item Attributes with better code organization
+		The product's attributes, their options as plain text: WordPress keeps the term names of global
+		attributes HTML-escaped. The names stay as they are, as WooCommerce keeps attribute labels unescaped.
 		"""
-		if not self.woocommerce_product or not self.woocommerce_product.attributes:
-			return
-
+		if not self.woocommerce_product or not self.woocommerce_product.get("attributes"):
+			return []
 		wc_attributes = json.loads(self.woocommerce_product.attributes)
-
 		for wc_attribute in wc_attributes:
+			if "option" in wc_attribute:
+				wc_attribute["option"] = unescape_text(wc_attribute["option"])
+			if "options" in wc_attribute:
+				wc_attribute["options"] = [unescape_text(option) for option in wc_attribute["options"]]
+		return wc_attributes
+
+	def create_or_update_item_attributes(self) -> dict[str, dict[str, str]]:
+		"""
+		Create the product's Item Attributes, or add the values they lack.
+
+		Returns:
+			How each attribute spells each of its values, by the value in lower case
+		"""
+		spellings = {}
+		for wc_attribute in self.get_product_attributes():
 			attribute_name = wc_attribute["name"]
 			item_attribute = self._get_or_create_attribute(attribute_name)
 
@@ -696,10 +711,12 @@ class SynchroniseItem:
 			options = self._get_attribute_options(wc_attribute)
 
 			# Item Attributes are shared between products, so only add the values that are missing
-			if (
-				not self._add_missing_attribute_values(item_attribute, options)
-				and not item_attribute.is_new()
-			):
+			added = self._add_missing_attribute_values(item_attribute, options)
+			spellings[attribute_name] = {
+				val.attribute_value.lower(): val.attribute_value
+				for val in item_attribute.item_attribute_values
+			}
+			if not added and not item_attribute.is_new():
 				continue
 
 			item_attribute.flags.ignore_mandatory = True
@@ -707,6 +724,7 @@ class SynchroniseItem:
 				item_attribute.insert()
 			else:
 				item_attribute.save()
+		return spellings
 
 	def _get_or_create_attribute(self, attribute_name):
 		"""Helper method to get or create an attribute"""
@@ -727,16 +745,17 @@ class SynchroniseItem:
 
 	def _add_missing_attribute_values(self, item_attribute, options) -> bool:
 		"""
-		Add the options the attribute doesn't have yet. Values other products use are kept.
+		Add the options the attribute doesn't have yet, whatever their case: ERPNext refuses two values that
+		differ only in case. Values other products use are kept.
 
 		Returns:
 			bool: whether any value was added
 		"""
-		existing_values = {val.attribute_value for val in item_attribute.item_attribute_values}
+		existing_values = {val.attribute_value.lower() for val in item_attribute.item_attribute_values}
 		existing_abbrs = {(val.abbr or "").lower() for val in item_attribute.item_attribute_values}
 		added = False
 		for option in options:
-			if option in existing_values:
+			if option.lower() in existing_values:
 				continue
 			# ERPNext requires a unique abbreviation per attribute
 			abbr = base_abbr = option.replace(" ", "")
@@ -747,7 +766,7 @@ class SynchroniseItem:
 			row = item_attribute.append("item_attribute_values")
 			row.attribute_value = option
 			row.abbr = abbr
-			existing_values.add(option)
+			existing_values.add(option.lower())
 			existing_abbrs.add(abbr.lower())
 			added = True
 		return added
@@ -847,9 +866,11 @@ def get_list_of_wc_products(date_time_from: datetime | str | None = None) -> lis
 
 def to_item_name(wc_name: str | None) -> str | None:
 	"""
-	A WooCommerce product name as an Item name, which is a Data field and so capped in length
+	A WooCommerce product name as an Item name: plain text, as WordPress keeps the name HTML-escaped when the
+	user who saved it can't post HTML, and capped in length, as the Item name is a Data field. Unescaped
+	first, so an entity isn't cut in half.
 	"""
-	return wc_name[:ITEM_NAME_LENGTH] if wc_name else wc_name
+	return unescape_text(wc_name)[:ITEM_NAME_LENGTH] if wc_name else wc_name
 
 
 def values_match(erpnext_value, wc_value) -> bool:

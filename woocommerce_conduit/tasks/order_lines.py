@@ -6,6 +6,7 @@ from erpnext.controllers.accounts_controller import update_child_qty_rate
 from frappe import _
 from frappe.utils import cstr, flt
 
+from woocommerce_conduit.tasks.sync import unescape_text
 from woocommerce_conduit.tasks.sync_items import run_item_sync
 from woocommerce_conduit.tasks.taxes import get_vat_rates, prices_include_tax, split_vat
 from woocommerce_conduit.woocommerce.woocommerce_api import (
@@ -67,10 +68,19 @@ def totals_differ(grand_total, wc_total, lines: list[dict]) -> bool:
 	return abs(flt(grand_total) - flt(wc_total)) > tolerance
 
 
+def get_line_name(line: dict) -> str | None:
+	"""
+	The name of the line's product as plain text. WordPress keeps the name HTML-escaped when the user who
+	saved the product can't post HTML.
+	"""
+	return unescape_text(line.get("name"))
+
+
 def build_item_row(line: dict, item_code: str, item_name: str | None, rate: float, warehouse, delivery_date):
 	row = {
 		"item_code": item_code,
-		"item_name": item_name or line.get("name"),
+		"item_name": item_name or get_line_name(line),
+		# An HTML field, where the name as WooCommerce sends it reads right
 		"description": item_name or line.get("name"),
 		"qty": flt(line.get("quantity")),
 		"rate": rate,
@@ -224,7 +234,7 @@ class SalesOrderLinesMixin:
 				item_code = get_placeholder_item(wc_server)
 				issues.append(
 					_("Line {0} has no Item, it is on the Sales Order as {1}").format(
-						line.get("name"), item_code
+						get_line_name(line), item_code
 					)
 				)
 			rows.append(

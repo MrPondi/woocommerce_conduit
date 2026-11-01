@@ -1412,6 +1412,16 @@ class TestLines(IntegrationTestCase):
 		self.assertEqual(rows[1]["item_name"], "Gone")
 		self.assertEqual(len(issues), 1)
 
+	def test_a_line_without_an_item_reads_plain_and_keeps_its_html_description(self):
+		sync = self.make([line(1, 0, 1, 5, name="Sleeves &amp; Toploader")])
+
+		rows, issues = self.build(sync, {})
+
+		self.assertEqual(rows[0]["item_name"], "Sleeves & Toploader")
+		# An HTML field, where the escaped name reads right
+		self.assertEqual(rows[0]["description"], "Sleeves &amp; Toploader")
+		self.assertIn("Sleeves & Toploader", issues[0])
+
 	def test_inclusive_rows_are_what_the_customer_paid(self):
 		sync = self.make([line(1, 10, 2, 400, total_tax=92)])
 		with patch.object(order_lines, "prices_include_tax", return_value=True):

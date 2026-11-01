@@ -1,6 +1,7 @@
 # Copyright (c) 2025, Karol Parzonka and Contributors
 # See license.txt
 
+import json
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -55,6 +56,11 @@ class TestValueComparison(IntegrationTestCase):
 		self.assertEqual(len(to_item_name("M" * 200)), 140)
 		self.assertEqual(to_item_name("Mug"), "Mug")
 		self.assertIsNone(to_item_name(None))
+
+	def test_item_names_are_plain_text_and_an_entity_is_not_cut(self):
+		self.assertEqual(to_item_name("Sleeves &amp; Toploader"), "Sleeves & Toploader")
+		# Capped after unescaping, or the name would end in "&a"
+		self.assertEqual(to_item_name("M" * 138 + "&amp;"), "M" * 138 + "&")
 
 
 class TestSyncDirection(IntegrationTestCase):
@@ -395,6 +401,20 @@ class TestItemFields(IntegrationTestCase):
 		# As the database spells it, so the next sync doesn't take it for a change
 		self.assertEqual(item.item_group, "Mowers")
 
+	def test_mapped_text_is_unescaped_except_into_html(self):
+		product = make_product(woocommerce_name="Sleeves &amp; Toploader")
+
+		_modified, item, _log_error = self.map_fields(
+			frappe.new_doc("Item"),
+			product,
+			("item_name | Item Name", "$.woocommerce_name"),
+			("description | Description", "$.woocommerce_name"),
+		)
+
+		self.assertEqual(item.item_name, "Sleeves & Toploader")
+		# The description is HTML, where the escaped text reads right
+		self.assertEqual(item.description, "Sleeves &amp; Toploader")
+
 	def test_values_the_field_can_not_take_are_left_out_and_logged_once(self):
 		product = make_product(categories='[{"name": "Gone"}]', tags='[{"name": "Garden"}]', weight="12,5")
 		rows = (
@@ -432,6 +452,42 @@ class TestItemAttributes(IntegrationTestCase):
 		attribute.append("item_attribute_values", {"attribute_value": "Red", "abbr": "Red"})
 
 		self.assertFalse(make_sync()._add_missing_attribute_values(attribute, ["Red"]))
+
+	def sync_variation(self, attribute, option):
+		product = make_product(
+			type="variation", parent_id=5, attributes=json.dumps([{"name": "Type", "option": option}])
+		)
+		item = frappe.new_doc("Item")
+		with (
+			patch.object(SynchroniseItem, "_get_or_create_attribute", return_value=attribute),
+			patch.object(type(attribute), "insert"),
+			patch.object(type(attribute), "save"),
+			patch.object(
+				SynchroniseItem, "_get_or_create_parent_item", return_value=_dict(item_code="SLEEVES")
+			),
+		):
+			make_sync(woocommerce_product=product)._handle_product_variants(item)  # type: ignore
+		return item
+
+	def test_an_escaped_option_is_the_same_plain_value_in_the_attribute_and_the_variant(self):
+		attribute = frappe.new_doc("Item Attribute")
+
+		item = self.sync_variation(attribute, "Sleeves &amp; Toploader")
+
+		self.assertEqual(
+			[val.attribute_value for val in attribute.item_attribute_values], ["Sleeves & Toploader"]
+		)
+		self.assertEqual(item.attributes[0].attribute_value, "Sleeves & Toploader")
+
+	def test_an_option_in_another_case_takes_the_attributes_spelling(self):
+		# ERPNext refuses a second value that differs only in case, and a variant value it doesn't spell
+		attribute = frappe.new_doc("Item Attribute")
+		attribute.append("item_attribute_values", {"attribute_value": "Red", "abbr": "Red"})
+
+		item = self.sync_variation(attribute, "red")
+
+		self.assertEqual([val.attribute_value for val in attribute.item_attribute_values], ["Red"])
+		self.assertEqual(item.attributes[0].attribute_value, "Red")
 
 
 class TestPrimaryConnection(IntegrationTestCase):

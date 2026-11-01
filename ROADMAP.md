@@ -84,12 +84,6 @@ Start at: `SynchroniseItem.set_item_fields`, `order_lines.build_item_row`.
 
 Start at: `sync_items.sync_woocommerce_products_modified_since`, `woocommerce_server.js`.
 
-### HTML entities in names
-
-WordPress stores term names HTML-escaped, so categories, tags and the options of global attributes come back as `Sleeves &amp; Toploader`, and so do product names saved by a user without the `unfiltered_html` capability. They reach Item names, Item Attribute values and mapped fields like that. Fusion unescapes the names and mapped values it takes from WooCommerce (`unescape_woocommerce_value`).
-
-Start at: `sync_items.to_item_name`, `SynchroniseItem.create_or_update_item_attributes`, `set_item_fields`.
-
 ## Configuration
 
 ### Webhook secret as a Password field

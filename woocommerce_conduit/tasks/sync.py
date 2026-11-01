@@ -1,9 +1,26 @@
+import html
+import re
+
 import frappe
 from erpnext.stock.get_item_details import get_conversion_factor
 from frappe import _dict
 from frappe.utils import flt, now
 from frappe.utils.background_jobs import get_job_status
 from rq.job import JobStatus
+
+# An HTML entity, as WordPress writes them: always with its semicolon
+HTML_ENTITY = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);")
+
+
+def unescape_text(value):
+	"""
+	Text as WordPress keeps it, HTML-escaped (`Sleeves &amp; Toploader`), as plain text. Only entities with
+	their semicolon are decoded: html.unescape alone would also read the `&reg` of a plain `Smith&regular`.
+	Anything but a string is returned as it is.
+	"""
+	if not isinstance(value, str) or "&" not in value:
+		return value
+	return HTML_ENTITY.sub(lambda match: html.unescape(match[0]), value)
 
 
 def record_sync_time(server_name: str):

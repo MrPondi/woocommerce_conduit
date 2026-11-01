@@ -8,7 +8,12 @@ import frappe
 from frappe import _
 from frappe.utils import cint, cstr, flt
 
-from woocommerce_conduit.tasks.order_lines import find_item_code, get_line_items, get_product_id
+from woocommerce_conduit.tasks.order_lines import (
+	find_item_code,
+	get_line_items,
+	get_line_name,
+	get_product_id,
+)
 from woocommerce_conduit.tasks.sync_items import SynchroniseItem, find_item_by_sku, load_wc_product
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import WooCommerceOrder
 from woocommerce_conduit.woocommerce.woocommerce_api import (
@@ -45,7 +50,7 @@ def get_unlinked_order_products(woocommerce_server: str, order_count: int = 200)
 					"woocommerce_product_name": generate_woocommerce_record_name_from_domain_and_id(
 						woocommerce_server, product_id
 					),
-					"name": line.get("name"),
+					"name": get_line_name(line),
 					"sku": cstr(line.get("sku")),
 					"orders": 0,
 					"qty": 0,

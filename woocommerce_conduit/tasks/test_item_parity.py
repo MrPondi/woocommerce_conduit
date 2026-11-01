@@ -46,6 +46,10 @@ class TestUnlinkedOrderProducts(IntegrationTestCase):
 		self.assertEqual([row["product_id"] for row in rows], ["2"])
 		self.assertEqual(rows[0]["woocommerce_product_name"], f"{SERVER}~2")
 
+	def test_product_names_read_plain(self):
+		rows = self.check([order("processing", line(1, name="Sleeves &amp; Toploader"))])
+		self.assertEqual(rows[0]["name"], "Sleeves & Toploader")
+
 	def test_variations_are_their_own_products(self):
 		rows = self.check([order("processing", line(5, variation_id=51), line(5, variation_id=52))])
 		self.assertEqual({row["product_id"] for row in rows}, {"51", "52"})

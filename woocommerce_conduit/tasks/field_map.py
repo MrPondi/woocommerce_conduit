@@ -14,6 +14,11 @@ from frappe.utils import cint, cstr, escape_html
 from jsonpath_ng.ext import parse
 from jsonpath_ng.jsonpath import Child, Fields, Root
 
+from woocommerce_conduit.tasks.sync import unescape_text
+
+# Fields whose value is HTML
+HTML_FIELDTYPES = ("Text Editor", "HTML Editor")
+
 # Item fields the Item Field Map may not write. `item_code` and the variant fields are the sync's own,
 # `standard_rate` makes an Item Price the price push sends straight back, `opening_stock` a Stock Entry, and
 # `stock_uom` or `is_stock_item` can't change once the Item has transactions.
@@ -147,7 +152,12 @@ def get_mapped_values(rows, record: dict, meta, record_name: str) -> dict:
 		if not matches:
 			continue
 
-		value, problem = fit_value(meta.get_field(fieldname), matches[0].value)
+		df, value = meta.get_field(fieldname), matches[0].value
+		# WordPress keeps names HTML-escaped. In an HTML field the escaped text is right as it is, and
+		# unescaped it could turn into markup.
+		if df and df.fieldtype not in HTML_FIELDTYPES:
+			value = unescape_text(value)
+		value, problem = fit_value(df, value)
 		if problem:
 			log_problem(row, problem, record_name)
 			continue
