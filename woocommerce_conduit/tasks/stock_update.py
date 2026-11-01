@@ -2,8 +2,9 @@ import math
 
 import frappe
 from frappe import _
+from frappe.utils import create_batch
 
-from woocommerce_conduit.tasks.sync import record_sync_time
+from woocommerce_conduit.tasks.sync import enqueue_unless_queued, record_sync_time
 from woocommerce_conduit.tasks.sync_items import load_wc_product
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	WooCommerceServer,
@@ -24,6 +25,10 @@ STOCK_DOCTYPES = (
 )
 # Invoices only move stock when they are set to update it
 INVOICE_DOCTYPES = ("Sales Invoice", "Purchase Invoice")
+# The Items one job of the daily push takes: as many as one WooCommerce batch request takes
+ITEMS_PER_JOB = 100
+# The Items whose stock the current transaction changed, kept in frappe.flags until it is committed
+PENDING_ITEMS_FLAG = "woocommerce_stock_items"
 
 
 def stock_sync_is_enabled() -> bool:
@@ -32,6 +37,18 @@ def stock_sync_is_enabled() -> bool:
 	"""
 	return bool(
 		frappe.db.exists("WooCommerce Server", {"enabled": 1, "enable_stock_level_synchronisation": 1})
+	)
+
+
+def reserved_stock_is_subtracted() -> bool:
+	"""
+	Whether a WooCommerce Server with stock sync subtracts the stock that Sales Orders reserve
+	"""
+	return bool(
+		frappe.db.exists(
+			"WooCommerce Server",
+			{"enabled": 1, "enable_stock_level_synchronisation": 1, "subtract_reserved_stock": 1},
+		)
 	)
 
 
@@ -44,9 +61,11 @@ def update_stock_levels_for_woocommerce_item(doc, method=None):
 		return
 	if doc.doctype in INVOICE_DOCTYPES and not doc.get("update_stock"):
 		return
+	# A Sales Order only reserves stock, which only counts on a server that subtracts it
+	if doc.doctype == "Sales Order" and not reserved_stock_is_subtracted():
+		return
 
-	for item_code in {row.item_code for row in doc.get("items") or [] if row.item_code}:
-		enqueue_stock_update(item_code)
+	enqueue_stock_updates({row.item_code for row in doc.get("items") or [] if row.item_code})
 
 
 def enqueue_stock_update(item_code: str):
@@ -55,32 +74,87 @@ def enqueue_stock_update(item_code: str):
 	Public, so other apps can request a push when something they feed into the stock changes (see the
 	woocommerce_stock_values hook).
 	"""
-	frappe.enqueue(
-		"woocommerce_conduit.tasks.stock_update.update_stock_levels_on_woocommerce_site",
-		enqueue_after_commit=True,
-		item_code=item_code,
+	enqueue_stock_updates({item_code})
+
+
+def enqueue_stock_updates(item_codes: set[str]):
+	"""
+	Push the stock of these Items once the transaction is committed. Each Item is pushed once, however many
+	documents and rows of the transaction move it, and only when it is linked to WooCommerce. A rollback
+	drops them with the transaction.
+	"""
+	pending = frappe.flags.get(PENDING_ITEMS_FLAG)
+	if pending is None:
+		pending = frappe.flags[PENDING_ITEMS_FLAG] = set()
+		frappe.db.after_commit.add(push_pending_stock_updates)
+		frappe.db.after_rollback.add(forget_pending_stock_updates)
+	pending.update(item_codes)
+
+
+def push_pending_stock_updates():
+	for item_code in get_linked_items(frappe.flags.pop(PENDING_ITEMS_FLAG, None)):
+		enqueue_unless_queued(
+			"woocommerce_conduit.tasks.stock_update.update_stock_levels_on_woocommerce_site",
+			job_id=f"woocommerce_stock_update::{item_code}",
+			item_code=item_code,
+		)
+
+
+def forget_pending_stock_updates():
+	frappe.flags.pop(PENDING_ITEMS_FLAG, None)
+
+
+def get_linked_items(item_codes) -> list[str]:
+	"""
+	The Items among these that are linked to a WooCommerce Product with their sync on
+	"""
+	if not item_codes:
+		return []
+	return sorted(
+		set(
+			frappe.get_all(
+				"Item WooCommerce Server",
+				filters={"parenttype": "Item", "parent": ["in", list(item_codes)], "enable_sync": 1},
+				pluck="parent",
+			)
+		)
 	)
 
 
 def update_stock_levels_for_all_enabled_items_in_background():
 	"""
-	Push the stock of every Item linked to a WooCommerce Product. A safety net for stock that changed
-	without one of the hooked documents.
+	Push the stock of every Item linked to a WooCommerce Product, ITEMS_PER_JOB Items a job. A safety net for
+	stock that changed without one of the hooked documents.
 	"""
 	if not stock_sync_is_enabled():
 		return
 
-	item_codes = set(
-		frappe.get_all(
-			"Item WooCommerce Server", filters={"parenttype": "Item", "enable_sync": 1}, pluck="parent"
+	item_codes = sorted(
+		set(
+			frappe.get_all(
+				"Item WooCommerce Server", filters={"parenttype": "Item", "enable_sync": 1}, pluck="parent"
+			)
 		)
 	)
-	for item_code in sorted(item_codes):
+	for item_codes_of_job in create_batch(item_codes, ITEMS_PER_JOB):
 		frappe.enqueue(
-			"woocommerce_conduit.tasks.stock_update.update_stock_levels_on_woocommerce_site",
+			"woocommerce_conduit.tasks.stock_update.update_stock_levels_of_items",
 			queue="long",
-			item_code=item_code,
+			timeout=1800,
+			item_codes=list(item_codes_of_job),
 		)
+
+
+def update_stock_levels_of_items(item_codes: list[str]):
+	"""
+	Background job: push the stock of these Items, carrying on past an Item that fails
+	"""
+	for item_code in item_codes:
+		try:
+			update_stock_levels_on_woocommerce_site(item_code)
+		except Exception:
+			# Each product that failed was logged
+			continue
 
 
 @frappe.whitelist(methods=["POST"])
@@ -97,6 +171,7 @@ def sync_item_stock_to_woocommerce(item_code: str):
 def update_stock_levels_on_woocommerce_site(item_code: str) -> bool:
 	"""
 	Push an Item's stock to the WooCommerce Product of each shop it is linked to that has stock sync on.
+	Only what differs from the product is written, as WooCommerce dates every save as a change.
 
 	Returns:
 		bool: whether the Item has stock to sync at all
@@ -133,14 +208,11 @@ def update_stock_levels_on_woocommerce_site(item_code: str) -> bool:
 			wc_server.name, connection.woocommerce_id
 		)
 		try:
-			# Variations come back with their parent_id, so the save goes through the parent's endpoint
+			# Variations come back with their parent_id, so the write goes through the parent's endpoint
 			wc_product = load_wc_product(wc_product_name)
-			wc_product.update(stock_values)
-			# The callers check permissions; whoever submitted a stock document may not have write
-			# access to WooCommerce Products
-			wc_product.flags.ignore_permissions = True
-			wc_product.save()
-			record_sync_time(wc_server.name)
+			changes = wc_product.get_changes(stock_values)
+			if changes and wc_product.write(changes):
+				record_sync_time(wc_server.name)
 		except Exception as err:
 			frappe.log_error(
 				"WooCommerce Error: Stock Sync",

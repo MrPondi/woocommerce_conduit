@@ -4,9 +4,9 @@ import frappe
 from frappe import _, _dict, qb
 from frappe.query_builder import Criterion
 from frappe.query_builder.functions import IfNull
-from frappe.utils import get_datetime
+from frappe.utils import create_batch, get_datetime
 
-from woocommerce_conduit.tasks.sync import record_sync_time
+from woocommerce_conduit.tasks.sync import enqueue_after_commit_unless_queued, record_sync_time
 from woocommerce_conduit.woocommerce.doctype.woocommerce_product.woocommerce_product import (
 	WooCommerceProduct,
 )
@@ -16,6 +16,9 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_serv
 from woocommerce_conduit.woocommerce.woocommerce_api import (
 	generate_woocommerce_record_name_from_domain_and_id,
 )
+
+# The Items one job of the daily push takes: as many as one WooCommerce batch request takes
+ITEMS_PER_JOB = 100
 
 
 def _format_sale_date(date_value) -> str | None:
@@ -66,16 +69,30 @@ def update_item_price_for_woocommerce_item_from_hook(doc, method=None):
 	if frappe.flags.in_test or doc.flags.created_by_sync or not price_sync_is_enabled():
 		return
 	# Only the name goes in the job. It runs after the commit, so it reads the saved price.
-	frappe.enqueue(
+	enqueue_after_commit_unless_queued(
 		"woocommerce_conduit.tasks.sync_item_prices.run_item_price_sync",
-		enqueue_after_commit=True,
+		job_id=f"woocommerce_price_sync::{doc.item_code}",
 		item_code=doc.item_code,
 	)
 
 
 @frappe.whitelist()
 def run_item_price_sync_in_background():
-	frappe.enqueue(run_item_price_sync, queue="long", timeout=3600)
+	"""
+	Push the prices of every Item linked to a WooCommerce Product, ITEMS_PER_JOB Items a job
+	"""
+	if not price_sync_is_enabled():
+		return
+
+	item_codes = sorted(
+		set(
+			frappe.get_all(
+				"Item WooCommerce Server", filters={"parenttype": "Item", "enable_sync": 1}, pluck="parent"
+			)
+		)
+	)
+	for item_codes_of_job in create_batch(item_codes, ITEMS_PER_JOB):
+		frappe.enqueue(run_item_price_sync, queue="long", timeout=1800, item_codes=list(item_codes_of_job))
 
 
 @frappe.whitelist(methods=["POST"])
@@ -90,8 +107,8 @@ def sync_item_price_to_woocommerce(item_code: str):
 
 
 @frappe.whitelist()
-def run_item_price_sync(item_code: str | None = None):
-	sync = SynchroniseItemPrice(item_code=item_code)
+def run_item_price_sync(item_code: str | None = None, item_codes: list[str] | None = None):
+	sync = SynchroniseItemPrice(item_codes=[item_code] if item_code else item_codes)
 	sync.run()
 	return True
 
@@ -101,17 +118,18 @@ class SynchroniseItemPrice:
 	Class for managing synchronisation of ERPNext Items with WooCommerce Products
 	"""
 
-	item_code: str | None
+	item_codes: list[str] | None
 	item_price_list: list
 	sale_price_map: dict
 
 	def __init__(
 		self,
 		servers: list[WooCommerceServer | _dict] | None = None,
-		item_code: str | None = None,
+		item_codes: list[str] | None = None,
 	) -> None:
 		self.servers = servers or get_price_sync_servers()
-		self.item_code = item_code
+		# All the Items when there are none
+		self.item_codes = item_codes
 		self.wc_server = None
 		self.item_price_list = []
 		self.sale_price_map = {}
@@ -145,8 +163,8 @@ class SynchroniseItemPrice:
 				and_conditions.append(item.disabled == 0)
 			and_conditions.append(iwc.woocommerce_id.isnotnull())
 			and_conditions.extend(item_wide_price_conditions(ip))
-			if self.item_code:
-				and_conditions.append(ip.item_code == self.item_code)
+			if self.item_codes:
+				and_conditions.append(ip.item_code.isin(self.item_codes))
 
 			self.item_price_list = (  # pyright: ignore[reportCallIssue]
 				qb.from_(ip)
@@ -191,8 +209,8 @@ class SynchroniseItemPrice:
 		# not this map would have its sale price cleared as though the sale had been withdrawn.
 		if not server.sync_prices_for_disabled_items:
 			and_conditions.append(item.disabled == 0)
-		if self.item_code:
-			and_conditions.append(ip.item_code == self.item_code)
+		if self.item_codes:
+			and_conditions.append(ip.item_code.isin(self.item_codes))
 
 		results = (  # pyright: ignore[reportCallIssue]
 			qb.from_(ip)
@@ -212,13 +230,13 @@ class SynchroniseItemPrice:
 
 	def sync_items_with_woocommerce_products(self) -> None:
 		"""
-		Synchronise Item Prices with WooCommerce Products
+		Write the prices to the WooCommerce Products whose prices differ. Only what differs is written, as
+		WooCommerce dates every save as a change.
 		"""
 		if not self.wc_server:
 			return
 		pushed = False
 		for item_price in self.item_price_list:
-			# Get the WooCommerce Product doc
 			wc_product_name = generate_woocommerce_record_name_from_domain_and_id(
 				domain=item_price.woocommerce_server, resource_id=item_price.woocommerce_id
 			)
@@ -228,30 +246,9 @@ class SynchroniseItemPrice:
 
 			try:
 				wc_product.load_from_db()
-				wc_product_dirty = False
-
-				price_list_rate = item_price.price_list_rate
-				# Handle blank string for regular_price
-				if not wc_product.regular_price:
-					wc_product.regular_price = 0
-				# When the price is set, the WooCommerce API returns a string value, when the price is not set, it returns a float value of 0.0
-				wc_product_regular_price = (
-					float(wc_product.regular_price)
-					if isinstance(wc_product.regular_price, str)
-					else wc_product.regular_price
-				)
-				if wc_product_regular_price != price_list_rate:
-					wc_product.regular_price = price_list_rate
-					wc_product_dirty = True
-
-				if self.wc_server.enable_sales_price_list_sync and self.wc_server.sales_price_list:
-					wc_product_dirty |= self._apply_sale_price(wc_product, item_price.woocommerce_id)
-
-				if wc_product_dirty:
-					# The callers check permissions; whoever saved the Item Price may not have write
-					# access to WooCommerce Products
-					wc_product.flags.ignore_permissions = True
-					wc_product.save()
+				changes = wc_product.get_changes(self.get_price_values(item_price))
+				# A variable product's price lives on its variations, so there can be nothing to write
+				if changes and wc_product.write(changes):
 					pushed = True
 					# Space out the writes of a full sweep, so the shop isn't flooded
 					if (delay := frappe.utils.flt(self.wc_server.price_list_delay_per_item)) > 0 and not (
@@ -265,40 +262,17 @@ class SynchroniseItemPrice:
 		if pushed:
 			record_sync_time(self.wc_server.name)
 
-	def _apply_sale_price(self, wc_product: WooCommerceProduct, woocommerce_id: str) -> bool:
+	def get_price_values(self, item_price) -> dict:
 		"""
-		Set or clear sale_price, date_on_sale_from and date_on_sale_to on the WooCommerce Product
-		based on the sale_price_map entry for this product.
-
-		Returns True if any field was changed, False otherwise.
+		The price fields of the WooCommerce Product of an Item Price: its regular price, and the sale of the
+		server's Sales Price List when the server syncs it (none clears the sale in WooCommerce)
 		"""
-		if not self.wc_server:
-			return False
-		sale_price_record = self.sale_price_map.get(woocommerce_id)
-
-		if sale_price_record:
-			new_sale_price = float(sale_price_record.price_list_rate or 0)
-			new_valid_from = sale_price_record.valid_from
-			new_valid_upto = sale_price_record.valid_upto
-		else:
-			new_sale_price = 0
-			new_valid_from = None
-			new_valid_upto = None
-
-		dirty = False
-		if float(wc_product.sale_price or 0) != new_sale_price:
-			wc_product.sale_price = new_sale_price
-			dirty = True
-
-		new_from_str = _format_sale_date(new_valid_from)
-		new_to_str = _format_sale_date(new_valid_upto)
-
-		if wc_product.date_on_sale_from != new_from_str:
-			wc_product.date_on_sale_from = new_from_str
-			dirty = True
-
-		if wc_product.date_on_sale_to != new_to_str:
-			wc_product.date_on_sale_to = new_to_str
-			dirty = True
-
-		return dirty
+		values = {"regular_price": item_price.price_list_rate}
+		if self.wc_server and self.wc_server.enable_sales_price_list_sync and self.wc_server.sales_price_list:
+			sale = self.sale_price_map.get(item_price.woocommerce_id)
+			values.update(
+				sale_price=frappe.utils.flt(sale.price_list_rate) if sale else 0,
+				date_on_sale_from=_format_sale_date(sale.valid_from) if sale else None,
+				date_on_sale_to=_format_sale_date(sale.valid_upto) if sale else None,
+			)
+		return values
