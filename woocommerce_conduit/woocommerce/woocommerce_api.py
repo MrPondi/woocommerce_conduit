@@ -1,11 +1,17 @@
 import json
+import random
 import re
 import traceback
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from itertools import count
+from time import monotonic, sleep
 from typing import NoReturn, Self
 from urllib.parse import urlparse
 
 import frappe
 import frappe.utils
+import requests
 from frappe import _
 from frappe.deferred_insert import deferred_insert
 from frappe.model import no_value_fields, numeric_fieldtypes
@@ -23,12 +29,19 @@ WC_RESOURCE_DELIMITER = "~"
 LOGGED_RESPONSE_LENGTH = 64 * 1024
 # The most records WooCommerce returns for one request
 WC_PAGE_LIMIT = 100
+# How many more times a request is sent when the shop is busy or failing, see get_retry_delay
+MAX_RETRIES = 3
+# How long after its first try a request may still be sent again, in seconds. A job can wait for the
+# shop, but in a web request a person waits for the page.
+RETRY_TIME_LIMIT = 120
+RETRY_TIME_LIMIT_IN_REQUEST = 10
 
 
 class WooCommerceAPI(API):
 	"""
-	The REST API client of one WooCommerce Server. Its failed requests, and all of them when the server has
-	Log All Requests ticked, are kept as Integration Requests.
+	The REST API client of one WooCommerce Server. A request that finds the shop busy or failing is sent
+	again (see get_retry_delay). Its failed requests, and all of them when the server has Log All Requests
+	ticked, are kept as Integration Requests.
 	"""
 
 	def __init__(
@@ -48,26 +61,50 @@ class WooCommerceAPI(API):
 		self.log_all_requests = bool(log_all_requests)
 
 	def _API__request(self, method, endpoint, data, params=None, **kwargs):
-		try:
-			response = super()._API__request(method, endpoint, data, params, **kwargs)  # type: ignore
-		except Exception:
-			self.log_request(method, endpoint, params, data, error=traceback.format_exc())
-			raise
-		if self.log_all_requests or not response.ok:
-			self.log_request(method, endpoint, params, data, response=response)
-		return response
+		# Every try goes through the client again, which signs it anew: a shop without https refuses an
+		# OAuth signature that it has seen before
+		started = monotonic()
+		for attempt in count():
+			try:
+				response = super()._API__request(method, endpoint, data, params, **kwargs)  # type: ignore
+			except Exception as err:
+				retry_in = get_retry_delay(method, attempt, started, error=err)
+				self.log_request(
+					method, endpoint, params, data, error=traceback.format_exc(), retry_in=retry_in
+				)
+				if retry_in is None:
+					raise
+			else:
+				retry_in = get_retry_delay(method, attempt, started, response=response)
+				if self.log_all_requests or not response.ok:
+					self.log_request(method, endpoint, params, data, response=response, retry_in=retry_in)
+				if retry_in is None:
+					return response
+			sleep(retry_in)
 
-	def log_request(self, method: str, endpoint: str, params, data, response=None, error: str | None = None):
+	def log_request(
+		self,
+		method: str,
+		endpoint: str,
+		params,
+		data,
+		response=None,
+		error: str | None = None,
+		retry_in: float | None = None,
+	):
 		"""
 		Keep a request as an Integration Request, which Log Settings clears after a while. The insert is
 		deferred, so it survives a sync that is rolled back and costs no background job. Frappe writes the
-		deferred inserts every 15 minutes.
+		deferred inserts every 15 minutes. A request that is sent again says so, so a busy shop shows in the
+		log even when the next try succeeds.
 		"""
 		if frappe.in_test:
 			return
 		failed = bool(error) or not response.ok
 		if failed and not error:
 			error = f"{response.status_code} {response.reason or ''}".strip()
+		if retry_in is not None:
+			error = f"{error}\nSent again in {retry_in:.1f} s"
 		elapsed = f" ({response.elapsed.total_seconds():.2f} s)" if response is not None else ""
 		deferred_insert(
 			"Integration Request",
@@ -86,6 +123,57 @@ class WooCommerceAPI(API):
 				}
 			],
 		)
+
+
+def get_retry_delay(method: str, attempt: int, started: float, response=None, error=None) -> float | None:
+	"""
+	How many seconds to wait before sending a request again, or None to keep what it got.
+
+	A request is sent again when the shop turned it away as busy (429), failed (5xx), or the connection
+	dropped. It waits 1, 2 and 4 seconds, a little longer at random so that parallel jobs don't come back
+	together, or the Retry-After the shop asks for when that is longer. It does so at most MAX_RETRIES
+	times, and only while the next try starts within the time limit, which counts the slow failed tries
+	too. A shop that asks for a longer wait, as WordPress does while it is being updated, isn't waited for.
+
+	A POST is only sent again after a 429, which turns a request away before it is handled: after a 5xx
+	or a dropped connection the shop may have made the record already. A timeout isn't retried, as the
+	shop has had 40 seconds to answer, and neither is an SSL error, which another try doesn't mend.
+	"""
+	if attempt >= MAX_RETRIES:
+		return None
+	retry_after = None
+	if response is not None:
+		if response.status_code != 429 and (response.status_code < 500 or method == "POST"):
+			return None
+		retry_after = parse_retry_after(response.headers.get("Retry-After"))
+	elif (
+		method == "POST"
+		or not isinstance(error, requests.exceptions.ConnectionError)
+		or isinstance(error, requests.exceptions.SSLError | requests.exceptions.Timeout)
+	):
+		return None
+
+	delay = max(2**attempt * random.uniform(1, 1.5), retry_after or 0)
+	time_limit = RETRY_TIME_LIMIT_IN_REQUEST if frappe.request else RETRY_TIME_LIMIT
+	if monotonic() - started + delay > time_limit:
+		return None
+	return delay
+
+
+def parse_retry_after(value) -> float | None:
+	"""
+	The seconds a Retry-After header asks to wait. It gives them as a number, or as the date to wait for.
+	"""
+	value = cstr(value).strip()
+	if value.isdigit():
+		return float(value)
+	try:
+		date = parsedate_to_datetime(value)
+	except ValueError:
+		return None
+	if date.tzinfo is None:
+		date = date.replace(tzinfo=UTC)
+	return max(0.0, (date - datetime.now(UTC)).total_seconds())
 
 
 # Frappe fields that are derived on our side, so there is nothing to request from WooCommerce for them

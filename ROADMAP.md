@@ -101,12 +101,6 @@ Start at: `sync_items.to_item_name`, `SynchroniseItem.create_or_update_item_attr
 
 ## API and lists
 
-### Retries on rate limits and server errors
-
-A 429 or 5xx from the shop fails the request at once, and the sync job with it. Retry with backoff in the client, honouring `Retry-After`.
-
-Start at: `WooCommerceAPI._API__request` in `woocommerce/woocommerce_api.py`.
-
 ### Sorted lists across several shops
 
 With more than one shop, a list page holds one shop's records and then the next's, sorted within the page only. A true merge needs `start + page_length` records from each shop, merged and then cut to the page.
@@ -120,6 +114,12 @@ Start at: `WooCommerceDocument.get_list_of_records`.
 `WooCommerce Server.secret` is a read-only Small Text, so it is stored in plain text. Make it a Password field, read with `get_password` in `endpoint.validate_request`, and add a patch that moves the existing secrets.
 
 Start at: `woocommerce_server.json`, `endpoint.validate_request`, and `view_webhook_config` in `woocommerce_server.js`, which shows the secret.
+
+### A credentials check that says what failed
+
+Saving an enabled server with new keys asks the shop for its `system_status`, and any answer but a 200 reads as "WooCommerce API credentials are not valid": a shop that is down (a 5xx, once the retries are spent), a firewall or security plugin that blocks the request (403), or a REST API that is switched off (404). Only a 401 says the keys are wrong. For anything else, say what the shop answered.
+
+Start at: `WooCommerceServer.test_api_credentials`.
 
 ### Roles beyond System Manager
 

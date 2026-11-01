@@ -1,8 +1,12 @@
 import json
-from datetime import timedelta
+from contextlib import nullcontext
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
+from http import HTTPStatus
 from unittest.mock import MagicMock, patch
 
 import frappe
+import requests
 from frappe import _dict
 from frappe.tests import IntegrationTestCase
 from woocommerce import API
@@ -18,6 +22,7 @@ from woocommerce_conduit.woocommerce.woocommerce_api import (
 	get_api_clients,
 	get_servers_from_filters,
 	map_frappe_filters_to_wc_params,
+	parse_retry_after,
 )
 
 DATES = {"date_created": "2025-01-01T10:00:00", "date_modified": "2025-01-02T10:00:00"}
@@ -198,13 +203,14 @@ class TestApiClients(IntegrationTestCase):
 		self.assertEqual(first[0].woocommerce_server, "one.example.com")
 
 
-def make_response(status_code: int, text: str = "{}") -> MagicMock:
+def make_response(status_code: int, text: str = "{}", headers: dict | None = None) -> MagicMock:
 	return MagicMock(
 		status_code=status_code,
 		ok=status_code < 400,
-		reason="Not Found" if status_code == 404 else "OK",
+		reason=HTTPStatus(status_code).phrase,
 		text=text,
 		elapsed=timedelta(seconds=0.25),
+		headers=headers or {},
 	)
 
 
@@ -264,10 +270,136 @@ class TestRequestLog(IntegrationTestCase):
 
 	def test_a_long_response_is_cut_short(self):
 		log = self.logged(
-			self.request(make_response(500, "x" * (woocommerce_api.LOGGED_RESPONSE_LENGTH + 10)))
+			self.request(make_response(400, "x" * (woocommerce_api.LOGGED_RESPONSE_LENGTH + 10)))
 		)
 
 		self.assertEqual(len(log["output"]), woocommerce_api.LOGGED_RESPONSE_LENGTH)
+
+
+def get_order(api: WooCommerceAPI):
+	return api.get("orders/12")
+
+
+def post_refund(api: WooCommerceAPI):
+	return api.post("orders/12/refunds", {"amount": "10.00"})
+
+
+class TestRetries(IntegrationTestCase):
+	def send(self, *answers, request=get_order, in_web_request: bool = False):
+		"""
+		Send a request that the shop answers with each of `answers` in turn, a response or an error, and
+		return what the client returns. `tries` counts the requests sent, `waits` the seconds waited before
+		each retry.
+		"""
+		api = WooCommerceAPI("https://shop.example.com", "ck", "cs", woocommerce_server="shop.example.com")
+		with (
+			patch.object(API, "_API__request", side_effect=answers) as sent,
+			patch.object(woocommerce_api, "sleep") as sleep,
+			# Without the random part of the wait
+			patch.object(woocommerce_api.random, "uniform", return_value=1),
+			patch.object(frappe, "request", MagicMock(), create=True) if in_web_request else nullcontext(),
+		):
+			try:
+				return request(api)
+			finally:
+				self.tries = sent.call_count
+				self.waits = [call.args[0] for call in sleep.call_args_list]
+
+	def test_a_request_the_shop_turned_away_is_sent_again(self):
+		response = self.send(make_response(429), make_response(200))
+
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(self.waits, [1])
+
+	def test_a_failing_shop_is_tried_three_more_times_with_longer_waits(self):
+		response = self.send(*[make_response(503)] * 5)
+
+		self.assertEqual(response.status_code, 503)
+		self.assertEqual(self.tries, 4)
+		self.assertEqual(self.waits, [1, 2, 4])
+
+	def test_the_wait_the_shop_asks_for_is_kept(self):
+		self.send(make_response(429, headers={"Retry-After": "7"}), make_response(200))
+
+		self.assertEqual(self.waits, [7])
+
+	def test_the_shop_can_ask_to_wait_until_a_date(self):
+		in_a_minute = format_datetime(datetime.now(UTC) + timedelta(minutes=1), usegmt=True)
+
+		self.send(make_response(503, headers={"Retry-After": in_a_minute}), make_response(200))
+
+		self.assertAlmostEqual(self.waits[0], 60, delta=2)
+
+	def test_a_shop_that_asks_for_a_long_wait_is_not_waited_for(self):
+		# As WordPress answers while it is being updated
+		response = self.send(make_response(503, headers={"Retry-After": "600"}), make_response(200))
+
+		self.assertEqual(response.status_code, 503)
+		self.assertEqual(self.waits, [])
+
+	def test_a_person_waiting_for_a_page_is_not_kept_waiting_as_long(self):
+		answers = (make_response(429, headers={"Retry-After": "30"}), make_response(200))
+
+		self.assertEqual(self.send(*answers).status_code, 200)
+		self.assertEqual(self.send(*answers, in_web_request=True).status_code, 429)
+		self.assertEqual(self.waits, [])
+
+	def test_an_answer_another_try_would_not_change_is_kept(self):
+		for status_code in (400, 401, 404):
+			with self.subTest(status_code=status_code):
+				response = self.send(make_response(status_code), make_response(200))
+
+				self.assertEqual(response.status_code, status_code)
+				self.assertEqual(self.tries, 1)
+
+	def test_a_post_is_only_sent_again_when_the_shop_turned_it_away(self):
+		# After a 5xx the shop may have made the refund already
+		self.assertEqual(
+			self.send(make_response(500), make_response(201), request=post_refund).status_code, 500
+		)
+		self.assertEqual(
+			self.send(make_response(429), make_response(201), request=post_refund).status_code, 201
+		)
+
+	def test_a_dropped_connection_is_tried_again(self):
+		response = self.send(
+			requests.exceptions.ConnectionError("Connection reset by peer"), make_response(200)
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(self.waits, [1])
+
+	def test_a_timeout_a_bad_certificate_or_a_post_that_lost_its_connection_is_not_tried_again(self):
+		for error, request in (
+			(requests.exceptions.ReadTimeout(), get_order),
+			(requests.exceptions.ConnectTimeout(), get_order),
+			(requests.exceptions.SSLError(), get_order),
+			(requests.exceptions.ConnectionError(), post_refund),
+		):
+			with self.subTest(error=type(error).__name__, request=request.__name__):
+				with self.assertRaises(type(error)):
+					self.send(error, make_response(200), request=request)
+				self.assertEqual(self.tries, 1)
+
+	def test_each_failed_try_is_logged_as_sent_again(self):
+		with (
+			patch.object(woocommerce_api, "deferred_insert") as deferred_insert,
+			patch.object(frappe, "in_test", False),
+		):
+			self.send(make_response(429), make_response(200))
+
+		# The 200 isn't, as the server doesn't log every request
+		deferred_insert.assert_called_once()
+		log = deferred_insert.call_args.args[1][0]
+		self.assertEqual(log["status"], "Failed")
+		self.assertEqual(log["error"], "429 Too Many Requests\nSent again in 1.0 s")
+
+	def test_retry_after_is_read_as_seconds_or_as_a_date(self):
+		self.assertEqual(parse_retry_after("120"), 120)
+		# A date that has passed means no wait
+		self.assertEqual(parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), 0)
+		self.assertIsNone(parse_retry_after(None))
+		self.assertIsNone(parse_retry_after("soon"))
 
 
 class TestFilters(IntegrationTestCase):
