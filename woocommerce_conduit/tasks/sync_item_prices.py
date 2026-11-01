@@ -1,10 +1,13 @@
 import time
+from collections import defaultdict
+from datetime import date
 
 import frappe
+from erpnext.stock.get_item_details import get_item_prices_for_stock_uom
 from frappe import _, _dict, qb
 from frappe.query_builder import Criterion
 from frappe.query_builder.functions import IfNull
-from frappe.utils import create_batch, get_datetime
+from frappe.utils import create_batch, get_datetime, getdate, today
 
 from woocommerce_conduit.tasks.sync import enqueue_after_commit_unless_queued, record_sync_time
 from woocommerce_conduit.woocommerce.doctype.woocommerce_product.woocommerce_product import (
@@ -29,6 +32,17 @@ def _format_sale_date(date_value) -> str | None:
 	if not date_value or not (value := get_datetime(date_value)):
 		return None
 	return value.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def pick_sale(rows: list, on_date: date):
+	"""
+	The sale of a product to show in the shop, of those that haven't ended: the running one that ERPNext
+	would charge (the one that started last), else the next one to start, which WooCommerce schedules
+	"""
+	running = [row for row in rows if not row.valid_from or getdate(row.valid_from) <= on_date]
+	if running:
+		return max(running, key=lambda row: getdate(row.valid_from or "2000-01-01"))
+	return min(rows, key=lambda row: getdate(row.valid_from))
 
 
 def item_wide_price_conditions(ip) -> list:
@@ -146,41 +160,57 @@ class SynchroniseItemPrice:
 
 	def get_erpnext_item_prices(self) -> None:
 		"""
-		Get list of ERPNext Item Prices to synchronise,
+		The Items linked to products of the server, each with its price in the server's Price List: the Item
+		Price that ERPNext would charge today (valid today, in the stock UOM, for anyone, the newest)
 		"""
-		if not self.wc_server:
-			return
 		self.item_price_list = []
-		if self.wc_server.enabled and self.wc_server.enable_price_list_sync and self.wc_server.price_list:
-			ip = qb.DocType("Item Price")
-			iwc = qb.DocType("Item WooCommerce Server")
-			item = qb.DocType("Item")
-			and_conditions = []
-			and_conditions.append(ip.price_list == self.wc_server.price_list)
-			and_conditions.append(iwc.woocommerce_server == self.wc_server.name)
-			and_conditions.append(iwc.enable_sync == 1)
-			if not self.wc_server.sync_prices_for_disabled_items:
-				and_conditions.append(item.disabled == 0)
-			and_conditions.append(iwc.woocommerce_id.isnotnull())
-			and_conditions.extend(item_wide_price_conditions(ip))
-			if self.item_codes:
-				and_conditions.append(ip.item_code.isin(self.item_codes))
+		server = self.wc_server
+		if not (server and server.enabled and server.enable_price_list_sync and server.price_list):
+			return
 
-			self.item_price_list = (  # pyright: ignore[reportCallIssue]
-				qb.from_(ip)
-				.inner_join(iwc)
-				.on(iwc.parent == ip.item_code)
-				.inner_join(item)
-				.on(item.name == ip.item_code)
-				.select(ip.name, ip.item_code, ip.price_list_rate, iwc.woocommerce_server, iwc.woocommerce_id)
-				.where(Criterion.all(and_conditions))
-				.run(as_dict=True)
-			)
+		connections = self.get_connections()
+		prices = get_item_prices_for_stock_uom(
+			{"price_list": server.price_list, "transaction_date": today()},
+			list(dict.fromkeys(connection.item_code for connection in connections)),
+		)
+		self.item_price_list = [
+			_dict(connection, price_list_rate=prices[connection.item_code].price_list_rate)
+			for connection in connections
+			if connection.item_code in prices
+		]
+
+	def get_connections(self) -> list:
+		"""
+		The Items whose prices go to products of the server, with the ids of the products
+		"""
+		iwc = qb.DocType("Item WooCommerce Server")
+		item = qb.DocType("Item")
+		conditions = [
+			iwc.parenttype == "Item",
+			iwc.woocommerce_server == self.wc_server.name,
+			iwc.enable_sync == 1,
+			iwc.woocommerce_id.isnotnull(),
+		]
+		# Both price queries have to agree on this. A disabled Item that got a regular price but no sale
+		# would have its sale cleared as though the sale had been withdrawn.
+		if not self.wc_server.sync_prices_for_disabled_items:
+			conditions.append(item.disabled == 0)
+		if self.item_codes:
+			conditions.append(iwc.parent.isin(self.item_codes))
+
+		return (  # pyright: ignore[reportCallIssue]
+			qb.from_(iwc)
+			.inner_join(item)
+			.on(item.name == iwc.parent)
+			.select(iwc.parent.as_("item_code"), iwc.woocommerce_server, iwc.woocommerce_id)
+			.where(Criterion.all(conditions))
+			.run(as_dict=True)
+		)
 
 	def get_erpnext_sale_prices(self) -> None:
 		"""
-		Build a lookup map of woocommerce_id -> sale Item Price record using the
-		server's configured Sales Price List.
+		Build a lookup map of woocommerce_id -> the sale (Item Price) of the server's Sales Price List to show,
+		see pick_sale
 		"""
 		self.sale_price_map = {}
 		server = self.wc_server
@@ -196,17 +226,20 @@ class SynchroniseItemPrice:
 		ip = qb.DocType("Item Price")
 		iwc = qb.DocType("Item WooCommerce Server")
 		item = qb.DocType("Item")
+		on_date = getdate(today())
 
 		and_conditions = [
 			ip.price_list == server.sales_price_list,
 			iwc.woocommerce_server == server.name,
-			# Same as the regular price query, see below
+			# Same as the regular price query, see get_connections
 			iwc.enable_sync == 1,
 			iwc.woocommerce_id.isnotnull(),
 			*item_wide_price_conditions(ip),
+			# In the stock UOM, like the regular price
+			(IfNull(ip.uom, "") == "") | (ip.uom == item.stock_uom),
+			# A sale that has ended doesn't count
+			IfNull(ip.valid_upto, "2500-12-31") >= on_date,
 		]
-		# Both queries have to agree on this. A disabled Item that reached the regular price list but
-		# not this map would have its sale price cleared as though the sale had been withdrawn.
 		if not server.sync_prices_for_disabled_items:
 			and_conditions.append(item.disabled == 0)
 		if self.item_codes:
@@ -225,8 +258,12 @@ class SynchroniseItemPrice:
 			.run(as_dict=True)
 		)
 
+		sales = defaultdict(list)
 		for row in results:
-			self.sale_price_map[row.woocommerce_id] = row
+			sales[row.woocommerce_id].append(row)
+		self.sale_price_map = {
+			woocommerce_id: pick_sale(rows, on_date) for woocommerce_id, rows in sales.items()
+		}
 
 	def sync_items_with_woocommerce_products(self) -> None:
 		"""

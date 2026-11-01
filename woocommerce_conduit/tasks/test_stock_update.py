@@ -13,10 +13,12 @@ from woocommerce_conduit.tasks.stock_update import (
 	apply_stock_value_hooks,
 	enqueue_stock_update,
 	forget_pending_stock_updates,
+	get_warehouses_with_descendants,
 	get_woocommerce_stock_values,
 	push_pending_stock_updates,
 	update_stock_levels_for_all_enabled_items_in_background,
 	update_stock_levels_for_woocommerce_item,
+	update_stock_levels_from_ledger,
 	update_stock_levels_on_woocommerce_site,
 )
 
@@ -79,6 +81,18 @@ class TestStockValues(IntegrationTestCase):
 
 	def test_the_shops_backorder_setting_is_left_alone(self):
 		self.assertNotIn("backorders", stock_values(make_server(), bins=BINS[2:]))
+
+
+class TestWarehouses(IntegrationTestCase):
+	def test_a_group_counts_with_the_warehouses_under_it(self):
+		# As ERPNext's get_child_warehouses has them: the warehouses under it, and itself
+		tree = {"All Stores": ["Stores", "Shop Floor", "All Stores"], "Elsewhere": ["Elsewhere"]}
+		rows = [_dict(warehouse="All Stores"), _dict(warehouse="Elsewhere"), _dict(warehouse=None)]
+
+		with patch.object(stock_update, "get_child_warehouses", side_effect=lambda name: tree[name]):
+			warehouses = get_warehouses_with_descendants(rows)
+
+		self.assertEqual(warehouses, {"All Stores", "Stores", "Shop Floor", "Elsewhere"})
 
 
 class TestStockValueHooks(IntegrationTestCase):
@@ -199,13 +213,13 @@ class TestStockHook(IntegrationTestCase):
 	def tearDown(self):
 		forget_pending_stock_updates()
 
-	def run_hook(self, *docs, linked=("CUP-1", "MUG-1"), reserved_stock_counts=False):
+	def run_hook(self, *docs, linked=("CUP-1", "MUG-1"), reserved_stock_counts=False, enabled=True):
 		"""
-		Run the hook for the documents and then what runs after the commit, and return the push jobs
+		Run the hooks for the documents and then what runs after the commit, and return the push jobs
 		"""
 		with (
 			patch.dict(frappe.flags, {"in_test": False}),
-			patch.object(stock_update, "stock_sync_is_enabled", return_value=True),
+			patch.object(stock_update, "stock_sync_is_enabled", return_value=enabled),
 			patch.object(stock_update, "reserved_stock_is_subtracted", return_value=reserved_stock_counts),
 			patch.object(frappe.db, "after_commit") as after_commit,
 			patch.object(frappe.db, "after_rollback"),
@@ -217,7 +231,10 @@ class TestStockHook(IntegrationTestCase):
 			patch.object(stock_update, "enqueue_unless_queued") as enqueue,
 		):
 			for doc in docs:
-				update_stock_levels_for_woocommerce_item(doc)
+				if doc.doctype == "Stock Ledger Entry":
+					update_stock_levels_from_ledger(doc)
+				else:
+					update_stock_levels_for_woocommerce_item(doc)
 			push_pending_stock_updates()
 		self.after_commit = after_commit
 		return enqueue
@@ -226,25 +243,23 @@ class TestStockHook(IntegrationTestCase):
 	def pushed(enqueue) -> list[str]:
 		return [call.kwargs["item_code"] for call in enqueue.call_args_list]
 
-	def test_each_item_of_a_transaction_is_pushed_once_after_commit(self):
-		first = _dict(doctype="Stock Entry", items=[_dict(item_code="MUG-1"), _dict(item_code="MUG-1")])
-		second = _dict(doctype="Delivery Note", items=[_dict(item_code="CUP-1"), _dict(item_code="MUG-1")])
+	@staticmethod
+	def ledger(item_code):
+		return _dict(doctype="Stock Ledger Entry", item_code=item_code)
 
-		enqueue = self.run_hook(first, second)
+	def test_each_item_of_a_transaction_is_pushed_once_after_commit(self):
+		# A transfer moves MUG-1 out of one warehouse and into another, then CUP-1 is delivered
+		enqueue = self.run_hook(self.ledger("MUG-1"), self.ledger("MUG-1"), self.ledger("CUP-1"))
 
 		self.assertEqual(self.pushed(enqueue), ["CUP-1", "MUG-1"])
 		self.after_commit.add.assert_called_once_with(push_pending_stock_updates)
 		self.assertEqual(enqueue.call_args.kwargs["job_id"], "woocommerce_stock_update::MUG-1")
 
 	def test_an_item_that_is_not_linked_to_woocommerce_is_not_pushed(self):
-		enqueue = self.run_hook(_dict(doctype="Stock Entry", items=[_dict(item_code="BOLT-1")]))
+		self.run_hook(self.ledger("BOLT-1")).assert_not_called()
 
-		enqueue.assert_not_called()
-
-	def test_an_invoice_that_does_not_move_stock_is_skipped(self):
-		doc = _dict(doctype="Sales Invoice", update_stock=0, items=[_dict(item_code="MUG-1")])
-
-		self.run_hook(doc).assert_not_called()
+	def test_nothing_is_pushed_while_stock_sync_is_off(self):
+		self.run_hook(self.ledger("MUG-1"), enabled=False).assert_not_called()
 
 	def test_a_sales_order_only_counts_where_reserved_stock_is_subtracted(self):
 		doc = _dict(doctype="Sales Order", items=[_dict(item_code="MUG-1")])

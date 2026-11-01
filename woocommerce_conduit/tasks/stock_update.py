@@ -1,6 +1,7 @@
 import math
 
 import frappe
+from erpnext.stock.doctype.warehouse.warehouse import get_child_warehouses
 from frappe import _
 from frappe.utils import create_batch
 
@@ -13,18 +14,6 @@ from woocommerce_conduit.woocommerce.woocommerce_api import (
 	generate_woocommerce_record_name_from_domain_and_id,
 )
 
-# Documents whose submission or cancellation changes an Item's stock (or reserved stock)
-STOCK_DOCTYPES = (
-	"Stock Entry",
-	"Stock Reconciliation",
-	"Delivery Note",
-	"Purchase Receipt",
-	"Sales Invoice",
-	"Purchase Invoice",
-	"Sales Order",
-)
-# Invoices only move stock when they are set to update it
-INVOICE_DOCTYPES = ("Sales Invoice", "Purchase Invoice")
 # The Items one job of the daily push takes: as many as one WooCommerce batch request takes
 ITEMS_PER_JOB = 100
 # The Items whose stock the current transaction changed, kept in frappe.flags until it is committed
@@ -52,19 +41,24 @@ def reserved_stock_is_subtracted() -> bool:
 	)
 
 
+def update_stock_levels_from_ledger(doc, method=None):
+	"""
+	Intended to be triggered by the on_submit of a Stock Ledger Entry. ERPNext submits one for every stock
+	movement of every document, and one that reverses it when the document is cancelled, so no stock change
+	is missed, whichever doctype makes it. Each Item is pushed once the transaction is committed.
+	"""
+	if frappe.flags.in_test or not doc.item_code:
+		return
+	enqueue_stock_updates({doc.item_code})
+
+
 def update_stock_levels_for_woocommerce_item(doc, method=None):
 	"""
-	Intended to be triggered by a Document Controller hook (on_submit and on_cancel) from the documents in
-	STOCK_DOCTYPES. Pushes the stock of each Item in the document once the change is committed.
+	Intended to be triggered by the on_submit and on_cancel of a Sales Order. A Sales Order reserves stock
+	without a Stock Ledger Entry, and that only counts on a server that subtracts reserved stock.
 	"""
-	if frappe.flags.in_test or doc.doctype not in STOCK_DOCTYPES or not stock_sync_is_enabled():
+	if frappe.flags.in_test or doc.doctype != "Sales Order" or not reserved_stock_is_subtracted():
 		return
-	if doc.doctype in INVOICE_DOCTYPES and not doc.get("update_stock"):
-		return
-	# A Sales Order only reserves stock, which only counts on a server that subtracts it
-	if doc.doctype == "Sales Order" and not reserved_stock_is_subtracted():
-		return
-
 	enqueue_stock_updates({row.item_code for row in doc.get("items") or [] if row.item_code})
 
 
@@ -92,7 +86,11 @@ def enqueue_stock_updates(item_codes: set[str]):
 
 
 def push_pending_stock_updates():
-	for item_code in get_linked_items(frappe.flags.pop(PENDING_ITEMS_FLAG, None)):
+	item_codes = frappe.flags.pop(PENDING_ITEMS_FLAG, None)
+	# Checked once a transaction, not for each of its Stock Ledger Entries
+	if not item_codes or not stock_sync_is_enabled():
+		return
+	for item_code in get_linked_items(item_codes):
 		enqueue_unless_queued(
 			"woocommerce_conduit.tasks.stock_update.update_stock_levels_on_woocommerce_site",
 			job_id=f"woocommerce_stock_update::{item_code}",
@@ -269,16 +267,7 @@ def get_warehouses_with_descendants(rows) -> set[str]:
 	"""
 	warehouses = set()
 	for row in rows or []:
-		if not row.warehouse:
-			continue
-		warehouses.add(row.warehouse)
-		bounds = frappe.db.get_value("Warehouse", row.warehouse, ["lft", "rgt", "is_group"], as_dict=True)
-		if bounds and bounds.is_group:
-			warehouses.update(
-				frappe.get_all(
-					"Warehouse",
-					filters={"lft": [">", bounds.lft], "rgt": ["<", bounds.rgt]},
-					pluck="name",
-				)
-			)
+		if row.warehouse:
+			# ERPNext's own tree walk, cached for the request
+			warehouses.update(get_child_warehouses(row.warehouse))
 	return warehouses

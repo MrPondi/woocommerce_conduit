@@ -39,29 +39,9 @@ doc_events = {
 	"Item Price": {
 		"on_update": "woocommerce_conduit.tasks.sync_item_prices.update_item_price_for_woocommerce_item_from_hook",
 	},
-	"Stock Entry": {
-		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-	},
-	"Stock Reconciliation": {
-		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-	},
-	"Delivery Note": {
-		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-	},
-	"Purchase Receipt": {
-		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-	},
-	"Sales Invoice": {
-		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-	},
-	"Purchase Invoice": {
-		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
-		"on_cancel": "woocommerce_conduit.tasks.stock_update.update_stock_levels_for_woocommerce_item",
+	# Every stock movement and its reversal, whichever document makes it
+	"Stock Ledger Entry": {
+		"on_submit": "woocommerce_conduit.tasks.stock_update.update_stock_levels_from_ledger",
 	},
 }
 

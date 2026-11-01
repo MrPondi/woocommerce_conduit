@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Karol Parzonka and Contributors
 # See license.txt
 
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -11,6 +12,7 @@ from woocommerce_conduit import hooks
 from woocommerce_conduit.tasks import sync_item_prices
 from woocommerce_conduit.tasks.sync_item_prices import (
 	SynchroniseItemPrice,
+	pick_sale,
 	run_item_price_sync_in_background,
 	update_item_price_for_woocommerce_item_from_hook,
 )
@@ -118,6 +120,63 @@ class TestPricePush(IntegrationTestCase):
 		)
 
 		write.assert_called_once_with({"sale_price": 0})
+
+
+class TestPriceChoice(IntegrationTestCase):
+	def test_the_regular_price_is_the_one_erpnext_would_charge(self):
+		server = _dict(
+			name="one.example.com", enabled=1, enable_price_list_sync=1, price_list="Standard Selling"
+		)
+		sync = SynchroniseItemPrice(servers=[server])
+		sync.wc_server = server
+		connections = [
+			_dict(item_code="MUG-1", woocommerce_server="one.example.com", woocommerce_id="12"),
+			_dict(item_code="CUP-1", woocommerce_server="one.example.com", woocommerce_id="13"),
+		]
+		with (
+			patch.object(sync, "get_connections", return_value=connections),
+			patch.object(sync_item_prices, "today", return_value="2026-11-01"),
+			patch.object(
+				sync_item_prices,
+				"get_item_prices_for_stock_uom",
+				return_value={"MUG-1": _dict(price_list_rate=15.0)},
+			) as get_item_prices,
+		):
+			sync.get_erpnext_item_prices()
+
+		pctx, item_codes = get_item_prices.call_args.args
+		self.assertEqual(pctx, {"price_list": "Standard Selling", "transaction_date": "2026-11-01"})
+		self.assertEqual(item_codes, ["MUG-1", "CUP-1"])
+		# CUP-1 has no price in the list, so its product is left alone
+		self.assertEqual(
+			sync.item_price_list,
+			[
+				_dict(
+					item_code="MUG-1",
+					woocommerce_server="one.example.com",
+					woocommerce_id="12",
+					price_list_rate=15.0,
+				)
+			],
+		)
+
+	def test_the_running_sale_that_started_last_is_shown(self):
+		rows = [
+			_dict(name="old", valid_from=date(2026, 10, 1)),
+			_dict(name="current", valid_from=date(2026, 10, 20)),
+			_dict(name="next", valid_from=date(2026, 12, 1)),
+		]
+		self.assertEqual(pick_sale(rows, date(2026, 11, 1)).name, "current")
+
+	def test_without_a_running_sale_the_next_one_is_scheduled(self):
+		rows = [
+			_dict(name="later", valid_from=date(2027, 1, 1)),
+			_dict(name="next", valid_from=date(2026, 12, 1)),
+		]
+		self.assertEqual(pick_sale(rows, date(2026, 11, 1)).name, "next")
+
+	def test_a_sale_without_a_start_is_running(self):
+		self.assertEqual(pick_sale([_dict(name="always", valid_from=None)], date(2026, 11, 1)).name, "always")
 
 
 class TestDailyPricePush(IntegrationTestCase):
