@@ -33,6 +33,7 @@
   "default_item_tax_template",
   "column_break_fjij",
   "freight_and_forwarding_account",
+  "fee_account",
   "tax_class_section",
   "load_tax_classes",
   "tax_class_map",
@@ -115,7 +116,6 @@
    "description": "When prices or stock were last pushed to this shop",
    "fieldname": "last_sync_time",
    "fieldtype": "Datetime",
-   "hidden": 1,
    "in_list_view": 1,
    "label": "Last Sync Time",
    "read_only": 1
@@ -308,6 +308,13 @@
    "reqd": 1
   },
   {
+   "description": "The fees of an order (its fee lines, such as a cash on delivery charge) are booked here. Empty: on the Freight and Forwarding Account.",
+   "fieldname": "fee_account",
+   "fieldtype": "Link",
+   "label": "Fee Account",
+   "options": "Account"
+  },
+  {
    "fieldname": "sales_taxes_and_charges_template",
    "fieldtype": "Link",
    "label": "Sales Taxes and Charges Template",
@@ -494,7 +501,7 @@
  "icon": "server-plus",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-01 14:16:49.224520",
+ "modified": "2026-11-01 14:26:58.586831",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",

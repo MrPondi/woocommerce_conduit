@@ -3,13 +3,20 @@
 
 frappe.ui.form.on("WooCommerce Server", {
 	setup(frm) {
-		// Only list enabled warehouses
+		// The enabled warehouses of the server's company. A group counts with the warehouses under it.
 		frm.set_query("warehouses", () => ({
 			filters: {
 				disabled: 0,
-				is_group: 0,
+				company: frm.doc.company,
 			},
 		}));
+
+		// Ledger accounts of the server's company
+		const account_query = () => ({
+			filters: { company: frm.doc.company, is_group: 0 },
+		});
+		frm.set_query("freight_and_forwarding_account", account_query);
+		frm.set_query("fee_account", account_query);
 
 		// Only the tax templates of the server's company
 		const tax_template_query = () => ({

@@ -85,6 +85,7 @@ class WooCommerceServer(Document):
 		enabled_order_status: DF.Check
 		enabled_payments_sync: DF.Check
 		enabled_shipping_methods: DF.Check
+		fee_account: DF.Link | None
 		freight_and_forwarding_account: DF.Link
 		item_field_map: DF.Table[WooCommerceServerItemField]
 		item_group: DF.Link
