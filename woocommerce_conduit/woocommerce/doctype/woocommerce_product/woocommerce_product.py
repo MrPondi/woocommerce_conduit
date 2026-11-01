@@ -20,16 +20,20 @@ class WooCommerceProduct(WooCommerceDocument):
 
 		attributes: DF.JSON
 		backorders: DF.Literal["no", "notify", "yes"]
+		brands: DF.JSON | None
+		categories: DF.JSON | None
 		cross_sell_ids: DF.JSON | None
 		date_on_sale_from: DF.Datetime | None
 		date_on_sale_to: DF.Datetime | None
 		description: DF.TextEditor | None
 		downloadable: DF.Check
+		global_unique_id: DF.Data | None
 		height: DF.Float
 		image: DF.AttachImage | None
 		images: DF.JSON
 		length: DF.Float
 		manage_stock: DF.Check
+		meta_data: DF.JSON | None
 		on_sale: DF.Check
 		parent_id: DF.Int
 		permalink: DF.SmallText | None
@@ -47,6 +51,7 @@ class WooCommerceProduct(WooCommerceDocument):
 		status: DF.Literal["draft", "pending", "private", "publish", "trash"]
 		stock_quantity: DF.Int
 		stock_status: DF.Literal["instock", "outofstock", "onbackorder"]
+		tags: DF.JSON | None
 		tax_class: DF.Data | None
 		tax_status: DF.Data | None
 		total_sales: DF.Int
@@ -111,7 +116,7 @@ class WooCommerceProduct(WooCommerceDocument):
 
 	def after_load_from_db(self, record: dict):
 		# Indent the JSON fields so they are readable in the form
-		for fieldname in ("images", "attributes"):
+		for fieldname in ("images", "attributes", "categories", "tags", "brands", "meta_data"):
 			if isinstance(record.get(fieldname), str):
 				record[fieldname] = json.dumps(json.loads(record[fieldname]), indent=2, ensure_ascii=False)
 		record["length"] = record["dimensions"]["length"]

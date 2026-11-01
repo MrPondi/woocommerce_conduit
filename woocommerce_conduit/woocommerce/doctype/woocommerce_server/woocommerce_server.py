@@ -5,11 +5,15 @@ from urllib.parse import urlparse, urlunparse
 
 import frappe
 from frappe import _
-from frappe.model import no_value_fields
 from frappe.model.document import Document
 from frappe.utils import cstr, now
-from jsonpath_ng.ext import parse
 
+from woocommerce_conduit.tasks.field_map import (
+	REFUSED_ITEM_FIELDS,
+	get_item_map_fields,
+	get_product_fields,
+	validate_map_row,
+)
 from woocommerce_conduit.tasks.taxes import get_vat_rows, normalise_tax_class
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 	PAYMENT_OWNED_STATUSES,
@@ -148,6 +152,10 @@ class WooCommerceServer(Document):
 
 		if not self.secret:
 			self.secret = frappe.generate_hash()
+
+	def onload(self):
+		# The Item fields the Item Field Map may not write, which the form leaves out of its choices
+		self.set_onload("refused_item_fields", REFUSED_ITEM_FIELDS)
 
 	def on_update(self):
 		# The clients built earlier in this request may have the old URL or credentials
@@ -500,37 +508,20 @@ class WooCommerceServer(Document):
 
 	def validate_item_map(self):
 		"""
-		Validate Item Map to have valid JSONPath expressions, and Item fields that a value can be written to
+		Each row of the Item Field Map needs an Item field the map may write, and a JSONPath that starts at a
+		field of WooCommerce Product: it runs on the product as the doctype has it, so a path into any other
+		field finds nothing.
 		"""
-		disallowed_fields = ["attributes"]
-
-		# If the built-in image sync is enabled, disallow the image field in the item field map to avoid unexpected behavior
-		if self.enable_image_sync:
-			disallowed_fields.append("images")
-
-		item_meta = frappe.get_meta("Item")
-		if self.item_field_map:
-			for map in self.item_field_map:
-				# The Select stores "fieldname | Label", the sync uses the fieldname
-				fieldname = cstr(map.erpnext_field_name).split(" | ")[0]
-				item_field = item_meta.get_field(fieldname)
-				if not item_field or item_field.fieldtype in no_value_fields:
-					frappe.throw(
-						_(
-							"Item Field Map Row {0}: {1} is not a field of Item that a value can be written to"
-						).format(map.idx, frappe.bold(fieldname))
-					)
-
-				jsonpath_expr = map.woocommerce_field_name
-				try:
-					parse(jsonpath_expr)
-				except Exception as e:
-					frappe.throw(
-						_("Invalid JSONPath syntax in Item Field Map Row {0}:<br><br><pre>{1}</pre>").format(
-							map.idx, e
-						)
-					)
-
-				for field in disallowed_fields:
-					if field in jsonpath_expr:
-						frappe.throw(_("Field '{0}' is not allowed in JSONPath expression").format(field))
+		# The variant sync owns the attributes, and the image sync, when it is on, the Item's image
+		refused_sources = ["attributes", "images"] if self.enable_image_sync else ["attributes"]
+		target_fields, source_fields = get_item_map_fields(), get_product_fields()
+		for row in self.item_field_map:
+			validate_map_row(
+				row,
+				_("Item Field Map"),
+				"Item",
+				target_fields,
+				source_doctype="WooCommerce Product",
+				source_fields=source_fields,
+				refused_sources=refused_sources,
+			)

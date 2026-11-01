@@ -7,7 +7,7 @@ import frappe
 from frappe import _dict
 from frappe.tests import IntegrationTestCase
 
-from woocommerce_conduit.tasks import sync_items
+from woocommerce_conduit.tasks import field_map, sync_items
 from woocommerce_conduit.tasks.sync_items import (
 	ERPNextItemToSync,
 	SynchroniseItem,
@@ -347,6 +347,70 @@ class TestItemFields(IntegrationTestCase):
 
 		self.assertTrue(modified)
 		self.assertEqual(item.description, "MUG-2")
+
+	def map_fields(self, item, product, *rows, item_groups=(), runs=1):
+		server = _dict(
+			item_field_map=[
+				_dict(erpnext_field_name=field, woocommerce_field_name=path, idx=idx)
+				for idx, (field, path) in enumerate(rows, start=1)
+			]
+		)
+		# The Item Groups that exist, by the name as the database spells it
+		groups = {group.lower(): group for group in item_groups}
+		frappe.flags.pop(field_map.LOGGED_PROBLEMS_FLAG, None)
+		with (
+			patch("frappe.get_cached_doc", return_value=server),
+			patch.object(
+				frappe.db,
+				"exists",
+				side_effect=lambda doctype, name=None, *args, **kwargs: groups.get(name.lower()),
+			),
+			patch.object(frappe, "log_error") as log_error,
+		):
+			for _run in range(runs):
+				modified, item = make_sync(woocommerce_product=product).set_item_fields(item)
+		return modified, item, log_error
+
+	def test_a_meta_value_is_found_by_its_key(self):
+		product = make_product(
+			meta_data='[{"key": "_brand", "value": "Stihl"}, {"key": "_gtin", "value": "590"}]'
+		)
+
+		_modified, item, _log_error = self.map_fields(
+			frappe.new_doc("Item"), product, ("item_name | Item Name", "$.meta_data[?key=='_gtin'].value")
+		)
+
+		self.assertEqual(item.item_name, "590")
+
+	def test_a_category_becomes_the_item_group_of_its_name(self):
+		product = make_product(categories='[{"id": 5, "name": "mowers", "slug": "mowers"}]')
+
+		_modified, item, _log_error = self.map_fields(
+			frappe.new_doc("Item"),
+			product,
+			("item_group | Item Group", "$.categories[0].name"),
+			item_groups=["Mowers"],
+		)
+
+		# As the database spells it, so the next sync doesn't take it for a change
+		self.assertEqual(item.item_group, "Mowers")
+
+	def test_values_the_field_can_not_take_are_left_out_and_logged_once(self):
+		product = make_product(categories='[{"name": "Gone"}]', tags='[{"name": "Garden"}]', weight="12,5")
+		rows = (
+			("item_group | Item Group", "$.categories[0].name"),
+			("item_name | Item Name", "$.tags"),
+			("weight_per_unit | Weight", "$.weight"),
+		)
+		item = frappe.new_doc("Item")
+		item.update({"item_group": "Products", "item_name": "Mug", "weight_per_unit": 1.5})
+
+		# Two products with the same problems in one job, as an import has them
+		modified, item, log_error = self.map_fields(item, product, *rows, runs=2)
+
+		self.assertFalse(modified)
+		self.assertEqual((item.item_group, item.item_name, item.weight_per_unit), ("Products", "Mug", 1.5))
+		self.assertEqual(log_error.call_count, 3)
 
 
 class TestItemAttributes(IntegrationTestCase):

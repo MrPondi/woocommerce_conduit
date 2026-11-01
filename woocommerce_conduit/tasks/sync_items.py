@@ -8,9 +8,9 @@ from frappe import ValidationError, _
 from frappe.model.naming import append_number_if_name_exists
 from frappe.query_builder import Criterion
 from frappe.utils import convert_utc_to_system_timezone, cstr, flt, get_datetime, getdate, now
-from jsonpath_ng.ext import parse
 
 from woocommerce_conduit.exceptions import SyncDisabledError
+from woocommerce_conduit.tasks.field_map import get_mapped_values
 from woocommerce_conduit.tasks.taxes import PARENT_TAX_CLASS
 from woocommerce_conduit.woocommerce.doctype.item_woocommerce_server.item_woocommerce_server import (
 	ItemWooCommerceServer,
@@ -775,39 +775,19 @@ class SynchroniseItem:
 		if not wc_server.item_field_map:
 			return False, item
 
-		# Deserialize product data for JSONPath operations
+		# The product as the doctype has it, its JSON fields decoded, for the paths to run on
 		wc_product_data = self.woocommerce_product.deserialize_attributes_of_type_dict_or_list(
 			self.woocommerce_product.to_dict()
 		)
 
 		item_modified = False
-
-		# Process each field mapping
-		for field_map in wc_server.item_field_map:
-			# Parse ERPNext field name
-			erpnext_field_parts = field_map.erpnext_field_name.split(" | ")
-			erpnext_field_name = erpnext_field_parts[0]
-
-			# Extract WooCommerce field value using JSONPath
-			try:
-				jsonpath_expr = parse(field_map.woocommerce_field_name)
-				matches = jsonpath_expr.find(wc_product_data)
-
-				if not matches:
-					continue
-
-				wc_field_value = matches[0].value
-
-				# Only touch fields that differ, so an unchanged product doesn't save (and re-date) the Item
-				if not values_match(item.get(erpnext_field_name), wc_field_value):
-					item.set(erpnext_field_name, wc_field_value)
-					item_modified = True
-
-			except Exception as e:
-				frappe.log_error(
-					f"Error mapping field {field_map.woocommerce_field_name} to {erpnext_field_name}: {e!s}",
-					"WooCommerce Field Mapping Error",
-				)
+		for fieldname, value in get_mapped_values(
+			wc_server.item_field_map, wc_product_data, item.meta, self.woocommerce_product.name
+		).items():
+			# Only touch fields that differ, so an unchanged product doesn't save (and re-date) the Item
+			if not values_match(item.get(fieldname), value):
+				item.set(fieldname, value)
+				item_modified = True
 
 		return item_modified, item
 

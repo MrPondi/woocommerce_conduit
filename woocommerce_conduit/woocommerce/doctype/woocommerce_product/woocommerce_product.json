@@ -39,6 +39,7 @@
   "tax_class",
   "inventory_tab",
   "sku",
+  "global_unique_id",
   "manage_stock",
   "sold_individually",
   "section_break_mrlx",
@@ -66,7 +67,11 @@
   "related_ids",
   "extra_fields_section",
   "images",
-  "attributes"
+  "attributes",
+  "categories",
+  "tags",
+  "brands",
+  "meta_data"
  ],
  "fields": [
   {
@@ -133,6 +138,13 @@
    "fieldname": "sku",
    "fieldtype": "Data",
    "label": "SKU",
+   "read_only": 1
+  },
+  {
+   "description": "The product's GTIN, UPC, EAN or ISBN, from WooCommerce's own field for it",
+   "fieldname": "global_unique_id",
+   "fieldtype": "Data",
+   "label": "GTIN, UPC, EAN or ISBN",
    "read_only": 1
   },
   {
@@ -396,6 +408,31 @@
    "reqd": 1
   },
   {
+   "fieldname": "categories",
+   "fieldtype": "JSON",
+   "label": "Categories",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tags",
+   "fieldtype": "JSON",
+   "label": "Tags",
+   "read_only": 1
+  },
+  {
+   "fieldname": "brands",
+   "fieldtype": "JSON",
+   "label": "Brands",
+   "read_only": 1
+  },
+  {
+   "description": "The fields plugins keep on the product",
+   "fieldname": "meta_data",
+   "fieldtype": "JSON",
+   "label": "Meta Data",
+   "read_only": 1
+  },
+  {
    "depends_on": "eval: doc.on_sale",
    "fieldname": "section_break_iign",
    "fieldtype": "Section Break"
@@ -456,7 +493,7 @@
  "index_web_pages_for_search": 1,
  "is_virtual": 1,
  "links": [],
- "modified": "2026-10-29 00:55:28.880546",
+ "modified": "2026-11-01 21:20:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Product",

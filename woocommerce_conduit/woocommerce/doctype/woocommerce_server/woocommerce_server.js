@@ -28,14 +28,17 @@ frappe.ui.form.on("WooCommerce Server", {
 	},
 
 	refresh(frm) {
-		// The Item fields a WooCommerce field can be mapped to, from Item's meta (custom fields included)
+		// The Item fields a WooCommerce field can be mapped to, from Item's meta (custom fields included),
+		// without those the map may not write
+		const refused = frm.doc.__onload?.refused_item_fields || [];
 		frappe.model.with_doctype("Item", () => {
 			const options = frappe.meta
 				.get_docfields("Item")
 				.filter(
 					(df) =>
 						!frappe.model.no_value_type.includes(df.fieldtype) &&
-						!frappe.model.table_fields.includes(df.fieldtype)
+						!frappe.model.table_fields.includes(df.fieldtype) &&
+						!refused.includes(df.fieldname)
 				)
 				.sort((a, b) => (a.label || a.fieldname).localeCompare(b.label || b.fieldname))
 				.map((df) => `${df.fieldname} | ${df.label || df.fieldname}`)

@@ -56,6 +56,23 @@ class TestWooCommerceProductFields(IntegrationTestCase):
 
 			self.assertTrue({"description", "images", "attributes", "dimensions", "regular_price"} <= fields)
 
+	def test_a_loaded_product_has_its_meta_data_categories_tags_and_gtin(self):
+		# What the Item Field Map can reach, as it runs on the product as the doctype has it
+		fields = set(WooCommerceProduct.get_wc_fields().split(","))
+
+		self.assertTrue({"meta_data", "categories", "tags", "brands", "global_unique_id"} <= fields)
+
+	def test_json_fields_are_indented_for_the_form(self):
+		with patch.object(WooCommerceProduct, "_init_api", return_value=[]):
+			product = frappe.new_doc("WooCommerce Product")
+		dimensions = {"length": "", "width": "", "height": ""}
+		record = product.after_load_from_db(
+			{"dimensions": dimensions, "meta_data": '[{"key": "_gtin", "value": "590"}]', "tags": "[]"}
+		)
+
+		self.assertEqual(record["meta_data"], '[\n  {\n    "key": "_gtin",\n    "value": "590"\n  }\n]')
+		self.assertEqual(record["tags"], "[]")
+
 	def test_extra_fields_can_be_asked_for(self):
 		fields = WooCommerceProduct.get_wc_fields([f"{TABLE}.`sku`"], ["attributes"]).split(",")
 

@@ -8,7 +8,7 @@ woocommerce_fusion, beside this app in the bench's `apps/`, has a working versio
 
 ### Batch pushes
 
-The daily price and stock pushes still go one product at a time: one GET, plus a PUT when something differs. For big catalogues, read 100 products a request and send only the changes to WooCommerce's batch endpoints.
+The daily price and stock pushes still go one product at a time: one GET, plus a PUT when something differs. For big catalogues, read 100 products a request and send only the changes to WooCommerce's batch endpoints. Each push also loads the whole product (`load_from_db` asks for every field of the doctype), its `meta_data` included since the Item Field Map can reach it, where the pushes need only the price and stock fields.
 
 - Read: `products?include=<ids>`, 100 at a time. The API layer turns a `woocommerce_id in` filter into `include`. Read variations through `products/{parent}/variations?include=…`, finding the parent through the Item's `variant_of` (Fusion's `tasks/sync.py:get_variation_parent_woocommerce_id`).
 - Compare: with `get_changes`, as now. WooCommerce dates every save as a change and fires its product-updated hooks, so an unchanged product must not be written. Fusion's batch path writes them all; don't copy that part.
@@ -71,12 +71,6 @@ Every account in the shop becomes a Customer of its own, so a B2B shop gets one 
 Start at: `SynchroniseSalesOrder.create_or_link_customer_and_address`, Fusion's `find_customer_by_email_domain`.
 
 ## Items
-
-### Meta data, categories and tags in the Item Field Map
-
-The Item Field Map reads the product as the doctype has it: `load_from_db` asks WooCommerce for the doctype's fields only (`get_wc_fields`), and `to_dict` returns no others. So a mapping can't reach `meta_data` (a GTIN, a brand, any plugin's field) or `categories` (for the Item Group, say), and finds nothing without saying so. Fusion's WooCommerce Product has `meta_data`, `categories` and `tags` as JSON fields. `validate_item_map` could also refuse a path into a field the doctype doesn't have. The field transforms below build on this.
-
-Start at: `woocommerce_product.json`, `WooCommerceProduct.after_load_from_db`, `SynchroniseItem.set_item_fields`.
 
 ### Field transforms and order line field mapping
 
