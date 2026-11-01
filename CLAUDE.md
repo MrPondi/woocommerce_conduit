@@ -26,6 +26,10 @@ Lint/format (run in the app dir): `pre-commit run --all-files`. It uses ruff 0.1
 - Python style: **tabs** for indentation, double quotes, line length 110, target py314, the Python Frappe v16 needs (see `[tool.ruff]` in `pyproject.toml`). Annotations aren't quoted, as 3.14 evaluates them lazily.
 - CI (`.github/workflows/ci.yml`) installs the app on a fresh bench of the pinned Frappe and ERPNext versions (`TEST_AGAINST_FRAPPE_VERSION`, `TEST_AGAINST_ERPNEXT_VERSION`; Python 3.14, Node 24) and runs `run-tests --app woocommerce_conduit`. `linter.yml` runs Frappe Semgrep rules and pip-audit.
 
+## Roadmap and follow-ups
+
+[ROADMAP.md](ROADMAP.md) lists what is still to be built, by area, each entry with why it matters and where to start. Add to it whenever you come across a feature to build, a gap, or a follow-up that the current task won't cover, instead of only listing it in your reply, where it gets lost. Keep entries in the same shape. Put a choice that the user has to make under Open questions. Remove an entry in the commit that does it. The README links to ROADMAP.md rather than keeping a TODO list of its own.
+
 ## Architecture
 
 ### Virtual doctypes backed by the WooCommerce REST API
