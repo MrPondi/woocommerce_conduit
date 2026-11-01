@@ -330,11 +330,16 @@ class SalesOrderLinesMixin:
 				"rate": row["rate"],
 				"delivery_date": row.get("delivery_date") or sales_order.delivery_date,
 				"warehouse": row["warehouse"],
+				# Update Items takes a missing description for a change, and empties the row's
+				"description": row["description"],
 			}
 			# A line that now has another product is a new row, the old one is removed
 			if current and current.item_code == row["item_code"]:
 				item.update(
-					docname=current.name, uom=current.uom, conversion_factor=current.conversion_factor
+					docname=current.name,
+					uom=current.uom,
+					conversion_factor=current.conversion_factor,
+					description=current.description,
 				)
 			trans_items.append(item)
 

@@ -89,3 +89,4 @@ Lint/format (run in the app dir): `pre-commit run --all-files`. It uses ruff (li
 - Doctype Python files have an auto-generated `DF` types block. Don't hand-edit inside it. It regenerates from the JSON on `bench migrate` in developer mode, or without it: `TypeExporter(frappe.get_doc("DocType", name)).export_types()` from `frappe.types.exporter` in `bench console`.
 - A doctype test module makes the test records of every doctype its doctype links to, which clashes with ERPNext's (duplicate "Standard Buying"). Tests that only build docs in memory set `IGNORE_TEST_RECORD_DEPENDENCIES`.
 - Whitelisted methods check argument types against their annotations in tests too, so pass ids as `str` where the signature says `str`.
+- ERPNext's `update_child_qty_rate` (Update Items) takes a row sent without a description for a changed row and empties its description, so `update_sales_order_items` sends each row's own.

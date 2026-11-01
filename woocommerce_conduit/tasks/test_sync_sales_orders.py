@@ -1462,6 +1462,7 @@ class TestLines(IntegrationTestCase):
 			rate=rate,
 			uom="Nos",
 			conversion_factor=1,
+			description=f"{item_code} as described on the Sales Order",
 		)
 
 	def wanted(self, line_id, item_code, qty, rate):
@@ -1469,6 +1470,8 @@ class TestLines(IntegrationTestCase):
 			"woocommerce_line_item_id": str(line_id),
 			"woocommerce_id": "10",
 			"item_code": item_code,
+			"item_name": item_code,
+			"description": item_code,
 			"qty": qty,
 			"rate": rate,
 			"warehouse": "Stores",
@@ -1509,6 +1512,17 @@ class TestLines(IntegrationTestCase):
 		self.assertNotIn("docname", trans_items[1])
 		self.assertEqual(trans_items[1]["item_code"], "PLATE")
 		self.assertEqual(len(trans_items), 2)
+
+	def test_updated_lines_keep_their_descriptions(self):
+		# Update Items takes a missing description for a change, and empties the row's
+		sync = self.make([line(1, 10, 3, 27), line(3, 12, 1, 4)], items=[self.row(1, "MUG", 2, 9, "SOI-1")])
+		trans_items, _set_value = self.update(
+			sync, [self.wanted(1, "MUG", 3, 9), self.wanted(3, "PLATE", 1, 4)]
+		)
+
+		self.assertEqual(
+			[row["description"] for row in trans_items], ["MUG as described on the Sales Order", "PLATE"]
+		)
 
 	def test_line_with_another_product_is_a_new_row(self):
 		sync = self.make([line(1, 11, 2, 18)], items=[self.row(1, "MUG", 2, 9, "SOI-1")])
