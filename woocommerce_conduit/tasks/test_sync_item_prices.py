@@ -241,9 +241,8 @@ class TestSchedule(IntegrationTestCase):
 	def test_products_are_not_pulled_on_a_schedule(self):
 		scheduled = [job for jobs in hooks.scheduler_events.values() for job in jobs]
 
-		self.assertNotIn(
-			"woocommerce_conduit.tasks.sync_items.sync_woocommerce_products_modified_since", scheduled
-		)
+		# Products come in with the orders that need them, or from the server's Import Products
+		self.assertFalse([job for job in scheduled if "sync_items" in job])
 		self.assertIn(
 			"woocommerce_conduit.tasks.stock_update.update_stock_levels_for_all_enabled_items_in_background",
 			hooks.scheduler_events["daily_long"],

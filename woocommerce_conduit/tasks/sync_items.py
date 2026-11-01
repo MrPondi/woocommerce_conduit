@@ -7,7 +7,7 @@ from erpnext.stock.doctype.item.item import Item
 from frappe import ValidationError, _
 from frappe.model.naming import append_number_if_name_exists
 from frappe.query_builder import Criterion
-from frappe.utils import convert_utc_to_system_timezone, cstr, flt, get_datetime, getdate, now
+from frappe.utils import convert_utc_to_system_timezone, cstr, flt, get_datetime, getdate
 
 from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.tasks.field_map import get_mapped_values
@@ -22,15 +22,22 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_product.woocommerce_pro
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	WooCommerceServer,
 )
-from woocommerce_conduit.woocommerce.doctype.woocommerce_settings.woocommerce_settings import (
-	WooCommerceSettings,
-)
 from woocommerce_conduit.woocommerce.woocommerce_api import (
 	generate_woocommerce_record_name_from_domain_and_id,
 )
 
 # Item.item_name is a Data field without a length set, so it has the default length
 ITEM_NAME_LENGTH = 140
+
+# The longest a product import runs. At about a second a product, a shop of 5000 takes an hour and a half. An
+# import that stops is carried on by starting it again, as the products that have an Item are skipped.
+PRODUCT_IMPORT_TIMEOUT = 2 * 60 * 60
+# The most products, and variations of one product, an import reads
+MAX_PRODUCTS_TO_IMPORT = 100_000
+# Products that can't be an order line: a grouped product holds others, an external one is bought elsewhere
+UNORDERABLE_PRODUCT_TYPES = ("grouped", "external")
+# The realtime event with the progress of an import, which the server's form shows
+PRODUCT_IMPORT_EVENT = "woocommerce_product_import"
 
 
 class SyncedItem(Item):
@@ -93,27 +100,177 @@ def find_item_by_sku(woocommerce_server: str, sku: str | None, has_variants: boo
 	return None
 
 
-def sync_woocommerce_products_modified_since(date_time_from=None):
+def get_linked_item_code(woocommerce_server: str, woocommerce_id) -> str | None:
 	"""
-	Get list of WooCommerce products modified since date_time_from
+	The Item a product of a shop is linked to, disabled or not, as the sync finds it
 	"""
-	settings: WooCommerceSettings = frappe.get_cached_doc("WooCommerce Settings")  # type: ignore
+	return frappe.db.get_value(
+		"Item WooCommerce Server",
+		{
+			"parenttype": "Item",
+			"woocommerce_server": woocommerce_server,
+			"woocommerce_id": cstr(woocommerce_id),
+		},
+		"parent",
+	)
 
-	if not date_time_from:
-		date_time_from = getattr(settings, "wc_last_sync_date_items", None)
 
-	# Take the cursor before fetching, so products modified while this runs are picked up next time
-	sync_started_at = now()
-	wc_products = get_list_of_wc_products(date_time_from=date_time_from)
+@frappe.whitelist(methods=["POST"])
+def start_product_import(woocommerce_server: str) -> bool:
+	"""
+	From the server form: make an Item for every published product of the shop that has none, in the
+	background. Returns whether the import was started, which it isn't while one runs already.
+	"""
+	server: WooCommerceServer = frappe.get_doc("WooCommerce Server", woocommerce_server)  # type: ignore
+	server.check_permission("write")
+	if not server.enabled:
+		frappe.throw(_("Enable WooCommerce Server {0} first").format(frappe.bold(server.name)))
+	# The job makes the Items and their prices as the user who starts it, and would fail at every product
+	frappe.has_permission("Item", "create", throw=True)
+	if server.price_list or server.sales_price_list:
+		frappe.has_permission("Item Price", "create", throw=True)
+	return enqueue_product_import(server.name)
 
-	for wc_product in wc_products:
+
+def enqueue_product_import(woocommerce_server: str) -> bool:
+	"""
+	Import the products of a shop in the background, unless an import of it runs already. For bench execute
+	too, as the form's button only starts the import of its own shop.
+	"""
+	return bool(
+		frappe.enqueue(
+			import_products,
+			queue="long",
+			timeout=PRODUCT_IMPORT_TIMEOUT,
+			job_id=f"woocommerce_product_import::{woocommerce_server}",
+			deduplicate=True,
+			woocommerce_server=woocommerce_server,
+		)
+	)
+
+
+def get_products_to_import(woocommerce_server: str) -> list[tuple[str, str | None]]:
+	"""
+	The server's published products and variations that no Item is linked to, each product before its
+	variations, as (name, the name of the variation's product). Raises when the shop can't be read.
+	"""
+	args = {
+		"doctype": "WooCommerce Product",
+		"fields": ["name"],
+		# A disabled variation is private, a product not yet for sale a draft: an order brings in those
+		"filters": [["WooCommerce Product", "status", "=", "publish"]],
+		"servers": [woocommerce_server],
+		# By id, so a product made while the pages are read doesn't move the next page on
+		"order_by": "name asc",
+		"page_length": MAX_PRODUCTS_TO_IMPORT,
+		"strict": True,
+	}
+	linked = set(
+		frappe.get_all(
+			"Item WooCommerce Server",
+			filters={"parenttype": "Item", "woocommerce_server": woocommerce_server},
+			pluck="woocommerce_id",
+		)
+	)
+
+	products = []
+	for product in WooCommerceProduct.get_list_of_records(args):
+		if product.get("type") in UNORDERABLE_PRODUCT_TYPES:
+			continue
+		if cstr(product["woocommerce_id"]) not in linked:
+			products.append((product["name"], None))
+		# A linked variable product can have new variations
+		if product.get("type") == "variable":
+			variations = WooCommerceProduct.get_list_of_records(
+				{**args, "endpoint": f"products/{product['woocommerce_id']}/variations"}
+			)
+			products += [
+				(variation["name"], product["name"])
+				for variation in variations
+				if cstr(variation["woocommerce_id"]) not in linked
+			]
+	return products
+
+
+def import_products(woocommerce_server: str):
+	"""
+	Background job: make an Item for each published product of the server that has none, one after the
+	other, so a variation never makes its parent's Item while the parent's own sync does. Each product is
+	committed when it is made: a long transaction would hold the Item Attributes that order syncs add values
+	to, and an import that stops would keep nothing. The server's form shows the progress.
+	"""
+	try:
+		products = get_products_to_import(woocommerce_server)
+	except Exception:
+		frappe.log_error(
+			"WooCommerce Product Import Error",
+			f"{frappe.get_traceback()}\n\nWooCommerce Server: {woocommerce_server}",
+		)
+		publish_import_progress(woocommerce_server, 0, 0, finished=True, error=True)
+		frappe.msgprint(
+			_("The products of {0} couldn't be read, see the Error Log").format(woocommerce_server),
+			title=_("Product Import"),
+			indicator="red",
+			realtime=True,
+		)
+		return
+
+	total, imported, skipped, failed = len(products), 0, 0, set()
+	for done, (name, parent_name) in enumerate(products, start=1):
+		# Its variations would fail on it again
+		if parent_name in failed:
+			skipped += 1
+			continue
+		frappe.clear_messages()
 		try:
-			run_item_sync(woocommerce_product_name=wc_product["name"], enqueue=True)
-		# Skip items with errors, as these exceptions will be logged
-		except Exception as e:
-			frappe.log_error("Item sync error", f"There was an exception when syncing an item: {e!s}")
+			run_item_sync(woocommerce_product_name=name)
+		except frappe.DoesNotExistError:
+			# Deleted in the shop since the list was read
+			frappe.db.rollback()
+			skipped += 1
+		except Exception:
+			# Logged where it failed (the sync, or the request to the shop): the Error Log is kept through a
+			# rollback
+			frappe.db.rollback()
+			failed.add(name)
+		else:
+			# A manual commit, as the docstring says why
+			frappe.db.commit()  # nosemgrep
+			imported += 1
+		publish_import_progress(woocommerce_server, done, total)
 
-	frappe.db.set_single_value("WooCommerce Settings", "wc_last_sync_date_items", sync_started_at)
+	publish_import_progress(
+		woocommerce_server,
+		total,
+		total,
+		finished=True,
+		imported=imported,
+		skipped=skipped,
+		failed=len(failed),
+	)
+	if not total:
+		message = _("Every published product of {0} has an Item already").format(woocommerce_server)
+	else:
+		message = _("{0} products of {1} imported, {2} skipped, {3} failed").format(
+			imported, woocommerce_server, skipped, len(failed)
+		)
+		if failed:
+			message += ". " + _("The failures are in the Error Log")
+	frappe.msgprint(
+		message, title=_("Product Import"), indicator="orange" if failed else "green", realtime=True
+	)
+
+
+def publish_import_progress(woocommerce_server: str, done: int, total: int, **result):
+	"""
+	Tell the server's form, wherever it is open, how far its product import is
+	"""
+	frappe.publish_realtime(
+		PRODUCT_IMPORT_EVENT,
+		{"woocommerce_server": woocommerce_server, "done": done, "total": total, **result},
+		doctype="WooCommerce Server",
+		docname=woocommerce_server,
+	)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -641,10 +798,13 @@ class SynchroniseItem:
 		if not self.woocommerce_product or not self.woocommerce_product.parent_id:
 			return None
 
-		woocommerce_product_name = generate_woocommerce_record_name_from_domain_and_id(
-			self.woocommerce_product.woocommerce_server, self.woocommerce_product.parent_id
+		server, parent_id = self.woocommerce_product.woocommerce_server, self.woocommerce_product.parent_id
+		# A linked parent is left alone by its sync, which would only ask the shop for it again
+		if item_code := get_linked_item_code(server, parent_id):
+			return frappe.get_doc("Item", item_code)
+		parent_item, _parent_wc_product = run_item_sync(
+			woocommerce_product_name=generate_woocommerce_record_name_from_domain_and_id(server, parent_id)
 		)
-		parent_item, _parent_wc_product = run_item_sync(woocommerce_product_name=woocommerce_product_name)
 		return parent_item
 
 	def _set_core_item_fields(self, item: SyncedItem, wc_server: WooCommerceServer):
@@ -827,41 +987,6 @@ class SynchroniseItem:
 			self.woocommerce_product.woocommerce_date_modified,
 			update_modified=False,
 		)
-
-
-def get_list_of_wc_products(date_time_from: datetime | str | None = None) -> list[dict]:
-	"""
-	Fetches the WooCommerce Products (and their variations) modified since date_time_from.
-
-	Only the identifying fields are requested, as each product is loaded in full when it is synced.
-
-	Args:
-		date_time_from: Optional datetime to filter products modified after this time
-
-	Returns:
-		List of WooCommerce Product records, as dicts
-	"""
-	filters = []
-	if date_time_from:
-		filters.append(["WooCommerce Product", "date_modified", ">", date_time_from])
-
-	try:
-		wc_products = WooCommerceProduct.get_list(
-			args={
-				"doctype": "WooCommerce Product",
-				"filters": filters,
-				"fields": ["name"],
-				"page_length": 1000,
-			}
-		)
-
-		return wc_products or []  # type: ignore
-
-	except Exception as e:
-		frappe.log_error(
-			"WooCommerce Sync Error", f"Error fetching WooCommerce products: {e!s}\n{frappe.get_traceback()}"
-		)
-		return []
 
 
 def to_item_name(wc_name: str | None) -> str | None:

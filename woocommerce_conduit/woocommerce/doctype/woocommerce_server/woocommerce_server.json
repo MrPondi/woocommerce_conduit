@@ -53,6 +53,7 @@
   "order_item_fields_section",
   "order_item_field_map",
   "items_tab",
+  "import_products",
   "check_order_items",
   "name_by",
   "enable_image_sync",
@@ -147,6 +148,13 @@
    "fieldname": "items_tab",
    "fieldtype": "Tab Break",
    "label": "Items"
+  },
+  {
+   "depends_on": "eval: !doc.__islocal && doc.enabled",
+   "description": "Make an Item for every published product and variation of the shop that has none yet, in the background. Products that have an Item are left as they are, so an import that stops can be started again.",
+   "fieldname": "import_products",
+   "fieldtype": "Button",
+   "label": "Import Products"
   },
   {
    "depends_on": "eval: !doc.__islocal",
@@ -516,7 +524,7 @@
  "icon": "server-plus",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-01 22:30:00.000000",
+ "modified": "2026-11-01 22:30:01.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",

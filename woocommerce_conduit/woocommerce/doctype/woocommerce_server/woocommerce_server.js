@@ -25,6 +25,53 @@ frappe.ui.form.on("WooCommerce Server", {
 		frm.set_query("sales_taxes_and_charges_template", tax_template_query);
 		frm.set_query("default_item_tax_template", tax_template_query);
 		frm.set_query("item_tax_template", "tax_class_map", tax_template_query);
+
+		// The progress of a product import, shown on the server's form. One form is used for every server,
+		// so the events of the others are left out. The bar stays at its end until the form refreshes.
+		frappe.realtime.on("woocommerce_product_import", (data) => {
+			if (data.woocommerce_server !== frm.doc.name) return;
+			let message = __("{0} of {1} products", [data.done, data.total]);
+			if (data.error) {
+				message = __("The products couldn't be read, see the Error Log");
+			} else if (data.finished) {
+				message = __("{0} imported, {1} skipped, {2} failed", [
+					data.imported,
+					data.skipped,
+					data.failed,
+				]);
+			}
+			const percent = data.total ? (data.done / data.total) * 100 : 100;
+			frm.dashboard.show_progress(__("Importing Products"), percent, message);
+		});
+	},
+
+	import_products(frm) {
+		if (frm.is_dirty()) {
+			frappe.msgprint(__("Save the server first: the import works with its saved settings"));
+			return;
+		}
+		frappe.confirm(
+			__(
+				"Make an Item for every published product of {0} that has none yet? It runs in the background, and takes a while for a big shop.",
+				[frm.doc.name]
+			),
+			() =>
+				frappe.call({
+					method: "woocommerce_conduit.tasks.sync_items.start_product_import",
+					args: { woocommerce_server: frm.doc.name },
+					callback: (r) =>
+						frappe.show_alert(
+							r.message
+								? { message: __("The import has started"), indicator: "green" }
+								: {
+										message: __(
+											"The products of this shop are being imported already"
+										),
+										indicator: "orange",
+								  }
+						),
+				})
+		);
 	},
 
 	refresh(frm) {

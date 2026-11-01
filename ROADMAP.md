@@ -15,7 +15,9 @@ The daily price and stock pushes still go one product at a time: one GET, plus a
 - Write: to `products/batch` and `products/{parent}/variations/batch`, at most 100 updates a request (Fusion's `WooCommerceResource.batch_update` and `queue_manager.run_chunks`).
 - The daily jobs already hold 100 Items each (`ITEMS_PER_JOB`), the size of one batch.
 
-Start at: `stock_update.update_stock_levels_of_items`, `SynchroniseItemPrice.sync_items_with_woocommerce_products`, `WooCommerceDocument.write`.
+The server's Import Products reads each product again too, one GET each, after listing them 100 a request. It could take the products from the listing, or read them 100 a request the same way.
+
+Start at: `stock_update.update_stock_levels_of_items`, `SynchroniseItemPrice.sync_items_with_woocommerce_products`, `WooCommerceDocument.write`, `sync_items.import_products`.
 
 ## Orders and accounting
 
@@ -71,12 +73,6 @@ Every account in the shop becomes a Customer of its own, so a B2B shop gets one 
 Start at: `SynchroniseSalesOrder.create_or_link_customer_and_address`, Fusion's `find_customer_by_email_domain`.
 
 ## Items
-
-### Bulk product import from the form
-
-`sync_woocommerce_products_modified_since` imports a shop's products, but it can only be run by hand (`bench execute`). A button on the server form that enqueues it and reports progress (`frappe.publish_progress`) would make a shop's first import self-service.
-
-Start at: `sync_items.sync_woocommerce_products_modified_since`, `woocommerce_server.js`.
 
 ## Configuration
 

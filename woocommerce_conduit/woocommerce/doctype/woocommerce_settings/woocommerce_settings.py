@@ -18,7 +18,6 @@ class WooCommerceSettings(Document):
 		max_variations: DF.Int
 		minimum_creation_date: DF.Datetime
 		variation_batch_size: DF.Int
-		wc_last_sync_date_items: DF.Datetime | None
 		wc_last_sync_date_orders: DF.Datetime | None
 	# end: auto-generated types
 

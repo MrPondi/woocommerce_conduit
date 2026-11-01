@@ -7,7 +7,6 @@
   "fetch_variations",
   "variation_batch_size",
   "max_variations",
-  "wc_last_sync_date_items",
   "wc_last_sync_date_orders",
   "minimum_creation_date"
  ],
@@ -33,11 +32,6 @@
    "label": "Max Variations"
   },
   {
-   "fieldname": "wc_last_sync_date_items",
-   "fieldtype": "Datetime",
-   "label": "Last Items Synchronisation Date"
-  },
-  {
    "fieldname": "minimum_creation_date",
    "fieldtype": "Datetime",
    "in_list_view": 1,
@@ -54,7 +48,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-11-01 14:36:56.603159",
+ "modified": "2026-11-01 22:28:43.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Settings",

@@ -602,3 +602,191 @@ class TestItemTaxTemplate(IntegrationTestCase):
 			item, _changed = self.set_template(self.net_server(), item=item, tax_class="parent")
 
 		self.assertEqual(self.templates(item), [("VAT 0%", None)])
+
+
+IMPORT_SERVER = "one.example.com"
+
+
+def record(product_id, product_type="simple"):
+	return {"name": f"{IMPORT_SERVER}~{product_id}", "woocommerce_id": product_id, "type": product_type}
+
+
+def name(product_id):
+	return f"{IMPORT_SERVER}~{product_id}"
+
+
+class TestProductImport(IntegrationTestCase):
+	def products_to_import(self, products, variations, linked):
+		def get_list_of_records(args):
+			return variations.get(args["endpoint"], []) if args.get("endpoint") else products
+
+		with (
+			patch.object(
+				WooCommerceProduct, "get_list_of_records", side_effect=get_list_of_records
+			) as get_list,
+			patch.object(frappe, "get_all", return_value=linked),
+		):
+			return sync_items.get_products_to_import(IMPORT_SERVER), get_list
+
+	def test_the_products_without_an_item_come_each_before_its_variations(self):
+		products, get_list = self.products_to_import(
+			[
+				record(1),
+				record(2, "variable"),
+				record(3, "grouped"),
+				record(4, "external"),
+				record(5, "variable"),
+			],
+			variations={
+				"products/2/variations": [record(21, "variation"), record(22, "variation")],
+				"products/5/variations": [record(51, "variation")],
+			},
+			linked=["5", "22"],
+		)
+
+		# Grouped and external products can't be order lines, and a linked variable product can have new
+		# variations
+		self.assertEqual(
+			products, [(name(1), None), (name(2), None), (name(21), name(2)), (name(51), name(5))]
+		)
+		args = get_list.call_args_list[0].args[0]
+		self.assertEqual(args["filters"], [["WooCommerce Product", "status", "=", "publish"]])
+		self.assertEqual(
+			(args["order_by"], args["servers"], args["strict"]), ("name asc", [IMPORT_SERVER], True)
+		)
+
+	def run_import(self, products, errors=None):
+		def sync(woocommerce_product_name):
+			if error := (errors or {}).get(woocommerce_product_name):
+				raise error
+
+		with (
+			patch.object(sync_items, "get_products_to_import", return_value=products),
+			patch.object(sync_items, "run_item_sync", side_effect=sync) as run_item_sync,
+			# A real commit or rollback would end the test case's own transaction
+			patch.object(frappe.db, "commit") as commit,
+			patch.object(frappe.db, "rollback") as rollback,
+			patch.object(frappe, "publish_realtime") as publish_realtime,
+			patch.object(frappe, "msgprint") as msgprint,
+			patch.object(frappe, "log_error") as log_error,
+		):
+			sync_items.import_products(IMPORT_SERVER)
+		return _dict(
+			synced=[call.kwargs["woocommerce_product_name"] for call in run_item_sync.call_args_list],
+			commit=commit,
+			rollback=rollback,
+			publish_realtime=publish_realtime,
+			msgprint=msgprint,
+			log_error=log_error,
+		)
+
+	def test_each_product_is_imported_and_kept_in_turn(self):
+		calls = self.run_import([(name(1), None), (name(2), None)])
+
+		self.assertEqual(calls.synced, [name(1), name(2)])
+		self.assertEqual(calls.commit.call_count, 2)
+		calls.rollback.assert_not_called()
+		final = calls.publish_realtime.call_args_list[-1]
+		self.assertEqual(
+			final.args[1],
+			{
+				"woocommerce_server": IMPORT_SERVER,
+				"done": 2,
+				"total": 2,
+				"finished": True,
+				"imported": 2,
+				"skipped": 0,
+				"failed": 0,
+			},
+		)
+		self.assertEqual(final.kwargs, {"doctype": "WooCommerce Server", "docname": IMPORT_SERVER})
+		self.assertTrue(calls.msgprint.call_args.kwargs["realtime"])
+
+	def test_a_failed_product_is_rolled_back_and_logged_and_its_variations_skipped(self):
+		products = [(name(1), None), (name(2), None), (name(21), name(2)), (name(3), None)]
+
+		calls = self.run_import(
+			products, errors={name(2): ValueError("broken"), name(3): frappe.DoesNotExistError("gone")}
+		)
+
+		# The variation would fail on its product again, and the deleted product is no failure
+		self.assertEqual(calls.synced, [name(1), name(2), name(3)])
+		self.assertEqual(calls.rollback.call_count, 2)
+		# Only what a product made is committed. The failure is logged where it happened, as the Error Log
+		# is kept through a rollback.
+		self.assertEqual(calls.commit.call_count, 1)
+		calls.log_error.assert_not_called()
+		final = calls.publish_realtime.call_args_list[-1].args[1]
+		self.assertEqual((final["imported"], final["skipped"], final["failed"]), (1, 2, 1))
+		self.assertEqual(calls.msgprint.call_args.kwargs["indicator"], "orange")
+
+	def test_a_shop_that_can_not_be_read_imports_nothing(self):
+		with (
+			patch.object(sync_items, "get_products_to_import", side_effect=ConnectionError("down")),
+			patch.object(sync_items, "run_item_sync") as run_item_sync,
+			patch.object(frappe, "publish_realtime") as publish_realtime,
+			patch.object(frappe, "msgprint") as msgprint,
+			patch.object(frappe, "log_error") as log_error,
+		):
+			sync_items.import_products(IMPORT_SERVER)
+
+		run_item_sync.assert_not_called()
+		log_error.assert_called_once()
+		self.assertTrue(publish_realtime.call_args.args[1]["error"])
+		self.assertEqual(msgprint.call_args.kwargs["indicator"], "red")
+
+	def start(self, enqueued, enabled=1):
+		server = MagicMock(enabled=enabled, price_list="Standard Selling", sales_price_list=None)
+		server.name = IMPORT_SERVER
+		with (
+			patch.object(frappe, "get_doc", return_value=server),
+			patch.object(frappe, "has_permission", return_value=True) as has_permission,
+			patch.object(frappe, "enqueue", return_value=enqueued) as enqueue,
+		):
+			started = sync_items.start_product_import(IMPORT_SERVER)
+		return started, server, has_permission, enqueue
+
+	def test_an_import_is_started_once_per_shop(self):
+		started, server, has_permission, enqueue = self.start(enqueued=MagicMock())
+
+		self.assertTrue(started)
+		server.check_permission.assert_called_once_with("write")
+		# The job makes Items and, as the server has a price list, their prices
+		self.assertEqual(
+			[call.args for call in has_permission.call_args_list],
+			[("Item", "create"), ("Item Price", "create")],
+		)
+		self.assertEqual(enqueue.call_args.kwargs["job_id"], f"woocommerce_product_import::{IMPORT_SERVER}")
+		self.assertTrue(enqueue.call_args.kwargs["deduplicate"])
+		# Frappe doesn't enqueue the job while one with its id is queued or running
+		self.assertFalse(self.start(enqueued=None)[0])
+
+	def test_a_disabled_shop_is_not_imported(self):
+		with self.assertRaises(frappe.ValidationError):
+			self.start(enqueued=MagicMock(), enabled=0)
+
+
+class TestParentOfAVariation(IntegrationTestCase):
+	def parent(self, linked_item_code):
+		product = make_product(type="variation", parent_id=5)
+		with (
+			patch.object(sync_items, "get_linked_item_code", return_value=linked_item_code),
+			patch.object(frappe, "get_doc", return_value=_dict(item_code=linked_item_code)),
+			patch.object(
+				sync_items, "run_item_sync", return_value=(_dict(item_code="NEW"), None)
+			) as run_item_sync,
+		):
+			parent = make_sync(woocommerce_product=product)._get_or_create_parent_item()  # type: ignore
+		return parent, run_item_sync
+
+	def test_a_linked_parent_is_not_read_from_the_shop_again(self):
+		parent, run_item_sync = self.parent("SLEEVES")
+
+		self.assertEqual(parent.item_code, "SLEEVES")
+		run_item_sync.assert_not_called()
+
+	def test_a_parent_without_an_item_is_synced(self):
+		parent, run_item_sync = self.parent(None)
+
+		self.assertEqual(parent.item_code, "NEW")
+		run_item_sync.assert_called_once_with(woocommerce_product_name="one.example.com~5")
