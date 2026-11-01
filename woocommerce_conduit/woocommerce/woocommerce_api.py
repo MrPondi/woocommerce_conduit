@@ -13,6 +13,7 @@ import frappe
 import frappe.utils
 import requests
 from frappe import _
+from frappe.database.utils import DefaultOrderBy
 from frappe.deferred_insert import deferred_insert
 from frappe.model import no_value_fields, numeric_fieldtypes
 from frappe.model.document import Document
@@ -210,14 +211,22 @@ COMMON_ORDERBY_MAP = {
 	"slug": "slug",
 	"creation": "date",
 	"woocommerce_date_created": "date",
+	"modified": "modified",
+	"woocommerce_date_modified": "modified",
 }
+
+# Frappe fieldname -> the field a record has its value in, when that has another name. A name, which is
+# `<server>~<id>`, orders by the id as a number, as WooCommerce orders it.
+SORT_FIELDS = {"name": "id", "creation": "woocommerce_date_created"}
 
 
 def parse_order_by(order_by: str | None) -> list[tuple[str, bool]]:
 	"""
 	Parse a Frappe order_by, for example "`tabWooCommerce Product`.`modified` desc, sku asc",
-	into [(fieldname, descending), ...]
+	into [(fieldname, descending), ...]. Frappe's placeholder for its default order means no order.
 	"""
+	if order_by == DefaultOrderBy:
+		return []
 	clauses = []
 	for clause in (order_by or "").split(","):
 		# The table name in "`tabWooCommerce Product`.`modified`" contains a space, so only look at the end
@@ -231,24 +240,26 @@ def parse_order_by(order_by: str | None) -> list[tuple[str, bool]]:
 def sort_records(records: list[dict], order_by: list[tuple[str, bool]]) -> list[dict]:
 	"""
 	Order records on the fields of a parsed order_by. A stable sort per clause, last clause first, so
-	the first clause wins. Fields the records don't carry are left alone.
+	the first clause wins. Fields the records don't carry are left alone. Text is compared regardless of
+	case, as the shop's database orders it.
 	"""
 
-	def sort_key(fieldname: str):
+	def sort_key(field: str):
 		def key(record: dict):
-			value = record.get(fieldname)
+			value = record.get(field)
 			if value is None:
 				return (1, 0, "")
 			try:
 				return (0, float(value), "")
 			except TypeError, ValueError:
-				return (0, 0, str(value))
+				return (0, 0, str(value).casefold())
 
 		return key
 
 	for fieldname, descending in reversed(order_by):
-		if any(fieldname in record for record in records):
-			records = sorted(records, key=sort_key(fieldname), reverse=descending)
+		field = SORT_FIELDS.get(fieldname, fieldname)
+		if any(field in record for record in records):
+			records = sorted(records, key=sort_key(field), reverse=descending)
 	return records
 
 
@@ -562,9 +573,11 @@ class WooCommerceDocument(Document):
 		"""
 		WooCommerce records for the list and report views, and for the syncs.
 
-		The servers are read one after the other, as if their records were one list: a server whose records
-		all lie before the requested offset (by its `x-wp-total`) only moves the offset on, and no server is
-		asked once the page is full. Each server orders its records, and the page is ordered again as a whole.
+		WooCommerce orders each server's records, by the field asked for when it can order by it, else by
+		date, newest first. An ordered list of several servers is merged in that order and cut to the page
+		(_get_merged_records). Any other list reads the servers one after the other, as if their records were
+		one list (_get_records_in_turn): an unordered list doesn't need more, and the syncs read thousands of
+		records that way. The page is then ordered as asked, also by a field WooCommerce can't order by.
 
 		Besides Frappe's arguments, args can have:
 			page_length: how many records to return, fetched `per_page` (at most 100) a request
@@ -597,16 +610,21 @@ class WooCommerceDocument(Document):
 			frappe.log_error("WooCommerce API Error", f"Failed to initialize WooCommerce API: {e!s}")
 			return []
 
-		# Only request the fields that Frappe asked for
-		params = {"_fields": cls.get_wc_fields(args.get("fields"), args.get("extra_wc_fields"))}
-
-		# Order on the WooCommerce side where it supports the field, so the right page is returned
 		order_by = parse_order_by(args.get("order_by"))
+		# The order WooCommerce returns each server's records in: by the first field when it can order by
+		# it, else by date, newest first, as it does by default
+		wc_order = order_by if order_by and cls.get_wc_orderby(order_by[0][0]) else [("creation", True)]
+
+		# Only request the fields that Frappe asked for, and those the records are ordered by
+		fields = args.get("fields")
+		if fields and order_by:
+			fields = [*as_values(fields), *(fieldname for fieldname, _desc in order_by + wc_order)]
+		params = {"_fields": cls.get_wc_fields(fields, args.get("extra_wc_fields"))}
+
 		if order_by:
-			field, descending = order_by[0]
-			if wc_orderby := cls.get_wc_orderby(field):
-				params["orderby"] = wc_orderby
-				params["order"] = "desc" if descending else "asc"
+			field, descending = wc_order[0]
+			params["orderby"] = cls.get_wc_orderby(field)
+			params["order"] = "desc" if descending else "asc"
 
 		# Map Frappe filters to WooCommerce parameters
 		if args.get("filters"):
@@ -614,18 +632,70 @@ class WooCommerceDocument(Document):
 			params.update(map_frappe_filters_to_wc_params(args["filters"], cls.doctype))
 
 		servers = cls.get_servers_to_read(args)
+		wc_apis = [api for api in wc_api_list if servers is None or api.woocommerce_server in servers]
+		start = cint(args.get("start"))
 		page_length = cint(args.get("page_length")) or WC_PAGE_LIMIT
-		per_page = min(cint(args.get("per_page")) or page_length, WC_PAGE_LIMIT)
 		endpoint = args.get("endpoint") or cls.resource
 
+		if order_by and len(wc_apis) > 1:
+			records = cls._get_merged_records(
+				wc_apis, endpoint, params, start, page_length, wc_order, strict, args
+			)
+		else:
+			records = cls._get_records_in_turn(wc_apis, endpoint, params, start, page_length, strict, args)
+
+		return sort_records(records, order_by)
+
+	@classmethod
+	def _get_merged_records(
+		cls,
+		wc_apis: list[WooCommerceAPI],
+		endpoint: str,
+		params: dict,
+		start: int,
+		page_length: int,
+		wc_order: list[tuple[str, bool]],
+		strict: bool,
+		args,
+	) -> list[dict]:
+		"""
+		A page of the records of several servers, merged in the order WooCommerce gave each server's
+		records in. Any server's records can be on the page, so each server is read from its first record to
+		the end of the page: page n of a list reads n pages of every server.
+		"""
+		end = start + page_length
+		per_page = min(cint(args.get("per_page")) or end, WC_PAGE_LIMIT)
+		records = []
+		for wc_api in wc_apis:
+			server_records, _total = cls._get_records_of_server(
+				wc_api, endpoint, params, 0, per_page, end, strict, args
+			)
+			records.extend(server_records)
+		return sort_records(records, wc_order)[start:end]
+
+	@classmethod
+	def _get_records_in_turn(
+		cls,
+		wc_apis: list[WooCommerceAPI],
+		endpoint: str,
+		params: dict,
+		start: int,
+		page_length: int,
+		strict: bool,
+		args,
+	) -> list[dict]:
+		"""
+		A page of the records of the servers read one after the other, as if their records were one list. A
+		server whose records all lie before the page (by its `x-wp-total`) only moves the offset on, and no
+		server is asked once the page is full.
+		"""
+		per_page = min(cint(args.get("per_page")) or page_length, WC_PAGE_LIMIT)
 		records = []
 		# How many records of the servers still to be read lie before the page
-		offset = cint(args.get("start"))
-		for wc_api in wc_api_list:
+		offset = start
+		for wc_api in wc_apis:
 			if len(records) >= page_length:
 				break
-			if servers is not None and wc_api.woocommerce_server not in servers:
-				continue
 			server_records, total = cls._get_records_of_server(
 				wc_api, endpoint, params, offset, per_page, page_length - len(records), strict, args
 			)
@@ -635,9 +705,7 @@ class WooCommerceDocument(Document):
 				offset = max(0, offset - total)
 			elif server_records:
 				offset = 0
-
-		# Every server was ordered on its own, so order the page again
-		return sort_records(records, order_by)
+		return records
 
 	@classmethod
 	def _get_records_of_server(

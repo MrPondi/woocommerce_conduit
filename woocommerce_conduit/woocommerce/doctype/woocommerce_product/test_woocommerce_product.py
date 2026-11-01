@@ -4,6 +4,7 @@
 from unittest.mock import MagicMock, patch
 
 import frappe
+from frappe.database.utils import DefaultOrderBy
 from frappe.tests import IntegrationTestCase
 
 from woocommerce_conduit.woocommerce.doctype.woocommerce_product.woocommerce_product import (
@@ -80,11 +81,14 @@ class TestOrderBy(IntegrationTestCase):
 		)
 		self.assertEqual(parse_order_by(None), [])
 
+	def test_the_default_order_of_frappe_is_no_order(self):
+		self.assertEqual(parse_order_by(DefaultOrderBy), [])
+
 	def test_only_fields_woocommerce_can_order_by_are_translated(self):
 		self.assertEqual(WooCommerceProduct.get_wc_orderby("woocommerce_name"), "title")
 		self.assertEqual(WooCommerceProduct.get_wc_orderby("woocommerce_id"), "id")
 		self.assertEqual(WooCommerceProduct.get_wc_orderby("price"), "price")
-		self.assertIsNone(WooCommerceProduct.get_wc_orderby("modified"))
+		self.assertEqual(WooCommerceProduct.get_wc_orderby("modified"), "modified")
 		self.assertIsNone(WooCommerceProduct.get_wc_orderby("sku"))
 
 	def test_records_are_sorted_on_the_first_clause_then_the_next(self):
@@ -109,6 +113,20 @@ class TestOrderBy(IntegrationTestCase):
 		records = [{"sku": "b"}, {"sku": "a"}]
 
 		self.assertEqual(sort_records(records, [("unknown", False)]), records)
+
+	def test_names_are_ordered_by_their_id(self):
+		records = [{"name": f"one.example.com~{i}", "id": i} for i in (10, 9, 100)]
+
+		ordered = sort_records(records, [("name", False)])
+
+		self.assertEqual([record["id"] for record in ordered], [9, 10, 100])
+
+	def test_text_is_ordered_regardless_of_case(self):
+		records = [{"woocommerce_name": name} for name in ("banana", "Cherry", "apple")]
+
+		ordered = sort_records(records, [("woocommerce_name", False)])
+
+		self.assertEqual([record["woocommerce_name"] for record in ordered], ["apple", "banana", "Cherry"])
 
 
 class FakeWooCommerceAPI:
@@ -155,12 +173,20 @@ class TestListRequests(IntegrationTestCase):
 		self.assertIn("sku", params["_fields"].split(","))
 		self.assertNotIn("description", params["_fields"].split(","))
 
-	def test_no_ordering_is_sent_for_fields_woocommerce_cannot_order_by(self):
+	def test_a_field_woocommerce_cannot_order_by_asks_for_the_newest_first(self):
 		api = FakeWooCommerceAPI("one.example.com", [self.product(1, "A")])
 
-		self.get_list([api], order_by=f"{TABLE}.`modified` desc")
+		self.get_list([api], order_by=f"{TABLE}.`sku` asc")
 
-		self.assertNotIn("orderby", api.requests[0])
+		params = api.requests[0]
+		self.assertEqual((params["orderby"], params["order"]), ("date", "desc"))
+
+	def test_the_field_a_list_is_ordered_by_is_asked_for_too(self):
+		api = FakeWooCommerceAPI("one.example.com", [self.product(1, "A")])
+
+		self.get_list([api], fields=[f"{TABLE}.`sku`"], order_by=f"{TABLE}.`price` desc")
+
+		self.assertIn("price", api.requests[0]["_fields"].split(","))
 
 	def test_every_server_is_listed_and_the_result_is_ordered_as_a_whole(self):
 		apis = [

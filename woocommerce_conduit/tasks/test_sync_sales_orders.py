@@ -172,6 +172,15 @@ class TestGetNamesOfOrders(IntegrationTestCase):
 		self.assertIn(["WooCommerce Order", "date_modified", ">", "2026-10-30T10:00:00"], args["filters"])
 		self.assertIn(["WooCommerce Order", "status", "in", ["pending", "processing"]], args["filters"])
 
+	def test_asks_only_the_servers_given(self):
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=_dict(minimum_creation_date=None)),
+			patch.object(WooCommerceOrder, "get_list_of_records", return_value=[]) as get_list_of_records,
+		):
+			get_names_of_wc_orders(servers=[SERVER])
+
+		self.assertEqual(get_list_of_records.call_args.args[0]["servers"], [SERVER])
+
 
 class TestSyncHash(IntegrationTestCase):
 	def test_order_changed(self):
@@ -392,9 +401,7 @@ class TestPausedSync(IntegrationTestCase):
 	def test_unpausing_syncs_the_orders_of_that_server(self):
 		with (
 			patch.object(
-				sync_sales_orders,
-				"get_names_of_wc_orders",
-				return_value=[f"{SERVER}~12", "two.example.com~5", f"{SERVER}~13"],
+				sync_sales_orders, "get_names_of_wc_orders", return_value=[f"{SERVER}~12", f"{SERVER}~13"]
 			) as get_names,
 			patch.object(sync_sales_orders, "get_statuses_to_sync", return_value=["pending"]),
 			patch.object(sync_sales_orders, "enqueue_sales_order_sync") as enqueue,
@@ -402,6 +409,8 @@ class TestPausedSync(IntegrationTestCase):
 			sync_sales_orders.sync_paused_orders(SERVER, since="2026-10-30 09:00:00")
 
 		self.assertEqual(get_names.call_args.kwargs["date_time_from"], "2026-10-30 09:00:00")
+		# Only that server is read, so the other shops' orders don't count against the limit of a sync
+		self.assertEqual(get_names.call_args.kwargs["servers"], [SERVER])
 		self.assertEqual(
 			[c.kwargs["woocommerce_order_name"] for c in enqueue.call_args_list],
 			[f"{SERVER}~12", f"{SERVER}~13"],

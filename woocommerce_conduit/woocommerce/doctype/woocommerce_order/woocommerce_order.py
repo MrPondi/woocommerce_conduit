@@ -101,7 +101,6 @@ class WooCommerceOrder(WooCommerceDocument):
 	writable_fields = ("status",)
 	# Worked out here, not asked of WooCommerce
 	field_getter_map = {"sales_order": []}  # noqa: RUF012
-	orderby_map = {"modified": "modified", "woocommerce_date_modified": "modified"}  # noqa: RUF012
 
 	@classmethod
 	def get_wc_fields(cls, frappe_fields=None, extra=None) -> str:

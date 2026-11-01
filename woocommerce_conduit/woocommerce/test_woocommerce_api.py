@@ -26,24 +26,42 @@ from woocommerce_conduit.woocommerce.woocommerce_api import (
 )
 
 DATES = {"date_created": "2025-01-01T10:00:00", "date_modified": "2025-01-02T10:00:00"}
+# The record fields WooCommerce orders by, by their `orderby`
+WC_ORDERBY_FIELDS = {"id": "id", "date": "date_created", "modified": "date_modified"}
 
 
 class PagedAPI:
 	"""
-	A server with `count` orders, which honours per_page and offset like WooCommerce
+	A server with `count` orders, or orders with these ids, which honours per_page, offset and the
+	ordering like WooCommerce. An order is created an hour after the one with the id before it, and
+	modified a day after it is created.
 	"""
 
-	def __init__(self, server: str, count: int):
+	def __init__(self, server: str, count: int = 0, ids: list[int] | None = None):
 		self.woocommerce_server = server
 		self.woocommerce_server_url = f"https://{server}"
-		self.records = [{"id": i, **DATES} for i in range(1, count + 1)]
+		self.records = [self.record(i) for i in ids or range(1, count + 1)]
 		self.requests = []
+
+	@staticmethod
+	def record(order_id: int) -> dict:
+		created = datetime(2025, 1, 1) + timedelta(hours=order_id)
+		return {
+			"id": order_id,
+			"date_created": created.isoformat(),
+			"date_modified": (created + timedelta(days=1)).isoformat(),
+			"total": order_id * 10,
+		}
 
 	def get(self, endpoint, params=None, **kwargs):
 		params = dict(params or {})
 		self.requests.append(params)
+		records = self.records
+		if orderby := params.get("orderby"):
+			field = WC_ORDERBY_FIELDS[orderby]
+			records = sorted(records, key=lambda record: record[field], reverse=params.get("order") == "desc")
 		offset = params.get("offset", 0)
-		page = self.records[offset : offset + params.get("per_page", 10)]
+		page = records[offset : offset + params.get("per_page", 10)]
 		return MagicMock(
 			status_code=200,
 			headers={"x-wp-total": str(len(self.records))},
@@ -100,6 +118,51 @@ class TestPaging(IntegrationTestCase):
 
 		self.assertEqual(names, [f"two.example.com~{i}" for i in range(1, 4)])
 		self.assertEqual(one.requests, [])
+
+	def test_an_ordered_list_of_several_servers_is_merged_before_it_is_cut_to_the_page(self):
+		one = PagedAPI("one.example.com", ids=[1, 4, 5, 8])
+		two = PagedAPI("two.example.com", ids=[2, 3, 6, 7])
+
+		first = self.get_list([one, two], page_length=3, order_by="woocommerce_id asc")
+		second = self.get_list([one, two], page_length=3, start=3, order_by="woocommerce_id asc")
+
+		self.assertEqual(first, ["one.example.com~1", "two.example.com~2", "two.example.com~3"])
+		self.assertEqual(second, ["one.example.com~4", "one.example.com~5", "two.example.com~6"])
+		# Each server is read from its first record to the end of the page
+		self.assertEqual(
+			[(params["per_page"], params.get("offset")) for params in one.requests], [(3, None), (6, None)]
+		)
+
+	def test_the_default_order_of_the_list_view_is_merged(self):
+		one = PagedAPI("one.example.com", ids=[1, 4, 5])
+		two = PagedAPI("two.example.com", ids=[2, 3, 6])
+
+		names = self.get_list([one, two], page_length=4, order_by="`tabWooCommerce Order`.`modified` desc")
+
+		self.assertEqual(
+			names, ["two.example.com~6", "one.example.com~5", "one.example.com~4", "two.example.com~3"]
+		)
+		self.assertEqual((one.requests[0]["orderby"], one.requests[0]["order"]), ("modified", "desc"))
+
+	def test_a_field_woocommerce_cannot_order_by_is_merged_newest_first_and_ordered_on_the_page(self):
+		one = PagedAPI("one.example.com", ids=[1, 4, 5])
+		two = PagedAPI("two.example.com", ids=[2, 3, 6])
+
+		names = self.get_list([one, two], page_length=4, order_by="total asc")
+
+		# The four newest orders, ordered by their total
+		self.assertEqual(
+			names, ["two.example.com~3", "one.example.com~4", "one.example.com~5", "two.example.com~6"]
+		)
+		self.assertEqual((one.requests[0]["orderby"], one.requests[0]["order"]), ("date", "desc"))
+
+	def test_one_server_is_read_from_the_offset_also_when_ordered(self):
+		one = PagedAPI("one.example.com", 15)
+
+		names = self.get_list([one], page_length=5, start=10, order_by="woocommerce_id asc")
+
+		self.assertEqual(names, [f"one.example.com~{i}" for i in range(11, 16)])
+		self.assertEqual([(params["per_page"], params["offset"]) for params in one.requests], [(5, 10)])
 
 
 class TestVariations(IntegrationTestCase):

@@ -149,9 +149,10 @@ def sync_paused_orders(woocommerce_server: str, since):
 	# Without a date every order of the shop would be synced
 	if not since:
 		return
-	for order_name in get_names_of_wc_orders(date_time_from=since, status=get_statuses_to_sync()):
-		if get_domain_and_id_from_woocommerce_record_name(order_name)[0] == woocommerce_server:
-			enqueue_sales_order_sync(woocommerce_order_name=order_name)
+	for order_name in get_names_of_wc_orders(
+		date_time_from=since, status=get_statuses_to_sync(), servers=[woocommerce_server]
+	):
+		enqueue_sales_order_sync(woocommerce_order_name=order_name)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -857,11 +858,12 @@ def describe_doc(doc) -> str:
 def get_names_of_wc_orders(
 	date_time_from: datetime | str | None = None,
 	status: list[str] | None = None,
+	servers: list[str] | None = None,
 ) -> list[str]:
 	"""
-	The names of the WooCommerce Orders on all enabled servers that were modified after `date_time_from`
-	and created after the minimum creation date of the settings, with one of the statuses. Orders whose
-	Sales Order has seen that change already are left out.
+	The names of the WooCommerce Orders on all enabled servers, or on `servers`, that were modified after
+	`date_time_from` and created after the minimum creation date of the settings, with one of the statuses.
+	Orders whose Sales Order has seen that change already are left out.
 
 	Raises when WooCommerce can't be reached, so an unreachable shop isn't taken for one without orders.
 	"""
@@ -889,6 +891,7 @@ def get_names_of_wc_orders(
 			"filters": filters,
 			"fields": ["name"],
 			"page_length": MAX_ORDERS_PER_SYNC,
+			"servers": servers,
 			"strict": True,
 		}
 	)

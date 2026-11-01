@@ -99,14 +99,6 @@ WordPress stores term names HTML-escaped, so categories, tags and the options of
 
 Start at: `sync_items.to_item_name`, `SynchroniseItem.create_or_update_item_attributes`, `set_item_fields`.
 
-## API and lists
-
-### Sorted lists across several shops
-
-With more than one shop, a list page holds one shop's records and then the next's, sorted within the page only. A true merge needs `start + page_length` records from each shop, merged and then cut to the page.
-
-Start at: `WooCommerceDocument.get_list_of_records`.
-
 ## Configuration
 
 ### Webhook secret as a Password field
@@ -123,7 +115,7 @@ Start at: `WooCommerceServer.test_api_credentials`.
 
 ### Roles beyond System Manager
 
-Every doctype of the app is for System Manager only. A Sales User doesn't get the Sales Order's WooCommerce Order button, which checks read access, an Item Manager can't open the product from the Item's WooCommerce tab, and neither can pick a WooCommerce Server in a filter. Fusion gives read and write on WooCommerce Order to Sales User and Sales Manager, on WooCommerce Product to Item Manager and the Stock roles, and select on WooCommerce Server to all of them. Mind that writing a WooCommerce Order pushes its status to the shop.
+Every doctype of the app is for System Manager only. A Sales User doesn't get the Sales Order's WooCommerce Order button, which checks read access, an Item Manager can't open the product from the Item's WooCommerce tab, and neither can pick a WooCommerce Server in a filter. Fusion gives read and write on WooCommerce Order to Sales User and Sales Manager, on WooCommerce Product to Item Manager and the Stock roles, and select on WooCommerce Server to all of them. Mind that writing a WooCommerce Order pushes its status to the shop. Mind also that the list views pass the request's arguments to `get_list_of_records` as they come, so whoever can read a list can set `endpoint`, `extra_wc_fields` and `servers`, and read any endpoint of the shop, its customers say, with the server's keys. Drop those from the desk's arguments before the lists go to other roles.
 
 Start at: the `permissions` of `woocommerce_order.json`, `woocommerce_product.json` and `woocommerce_server.json`.
 
