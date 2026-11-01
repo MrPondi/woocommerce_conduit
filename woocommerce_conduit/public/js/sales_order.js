@@ -14,9 +14,9 @@ frappe.ui.form.on("Sales Order", {
 				frappe.set_route(
 					"Form",
 					"WooCommerce Order",
-					`${frm.doc.woocommerce_server}~${frm.doc.woocommerce_id}`,
+					`${frm.doc.woocommerce_server}~${frm.doc.woocommerce_id}`
 				),
-			__("View"),
+			__("View")
 		);
 	},
 });

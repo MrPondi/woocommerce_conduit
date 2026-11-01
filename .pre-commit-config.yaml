@@ -5,7 +5,7 @@ fail_fast: false
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
         files: "woocommerce_conduit.*"
@@ -18,7 +18,7 @@ repos:
       - id: debug-statements
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.17.3
+    rev: v0.14.10
     hooks:
       - id: ruff
         name: "Run ruff import sorter"
@@ -31,13 +31,9 @@ repos:
         name: "Run ruff formatter"
 
   - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v3.1.0
+    rev: v2.7.1
     hooks:
       - id: prettier
-        # mirrors-prettier stops at 3.1.0, whose ternaries and template literals differ from the files
-        additional_dependencies: ["prettier@3.6.2"]
-        # Pinned: nodeenv can't parse the version of the latest Node release it would pick otherwise
-        language_version: 24.22.2
         types_or: [javascript, vue, scss]
         # Ignore any files that might contain jinja / bundles
         exclude: |

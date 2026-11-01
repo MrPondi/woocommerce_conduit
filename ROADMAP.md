@@ -79,19 +79,6 @@ Start at: `WooCommerceDocument.get_list_of_records`.
 
 Start at: `woocommerce_server.json`, `endpoint.validate_request`, and `view_webhook_config` in `woocommerce_server.js`, which shows the secret.
 
-## Tooling
-
-### Keep the lint tools current
-
-The hooks in `.pre-commit-config.yaml` are pinned, as pre-commit pins every hook to a tag. Frappe and ERPNext don't hold any of them back: each app has its own config, and core is further behind. Frappe and ERPNext run prettier 2.7.1 and eslint 8.44.0, and ERPNext runs ruff 0.2.0. This app's old versions came from `bench new-app`'s template, which in v16 still writes prettier 2.7.1 and eslint 8.44.0.
-
-- **ruff, pre-commit-hooks, eslint**: `pre-commit autoupdate` bumps them. pre-commit.ci does it weekly once it is enabled for the repo, as the config's `ci:` block asks. A ruff bump can bring new rules and formatting to fix, as 0.17's UP037 did.
-- **prettier**: `mirrors-prettier` is archived at 3.1.0, so autoupdate can't move it. The hook installs `prettier@3.6.2` through `additional_dependencies`, which only a person bumps (the latest is 3.9). For automatic bumps, move prettier and eslint into a `package.json` as devDependencies, kept current by Dependabot, and run them from `repo: local` hooks.
-- **Node**: pinned to 24.22.2. pre-commit installs its own Node, because it ignores the one nvm puts under the home directory, and nodeenv 1.11.0 takes the prerelease that nodejs.org now lists first (v27.0.0-alpha) as the latest version, then fails to parse it. `language_version: lts` follows the newest LTS and avoids the bug. nodeenv 1.12.0 fixes it, and the pin can go once everyone has it.
-- **eslint 9 and 10** don't read `.eslintrc`. Moving past 8 needs the config rewritten as a flat `eslint.config.mjs`, with the globals Frappe's JS uses.
-
-Start at: `.pre-commit-config.yaml`, `.eslintrc`.
-
 ## Testing and documentation
 
 ### Integration tests against a real WooCommerce

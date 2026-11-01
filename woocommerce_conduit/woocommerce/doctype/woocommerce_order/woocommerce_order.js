@@ -15,7 +15,7 @@ frappe.ui.form.on("WooCommerce Order", {
 				function () {
 					frm.trigger("sync_sales_order");
 				},
-				__("Actions"),
+				__("Actions")
 			);
 		} else {
 			frm.add_custom_button(__("Create Sales Order"), function () {
@@ -104,10 +104,10 @@ frappe.ui.form.on("WooCommerce Order", {
 							? __("Synced with Sales Order {0}", [sales_order.name])
 							: __("An order with status {0} doesn't make a Sales Order", [
 									frm.doc.status,
-								]),
+							  ]),
 						indicator: sales_order ? "green" : "blue",
 					},
-					5,
+					5
 				);
 				frm.reload_doc();
 			},

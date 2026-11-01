@@ -35,7 +35,7 @@ frappe.ui.form.on("WooCommerce Server", {
 				.filter(
 					(df) =>
 						!frappe.model.no_value_type.includes(df.fieldtype) &&
-						!frappe.model.table_fields.includes(df.fieldtype),
+						!frappe.model.table_fields.includes(df.fieldtype)
 				)
 				.sort((a, b) => (a.label || a.fieldname).localeCompare(b.label || b.fieldname))
 				.map((df) => `${df.fieldname} | ${df.label || df.fieldname}`)
@@ -43,7 +43,7 @@ frappe.ui.form.on("WooCommerce Server", {
 			frm.fields_dict.item_field_map.grid.update_docfield_property(
 				"erpnext_field_name",
 				"options",
-				options,
+				options
 			);
 		});
 	},
@@ -103,7 +103,7 @@ frappe.ui.form.on("WooCommerce Server", {
 					default: window.location.protocol.concat(
 						"//",
 						window.location.host,
-						"/api/method/woocommerce_conduit.endpoint.order_created",
+						"/api/method/woocommerce_conduit.endpoint.order_created"
 					),
 					read_only: 1,
 				},
@@ -145,7 +145,7 @@ function add_missing_rows(frm, method, table, messages) {
 			if (error) {
 				frappe.show_alert(
 					{ message: messages.unreachable.replace("{0}", error), indicator: "orange" },
-					10,
+					10
 				);
 				return;
 			}
@@ -179,7 +179,7 @@ class OrderItemCheck {
 			primary_action: () => this.check(),
 		});
 		this.dialog.fields_dict.results.$wrapper.on("click", "button[data-action]", (e) =>
-			this.act($(e.currentTarget).data()),
+			this.act($(e.currentTarget).data())
 		);
 	}
 
@@ -206,7 +206,7 @@ class OrderItemCheck {
 		const results = this.dialog.fields_dict.results;
 		if (!products.length) {
 			results.$wrapper.html(
-				`<p class="text-success">${__("Every product of these orders has an Item")}</p>`,
+				`<p class="text-success">${__("Every product of these orders has an Item")}</p>`
 			);
 			return;
 		}
@@ -214,15 +214,24 @@ class OrderItemCheck {
 		const rows = products
 			.map((p) => {
 				const link = p.suggested_item
-					? `<button class="btn btn-xs btn-primary" data-action="link" data-product-id="${esc(p.product_id)}" data-item-code="${esc(p.suggested_item)}">${__("Link to {0}", [esc(p.suggested_item)])}</button>`
+					? `<button class="btn btn-xs btn-primary" data-action="link" data-product-id="${esc(
+							p.product_id
+					  )}" data-item-code="${esc(p.suggested_item)}">${__("Link to {0}", [
+							esc(p.suggested_item),
+					  ])}</button>`
 					: "";
 				return `<tr>
-					<td><a href="${frappe.utils.get_form_link("WooCommerce Product", p.woocommerce_product_name)}" target="_blank">${esc(p.name || p.product_id)}</a></td>
+					<td><a href="${frappe.utils.get_form_link(
+						"WooCommerce Product",
+						p.woocommerce_product_name
+					)}" target="_blank">${esc(p.name || p.product_id)}</a></td>
 					<td>${esc(p.sku || "")}</td>
 					<td class="text-right">${p.orders}</td>
 					<td class="text-right">${format_number(p.qty)}</td>
 					<td class="text-nowrap">${link}
-						<button class="btn btn-xs btn-default" data-action="create" data-product-name="${esc(p.woocommerce_product_name)}">${__("Create Item")}</button>
+						<button class="btn btn-xs btn-default" data-action="create" data-product-name="${esc(
+							p.woocommerce_product_name
+						)}">${__("Create Item")}</button>
 					</td>
 				</tr>`;
 			})
@@ -248,11 +257,11 @@ class OrderItemCheck {
 							product_id: String(data.productId),
 							item_code: data.itemCode,
 						},
-					}
+				  }
 				: {
 						method: "woocommerce_conduit.tasks.sync_items.sync_woocommerce_product",
 						args: { woocommerce_product_name: data.productName },
-					};
+				  };
 		frappe.call({ ...call, freeze: true, callback: () => this.check() });
 	}
 }

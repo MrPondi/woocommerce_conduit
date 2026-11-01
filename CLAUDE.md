@@ -21,9 +21,11 @@ bench --site conduit.localhost run-tests --module woocommerce_conduit.woocommerc
 bench --site conduit.localhost run-tests --doctype "WooCommerce Product"
 ```
 
-Lint/format (run in the app dir): `pre-commit run --all-files`. It uses ruff 0.17 (lint, including the pyupgrade rules, import sort and format), eslint, and prettier 3.6 (on Node 24.22.2, pinned in `.pre-commit-config.yaml`, as `nodeenv` can't install the latest Node). pre-commit only checks files git tracks, so `git add` new files first.
+Lint/format (run in the app dir): `pre-commit run --all-files`. It uses ruff (lint, including the pyupgrade rules, import sort and format), eslint and prettier. pre-commit only checks files git tracks, so `git add` new files first.
 
-- Python style: **tabs** for indentation, double quotes, line length 110, target py314, the Python Frappe v16 needs (see `[tool.ruff]` in `pyproject.toml`). Annotations aren't quoted, as 3.14 evaluates them lazily.
+- The lint tools follow Frappe core's own `.pre-commit-config.yaml` and the `bench new-app` template of the installed Frappe (`frappe/utils/boilerplate.py`): pre-commit-hooks 6.0.0, ruff 0.14.10, prettier 2.7.1, eslint 8.44.0. The `[tool.ruff]` ignore list follows the template too. Bump them when Frappe does, and never ahead of it, so the app formats and lints like Frappe.
+- If pre-commit fails to install Node for prettier or eslint, with nodeenv's `invalid literal for int()` on a version like `27.0.0-alpha`, upgrade pre-commit's nodeenv to 1.12 or later (`uv tool upgrade pre-commit`). nodeenv 1.11 takes the Node prerelease that nodejs.org lists first for the latest version. pre-commit downloads its own Node when the only one installed is under the home directory, as nvm's is.
+- Python style: **tabs** for indentation, double quotes, line length 110, target py314, the Python Frappe v16 needs (see `[tool.ruff]` in `pyproject.toml`).
 - CI (`.github/workflows/ci.yml`) installs the app on a fresh bench of the pinned Frappe and ERPNext versions (`TEST_AGAINST_FRAPPE_VERSION`, `TEST_AGAINST_ERPNEXT_VERSION`; Python 3.14, Node 24) and runs `run-tests --app woocommerce_conduit`. `linter.yml` runs Frappe Semgrep rules and pip-audit.
 
 ## Roadmap and follow-ups
