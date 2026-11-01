@@ -4,8 +4,6 @@
 import json
 
 import frappe
-from frappe import _dict
-from frappe.model.document import Document
 from frappe.utils import cstr, flt
 
 from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceDocument
@@ -99,7 +97,7 @@ class WooCommerceOrder(WooCommerceDocument):
 
 	doctype = "WooCommerce Order"
 	resource = "orders"
-	field_setter_map = {"woocommerce_name": "name", "woocommerce_id": "id"}  # noqa: RUF012
+	field_setter_map = {"woocommerce_id": "id"}  # noqa: RUF012
 	# The only fields ERPNext writes to WooCommerce
 	writable_fields = ("status",)
 	# Worked out here, not asked of WooCommerce
@@ -166,9 +164,6 @@ class WooCommerceOrder(WooCommerceDocument):
 
 			enqueue_sales_order_sync(woocommerce_order_name=self.name)
 
-	def db_insert(self, *args, **kwargs):
-		pass
-
 	def before_db_update(self, changes: dict) -> dict:
 		"""
 		Only the status is written to WooCommerce, the rest of an order is the shop's
@@ -177,11 +172,8 @@ class WooCommerceOrder(WooCommerceDocument):
 			{key: value for key, value in changes.items() if key in self.writable_fields}
 		)
 
-	def delete(self, *args, **kwargs):
-		pass
-
 	@staticmethod
-	def get_list(args) -> list[_dict | Document] | None:
+	def get_list(args) -> list[dict]:
 		"""
 		The orders of all enabled servers, for the list and report views
 		"""
@@ -190,10 +182,6 @@ class WooCommerceOrder(WooCommerceDocument):
 	@staticmethod
 	def get_count(args) -> int:
 		return WooCommerceOrder.get_count_of_records(args)
-
-	@staticmethod
-	def get_stats(args):
-		pass
 
 
 @frappe.whitelist()

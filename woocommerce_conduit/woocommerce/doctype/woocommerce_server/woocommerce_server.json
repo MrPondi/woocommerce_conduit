@@ -27,7 +27,6 @@
   "warehouse",
   "column_break_velv",
   "delivery_after_days",
-  "sync_so_items_to_wc",
   "accounting_details_section",
   "sales_taxes_and_charges_template",
   "default_item_tax_template",
@@ -351,14 +350,6 @@
    "fieldtype": "Column Break"
   },
   {
-   "default": "0",
-   "description": "When set, adding/removing/changing Sales Order Lines will be synchronised back to the WooCommerce Order",
-   "fieldname": "sync_so_items_to_wc",
-   "fieldtype": "Check",
-   "hidden": 1,
-   "label": "Synchronise Sales Order Line changes back"
-  },
-  {
    "fieldname": "endpoint_section",
    "fieldtype": "Section Break",
    "label": "Endpoint"
@@ -487,7 +478,7 @@
  "icon": "server-plus",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-01 01:02:00.631503",
+ "modified": "2026-11-01 12:32:16.623782",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",

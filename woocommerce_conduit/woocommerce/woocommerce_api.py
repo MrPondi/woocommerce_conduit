@@ -15,8 +15,6 @@ from woocommerce import API
 from woocommerce_conduit.exceptions import SyncDisabledError
 
 WC_RESOURCE_DELIMITER = "~"
-# How long a cached list of WooCommerce records is reused, in seconds
-CACHE_TIMEOUT_SECONDS = 300
 
 
 class WooCommerceAPI(API):
@@ -202,26 +200,6 @@ class WooCommerceDocument(Document):
 			frappe.throw(_("At least one WooCommerce Server should be Enabled"), SyncDisabledError)
 
 		return wc_api_list
-
-	def __getitem__(self, key):
-		"""
-		Allow for dict-like behaviour when using jsonpath-ng
-		"""
-		return self.get(key)
-
-	def __setitem__(self, key, value):
-		"""
-		Allow for dict-like behaviour when using jsonpath-ng
-		"""
-		self.set(key, value)
-
-	def __contains__(self, key):
-		"""
-		Allow for dict-like behaviour when using jsonpath-ng
-		"""
-		fields = [field.fieldname for field in self.meta.fields]
-		fields.append("name")
-		return key in fields
 
 	def init_api(self):
 		"""
@@ -455,13 +433,6 @@ class WooCommerceDocument(Document):
 			frappe.log_error("WooCommerce API Error", f"Failed to initialize WooCommerce API: {e!s}")
 			return []
 
-		cls.doctype = args["doctype"]
-
-		if not wc_api_list:
-			return []
-
-		cls.doctype = args["doctype"]
-
 		# Get configuration settings
 		wc_records_per_page_limit = 100
 
@@ -593,16 +564,7 @@ class WooCommerceDocument(Document):
 					break
 
 		# Every server was ordered on its own, so order the combined list again
-		all_results = sort_records(all_results, order_by)
-
-		# Return the records as requested
-		if args.get("as_doc"):
-			try:
-				return [frappe.get_doc(record) for record in all_results]
-			except Exception as e:
-				frappe.log_error("WooCommerce Format Error", f"Error converting to Frappe docs: {e!s}")
-				return []
-		return all_results
+		return sort_records(all_results, order_by)
 
 	@classmethod
 	def during_get_list_of_records(cls, record: dict, args):
@@ -666,8 +628,16 @@ class WooCommerceDocument(Document):
 		"""Serialize complex fields (dict, list) to JSON strings"""
 		return cls.serialize_attributes_of_type_dict_or_list(record)
 
-	def delete(self, ignore_permissions=False, force=False, *, delete_permanently=False):
-		frappe.throw(_("Deleting resources have not been implemented yet"))
+	# Records are made and removed in WooCommerce, never from here
+	def db_insert(self, *args, **kwargs):
+		pass
+
+	def delete(self, *args, **kwargs):
+		pass
+
+	@staticmethod
+	def get_stats(args):
+		pass
 
 	def to_dict(self):
 		"""

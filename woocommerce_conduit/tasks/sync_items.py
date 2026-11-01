@@ -4,13 +4,12 @@ from datetime import datetime
 
 import frappe
 from erpnext.stock.doctype.item.item import Item
-from frappe import ValidationError, _, _dict
+from frappe import ValidationError, _
 from frappe.query_builder import Criterion
 from frappe.utils import convert_utc_to_system_timezone, flt, get_datetime, getdate, now
 from jsonpath_ng.ext import parse
 
 from woocommerce_conduit.exceptions import SyncDisabledError
-from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce
 from woocommerce_conduit.tasks.taxes import PARENT_TAX_CLASS
 from woocommerce_conduit.woocommerce.doctype.item_woocommerce_server.item_woocommerce_server import (
 	ItemWooCommerceServer,
@@ -248,23 +247,20 @@ class ERPNextItemToSync:
 		return bool(primary) and primary.idx == self.item_woocommerce_server_idx
 
 
-class SynchroniseItem(SynchroniseWooCommerce):
+class SynchroniseItem:
 	"""
 	Class for managing synchronisation of WooCommerce Product with ERPNext Item
 	"""
 
 	def __init__(
 		self,
-		servers: list[WooCommerceServer | _dict] | None = None,
 		item: ERPNextItemToSync | None = None,
 		woocommerce_product: WooCommerceProduct | None = None,
 		force_update: bool = False,
 	) -> None:
-		super().__init__(servers)
 		self.item = item
 		self.woocommerce_product = woocommerce_product  # type: ignore
 		self.force_update = force_update
-		self.settings: WooCommerceSettings = frappe.get_cached_doc("WooCommerce Settings")  # type: ignore
 
 	def run(self):
 		"""
@@ -794,8 +790,6 @@ def get_list_of_wc_products(date_time_from: datetime | str | None = None) -> lis
 				"doctype": "WooCommerce Product",
 				"filters": filters,
 				"fields": ["name"],
-				# This is a sync, so it needs the current list rather than a cached one
-				"skip_cache": True,
 				"page_length": 1000,
 			}
 		)

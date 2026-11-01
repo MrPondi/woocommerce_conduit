@@ -1,13 +1,12 @@
 import time
 
 import frappe
-from erpnext.stock.doctype.item_price.item_price import ItemPrice
 from frappe import _, _dict, qb
 from frappe.query_builder import Criterion
 from frappe.query_builder.functions import IfNull
 from frappe.utils import get_datetime
 
-from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce, record_sync_time
+from woocommerce_conduit.tasks.sync import record_sync_time
 from woocommerce_conduit.woocommerce.doctype.woocommerce_product.woocommerce_product import (
 	WooCommerceProduct,
 )
@@ -47,6 +46,18 @@ def price_sync_is_enabled() -> bool:
 	return bool(frappe.db.exists("WooCommerce Server", {"enabled": 1, "enable_price_list_sync": 1}))
 
 
+def get_price_sync_servers() -> list[WooCommerceServer]:
+	"""
+	The enabled WooCommerce Servers that have their price sync switched on
+	"""
+	return [
+		frappe.get_cached_doc("WooCommerce Server", name)  # type: ignore
+		for name in frappe.get_all(
+			"WooCommerce Server", filters={"enabled": 1, "enable_price_list_sync": 1}, pluck="name"
+		)
+	]
+
+
 def update_item_price_for_woocommerce_item_from_hook(doc, method=None):
 	"""
 	Intended to be triggered by a Document Controller hook from Item Price. Pushes the Item's prices once
@@ -79,13 +90,13 @@ def sync_item_price_to_woocommerce(item_code: str):
 
 
 @frappe.whitelist()
-def run_item_price_sync(item_code: str | None = None, item_price_doc: ItemPrice | None = None):
-	sync = SynchroniseItemPrice(item_code=item_code, item_price_doc=item_price_doc)
+def run_item_price_sync(item_code: str | None = None):
+	sync = SynchroniseItemPrice(item_code=item_code)
 	sync.run()
 	return True
 
 
-class SynchroniseItemPrice(SynchroniseWooCommerce):
+class SynchroniseItemPrice:
 	"""
 	Class for managing synchronisation of ERPNext Items with WooCommerce Products
 	"""
@@ -98,11 +109,9 @@ class SynchroniseItemPrice(SynchroniseWooCommerce):
 		self,
 		servers: list[WooCommerceServer | _dict] | None = None,
 		item_code: str | None = None,
-		item_price_doc: ItemPrice | None = None,
 	) -> None:
-		super().__init__(servers)
+		self.servers = servers or get_price_sync_servers()
 		self.item_code = item_code
-		self.item_price_doc = item_price_doc
 		self.wc_server = None
 		self.item_price_list = []
 		self.sale_price_map = {}
@@ -221,12 +230,7 @@ class SynchroniseItemPrice(SynchroniseWooCommerce):
 				wc_product.load_from_db()
 				wc_product_dirty = False
 
-				# If self.item_price_doc is set, set the price_list_rate accordingly, else use the price_list_rate from the price list
-				price_list_rate = (
-					self.item_price_doc.price_list_rate
-					if self.item_price_doc and self.item_price_doc.price_list == self.wc_server.price_list
-					else item_price.price_list_rate
-				)
+				price_list_rate = item_price.price_list_rate
 				# Handle blank string for regular_price
 				if not wc_product.regular_price:
 					wc_product.regular_price = 0
@@ -273,14 +277,9 @@ class SynchroniseItemPrice(SynchroniseWooCommerce):
 		sale_price_record = self.sale_price_map.get(woocommerce_id)
 
 		if sale_price_record:
-			if self.item_price_doc and self.item_price_doc.price_list == self.wc_server.sales_price_list:
-				new_sale_price = float(self.item_price_doc.price_list_rate or 0)
-				new_valid_from = self.item_price_doc.valid_from
-				new_valid_upto = self.item_price_doc.valid_upto
-			else:
-				new_sale_price = float(sale_price_record.price_list_rate or 0)
-				new_valid_from = sale_price_record.valid_from
-				new_valid_upto = sale_price_record.valid_upto
+			new_sale_price = float(sale_price_record.price_list_rate or 0)
+			new_valid_from = sale_price_record.valid_from
+			new_valid_upto = sale_price_record.valid_upto
 		else:
 			new_sale_price = 0
 			new_valid_from = None

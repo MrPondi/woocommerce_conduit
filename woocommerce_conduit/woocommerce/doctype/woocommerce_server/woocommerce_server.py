@@ -104,7 +104,6 @@ class WooCommerceServer(Document):
 		submit_sales_invoice: DF.Check
 		subtract_reserved_stock: DF.Check
 		sync_prices_for_disabled_items: DF.Check
-		sync_so_items_to_wc: DF.Check
 		tax_class_map: DF.Table[WooCommerceServerTaxClass]
 		uom: DF.Link
 		warehouse: DF.Link

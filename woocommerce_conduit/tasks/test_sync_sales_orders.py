@@ -26,7 +26,6 @@ from woocommerce_conduit.tasks.order_status import (
 	get_status_to_push,
 	get_statuses_to_sync,
 )
-from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce
 from woocommerce_conduit.tasks.sync_sales_orders import (
 	SynchroniseSalesOrder,
 	enqueue_sales_order_sync,
@@ -81,11 +80,7 @@ def make_server(rows=None, push=True, **fields):
 
 
 def make_sync(**kwargs) -> SynchroniseSalesOrder:
-	# Neither the servers nor the settings are looked up
-	with patch.object(frappe, "get_cached_doc", return_value=_dict()):
-		sync = SynchroniseSalesOrder(**kwargs)
-	sync.servers = []
-	return sync
+	return SynchroniseSalesOrder(**kwargs)
 
 
 class TestFilterMapping(IntegrationTestCase):
@@ -302,16 +297,6 @@ class TestPausedSync(IntegrationTestCase):
 		with self.paused(), patch.object(sync, "load_orders") as load_orders:
 			sync.run()
 		load_orders.assert_not_called()
-
-	def test_paused_sync_does_not_load_the_servers(self):
-		# A job queued before the pause should end at once, there can be thousands of them
-		with (
-			patch.object(SynchroniseWooCommerce, "get_wc_servers") as get_wc_servers,
-			patch.object(frappe, "get_cached_doc", return_value=_dict()),
-			self.paused(),
-		):
-			SynchroniseSalesOrder(woocommerce_order_name=f"{SERVER}~12").run()
-		get_wc_servers.assert_not_called()
 
 	def test_sync_asked_for_in_the_form_says_it_is_paused(self):
 		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")

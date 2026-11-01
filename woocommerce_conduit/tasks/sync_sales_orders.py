@@ -23,7 +23,6 @@ from woocommerce_conduit.tasks.order_status import (
 	get_status_to_push,
 	get_statuses_to_sync,
 )
-from woocommerce_conduit.tasks.sync import SynchroniseWooCommerce
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import (
 	WooCommerceOrder,
 	get_address_data,
@@ -106,12 +105,7 @@ def run_sales_order_sync_from_hook(doc, method):
 	"""
 	Intended to be triggered by a Document Controller hook from Sales Order
 	"""
-	if (
-		doc.doctype == "Sales Order"
-		and not doc.flags.get("created_by_sync", None)
-		and doc.woocommerce_server
-		and doc.woocommerce_id
-	):
+	if not doc.flags.get("created_by_sync", None) and doc.woocommerce_server and doc.woocommerce_id:
 		frappe.msgprint(
 			_("Background sync to WooCommerce triggered for {0} {1}").format(frappe.bold(doc.name), method),
 			indicator="blue",
@@ -215,9 +209,7 @@ def run_sales_order_sync(
 	return sync.sales_order, sync.woocommerce_order
 
 
-class SynchroniseSalesOrder(
-	SalesOrderStatusMixin, SalesOrderPaymentMixin, SalesOrderLinesMixin, SynchroniseWooCommerce
-):
+class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, SalesOrderLinesMixin):
 	"""
 	Class for managing synchronisation of a WooCommerce Order with an ERPNext Sales Order
 	"""
@@ -227,12 +219,10 @@ class SynchroniseSalesOrder(
 		sales_order_name: str | None = None,
 		woocommerce_order_name: str | None = None,
 	) -> None:
-		super().__init__()
 		self.sales_order_name = sales_order_name
 		self.woocommerce_order_name = woocommerce_order_name
 		self.sales_order: SyncedOrder | None = None
 		self.woocommerce_order: WooCommerceOrder | None = None
-		self.settings: WooCommerceSettings = frappe.get_cached_doc("WooCommerce Settings")  # type: ignore
 
 	def get_lock_name(self) -> str:
 		"""
@@ -881,15 +871,6 @@ def get_names_of_wc_orders(
 		}
 	)
 	return [record["name"] for record in records]
-
-
-def rename_address(address, customer):
-	old_address_title = address.name
-	new_address_title = customer.name + "-" + address.address_type
-	address.address_title = customer.customer_name
-	address.save()
-
-	frappe.rename_doc("Address", old_address_title, new_address_title)
 
 
 def create_contact(data, billing_address, customer):

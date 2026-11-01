@@ -23,12 +23,12 @@ if TYPE_CHECKING:
 PLACEHOLDER_ITEM = "DELETED_WOOCOMMERCE_PRODUCT"
 
 
-def get_line_items(wc_order) -> list[dict]:
-	return json.loads(wc_order.line_items or "[]")
-
-
 def get_json_lines(wc_order, fieldname: str) -> list[dict]:
 	return json.loads(wc_order.get(fieldname) or "[]")
+
+
+def get_line_items(wc_order) -> list[dict]:
+	return get_json_lines(wc_order, "line_items")
 
 
 def get_product_id(line: dict) -> str:

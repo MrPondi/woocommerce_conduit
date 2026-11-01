@@ -21,8 +21,7 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_product.woocommerce_pro
 
 
 def make_sync(**kwargs) -> SynchroniseItem:
-	# A non-empty server list, so the sync doesn't look the servers up
-	return SynchroniseItem(servers=[_dict()], **kwargs)
+	return SynchroniseItem(**kwargs)
 
 
 def make_product(**values) -> WooCommerceProduct:
