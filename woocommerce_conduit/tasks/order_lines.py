@@ -179,10 +179,10 @@ class SalesOrderLinesMixin:
 	The lines and charges of the Sales Order of a WooCommerce Order
 	"""
 
-	sales_order: "SyncedOrder"
-	woocommerce_order: "WooCommerceOrder"
+	sales_order: SyncedOrder
+	woocommerce_order: WooCommerceOrder
 
-	def get_wc_server(self) -> "WooCommerceServer":
+	def get_wc_server(self) -> WooCommerceServer:
 		return frappe.get_cached_doc("WooCommerce Server", self.woocommerce_order.woocommerce_server)  # type: ignore
 
 	def create_missing_items(self):
@@ -235,7 +235,7 @@ class SalesOrderLinesMixin:
 			)
 		return rows, issues
 
-	def set_items_in_sales_order(self, new_sales_order: "SyncedOrder"):
+	def set_items_in_sales_order(self, new_sales_order: SyncedOrder):
 		"""
 		The lines, taxes and charges of a new Sales Order
 		"""
@@ -267,7 +267,7 @@ class SalesOrderLinesMixin:
 
 		self.line_issues = issues
 
-	def check_totals(self, sales_order: "SyncedOrder") -> str | None:
+	def check_totals(self, sales_order: SyncedOrder) -> str | None:
 		"""
 		What to flag when the Sales Order doesn't add up to the WooCommerce Order
 		"""

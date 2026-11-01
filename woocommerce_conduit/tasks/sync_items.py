@@ -818,6 +818,6 @@ def values_match(erpnext_value, wc_value) -> bool:
 	if isinstance(erpnext_value, int | float) or isinstance(wc_value, int | float):
 		try:
 			return float(erpnext_value or 0) == float(wc_value or 0)
-		except (TypeError, ValueError):
+		except TypeError, ValueError:
 			return False
 	return False

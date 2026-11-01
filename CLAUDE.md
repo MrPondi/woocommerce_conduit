@@ -21,10 +21,10 @@ bench --site conduit.localhost run-tests --module woocommerce_conduit.woocommerc
 bench --site conduit.localhost run-tests --doctype "WooCommerce Product"
 ```
 
-Lint/format (run in the app dir): `pre-commit run --all-files`. It uses ruff (lint, import sort, format), eslint, prettier and pyupgrade.
+Lint/format (run in the app dir): `pre-commit run --all-files`. It uses ruff 0.17 (lint, including the pyupgrade rules, import sort and format), eslint, and prettier 3.6 (on Node 24.22.2, pinned in `.pre-commit-config.yaml`, as `nodeenv` can't install the latest Node). pre-commit only checks files git tracks, so `git add` new files first.
 
-- Python style: **tabs** for indentation, double quotes, line length 110, target py310 (see `[tool.ruff]` in `pyproject.toml`).
-- CI (`.github/workflows/ci.yml`) installs the app on a fresh bench and runs `run-tests --app woocommerce_conduit`. `linter.yml` runs Frappe Semgrep rules and pip-audit.
+- Python style: **tabs** for indentation, double quotes, line length 110, target py314, the Python Frappe v16 needs (see `[tool.ruff]` in `pyproject.toml`). Annotations aren't quoted, as 3.14 evaluates them lazily.
+- CI (`.github/workflows/ci.yml`) installs the app on a fresh bench of the pinned Frappe and ERPNext versions (`TEST_AGAINST_FRAPPE_VERSION`, `TEST_AGAINST_ERPNEXT_VERSION`; Python 3.14, Node 24) and runs `run-tests --app woocommerce_conduit`. `linter.yml` runs Frappe Semgrep rules and pip-audit.
 
 ## Architecture
 

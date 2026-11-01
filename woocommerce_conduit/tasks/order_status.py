@@ -86,7 +86,7 @@ class SalesOrderStatusMixin:
 	What a WooCommerce status does to the Sales Order of an order that was synced before
 	"""
 
-	sales_order: "SyncedOrder"
+	sales_order: SyncedOrder
 
 	def apply_status_action(self, action: str) -> None:
 		# The status changes made here must not be pushed back to WooCommerce

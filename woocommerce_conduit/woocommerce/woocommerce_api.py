@@ -153,7 +153,7 @@ def sort_records(records: list[dict], order_by: list[tuple[str, bool]]) -> list[
 				return (1, 0, "")
 			try:
 				return (0, float(value), "")
-			except (TypeError, ValueError):
+			except TypeError, ValueError:
 				return (0, 0, str(value))
 
 		return key

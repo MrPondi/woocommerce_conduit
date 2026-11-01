@@ -3,8 +3,8 @@ name = "woocommerce_conduit"
 authors = [
     { name = "Karol Parzonka", email = "me@pondi.dev"}
 ]
-description = "Connect your woocomemrce site to frappe"
-requires-python = ">=3.10"
+description = "Connect your WooCommerce site to Frappe"
+requires-python = ">=3.14"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [
@@ -22,7 +22,7 @@ build-backend = "flit_core.buildapi"
 
 [tool.ruff]
 line-length = 110
-target-version = "py310"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = [

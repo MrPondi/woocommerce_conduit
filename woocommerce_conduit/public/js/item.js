@@ -14,9 +14,9 @@ frappe.ui.form.on("Item", {
 					sync_with_woocommerce(
 						frm,
 						"woocommerce_conduit.tasks.stock_update.sync_item_stock_to_woocommerce",
-						__("Syncing stock to WooCommerce...")
+						__("Syncing stock to WooCommerce..."),
 					),
-				__("WooCommerce")
+				__("WooCommerce"),
 			);
 		}
 		frm.add_custom_button(
@@ -25,25 +25,25 @@ frappe.ui.form.on("Item", {
 				sync_with_woocommerce(
 					frm,
 					"woocommerce_conduit.tasks.sync_item_prices.sync_item_price_to_woocommerce",
-					__("Syncing prices to WooCommerce...")
+					__("Syncing prices to WooCommerce..."),
 				),
-			__("WooCommerce")
+			__("WooCommerce"),
 		);
 		frm.add_custom_button(
 			__("Update Item from WooCommerce"),
 			() =>
 				frappe.confirm(
 					__(
-						"This overwrites the Item's name, image and mapped fields with those of its primary WooCommerce Product. Continue?"
+						"This overwrites the Item's name, image and mapped fields with those of its primary WooCommerce Product. Continue?",
 					),
 					() =>
 						sync_with_woocommerce(
 							frm,
 							"woocommerce_conduit.tasks.sync_items.sync_item_from_woocommerce",
-							__("Updating Item from WooCommerce...")
-						)
+							__("Updating Item from WooCommerce..."),
+						),
 				),
-			__("WooCommerce")
+			__("WooCommerce"),
 		);
 	},
 });
@@ -55,7 +55,7 @@ frappe.ui.form.on("Item WooCommerce Server", {
 		frappe.set_route(
 			"Form",
 			"WooCommerce Product",
-			`${row.woocommerce_server}~${row.woocommerce_id}`
+			`${row.woocommerce_server}~${row.woocommerce_id}`,
 		);
 	},
 });
@@ -69,7 +69,7 @@ function sync_with_woocommerce(frm, method, freeze_message) {
 		callback: () => {
 			frappe.show_alert(
 				{ message: __("Sync completed successfully"), indicator: "green" },
-				5
+				5,
 			);
 			frm.reload_doc();
 		},

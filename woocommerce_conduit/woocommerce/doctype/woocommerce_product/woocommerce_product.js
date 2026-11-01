@@ -35,7 +35,7 @@ frappe.ui.form.on("WooCommerce Product", {
 			function () {
 				frm.trigger("sync_product");
 			},
-			__("Actions")
+			__("Actions"),
 		);
 	},
 	set_image_gallery(frm) {
@@ -89,7 +89,7 @@ frappe.ui.form.on("WooCommerce Product", {
 						message: __("Sync completed successfully"),
 						indicator: "green",
 					},
-					5
+					5,
 				);
 				frm.reload_doc();
 			},

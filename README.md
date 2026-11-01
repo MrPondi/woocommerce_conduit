@@ -14,15 +14,16 @@ bench install-app woocommerce_conduit
 
 ### TODO:
 
-- [ ] Stock level sync to WooCommerce (daily job, plus hooks on Stock Entry, Stock Reconciliation, Sales Invoice and Delivery Note)
-- [ ] Warehouse mapping on WooCommerce Server, to choose which warehouses count towards WooCommerce stock
-- [ ] Item Price hook, to push price changes immediately instead of waiting for the daily job
+- [x] Stock level sync to WooCommerce (on every Stock Ledger Entry, and daily)
+- [x] Warehouse mapping on WooCommerce Server, to choose which warehouses count towards WooCommerce stock
+- [x] Item Price hook, to push price changes immediately instead of waiting for the daily job
 - [ ] Migrate the WooCommerce Server webhook secret to a Password field
-- [ ] More webhooks: only `order_created` is handled so far
+- [ ] More webhooks: only orders ("Order created" and "Order updated") are handled so far
 - [ ] Field value transforms and order item field mapping
-- [ ] Sales Order and Item form buttons (client scripts and Sales Order override)
-- [ ] Batch API: sync queue, batch log and flush job, to group updates into WooCommerce batch calls
-- [ ] Unit and integration tests for item, price and order sync
+- [x] Sales Order and Item form buttons
+- [ ] Batch API: bulk-read 100 products and send only the changes to WooCommerce's batch endpoints (see woocommerce_fusion's `tasks/batch`; the pushes already compute, compare and write the differences)
+- [x] Unit tests for item, price and order sync
+- [ ] Integration tests against a real WooCommerce (WP Playground, as woocommerce_fusion's CI)
 - [ ] Setup and usage documentation
 
 ### Contributing

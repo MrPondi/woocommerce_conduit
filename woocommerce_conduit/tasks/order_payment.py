@@ -79,8 +79,8 @@ class SalesOrderPaymentMixin:
 	The Sales Invoice and Payment Entry of an order that was paid, or will be. Neither waits for a delivery.
 	"""
 
-	sales_order: "SyncedOrder"
-	woocommerce_order: "WooCommerceOrder"
+	sales_order: SyncedOrder
+	woocommerce_order: WooCommerceOrder
 
 	def sync_invoice_and_payment(self, action: str) -> None:
 		"""

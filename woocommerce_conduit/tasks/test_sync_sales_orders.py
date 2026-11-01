@@ -436,7 +436,7 @@ class TestHourlySync(IntegrationTestCase):
 		return settings, seen, enqueue
 
 	def test_syncs_since_the_last_run_and_moves_the_cursor(self):
-		settings, seen, enqueue = self.run_hourly(names=["a~1", "b~2"])
+		_settings, seen, enqueue = self.run_hourly(names=["a~1", "b~2"])
 
 		self.assertEqual(seen["date_time_from"], "2026-10-30 09:00:00")
 		self.assertEqual(seen["cursor_while_fetching"], "2026-10-30 09:00:00")
