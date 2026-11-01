@@ -11,6 +11,7 @@ from frappe.utils import cstr, now
 from woocommerce_conduit.tasks.field_map import (
 	REFUSED_ITEM_FIELDS,
 	get_item_map_fields,
+	get_order_item_map_fields,
 	get_product_fields,
 	get_transforms,
 	validate_map_row,
@@ -59,6 +60,9 @@ class WooCommerceServer(Document):
 		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_item_field.woocommerce_server_item_field import (
 			WooCommerceServerItemField,
 		)
+		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_item_field.woocommerce_server_order_item_field import (
+			WooCommerceServerOrderItemField,
+		)
 		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 			WooCommerceServerOrderStatus,
 		)
@@ -97,6 +101,7 @@ class WooCommerceServer(Document):
 		last_sync_time: DF.Datetime | None
 		log_all_requests: DF.Check
 		name_by: DF.Literal["WooCommerce ID", "Product SKU"]
+		order_item_field_map: DF.Table[WooCommerceServerOrderItemField]
 		order_sync_paused_since: DF.Datetime | None
 		pause_order_sync: DF.Check
 		payment_method_map: DF.Table[WooCommerceServerPaymentMethod]
@@ -150,14 +155,16 @@ class WooCommerceServer(Document):
 		self.validate_tax_class_map()
 		self.validate_tax_templates()
 		self.validate_item_map()
+		self.validate_order_item_map()
 
 		if not self.secret:
 			self.secret = frappe.generate_hash()
 
 	def onload(self):
-		# The Item fields the Item Field Map may not write, which the form leaves out of its choices, and the
-		# transforms the installed apps register, which it offers
+		# The Item fields the Item Field Map may not write, which the form leaves out of its choices, the Sales
+		# Order Item fields the Order Line Fields map may write, and the transforms the installed apps register
 		self.set_onload("refused_item_fields", REFUSED_ITEM_FIELDS)
+		self.set_onload("order_item_fields", sorted(get_order_item_map_fields()))
 		self.set_onload("field_transforms", sorted(get_transforms()))
 
 	def on_update(self):
@@ -528,3 +535,12 @@ class WooCommerceServer(Document):
 				source_fields=source_fields,
 				refused_sources=refused_sources,
 			)
+
+	def validate_order_item_map(self):
+		"""
+		Each row of the Order Line Fields map needs a Sales Order Item field it may write. Its path isn't checked
+		against the line's fields, as plugins add their own to it.
+		"""
+		target_fields = get_order_item_map_fields()
+		for row in self.order_item_field_map:
+			validate_map_row(row, _("Order Line Fields"), "Sales Order Item", target_fields)

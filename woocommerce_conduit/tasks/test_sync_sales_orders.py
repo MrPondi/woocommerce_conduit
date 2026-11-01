@@ -18,6 +18,7 @@ from woocommerce_conduit import endpoint
 from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.patches.v1 import set_customer_woocommerce_server
 from woocommerce_conduit.tasks import order_lines, order_payment, sync_sales_orders
+from woocommerce_conduit.tasks.field_map import LOGGED_PROBLEMS_FLAG
 from woocommerce_conduit.tasks.order_lines import (
 	build_charges,
 	get_line_rate,
@@ -1422,6 +1423,38 @@ class TestLines(IntegrationTestCase):
 		self.assertEqual(rows[0]["description"], "Sleeves &amp; Toploader")
 		self.assertIn("Sleeves & Toploader", issues[0])
 
+	def map_line(self, *rows, **line_values):
+		sync = self.make([{**line(1, 10, 1, 5), **line_values}])
+		frappe.flags.pop(LOGGED_PROBLEMS_FLAG, None)
+		with patch.object(frappe, "log_error") as log_error:
+			built_rows, _issues = self.build(
+				sync,
+				{"10": "MUG"},
+				order_item_field_map=[
+					_dict(erpnext_field_name=field, woocommerce_field_name=path) for field, path in rows
+				],
+			)
+		return built_rows[0], log_error
+
+	def test_the_order_line_fields_map_fills_the_row(self):
+		row, _log_error = self.map_line(
+			("description | Description", "$.meta_data[?key=='Engraving'].value"),
+			meta_data=[{"key": "Engraving", "value": "For Ala"}],
+		)
+
+		self.assertEqual(row["description"], "For Ala")
+		self.assertEqual(row["item_code"], "MUG")
+
+	def test_a_line_value_the_field_can_not_take_is_left_out(self):
+		row, log_error = self.map_line(
+			("item_name | Item Name", "$.meta_data[?key=='Note'].value"),
+			meta_data=[{"key": "Note", "value": "M" * 200}],
+		)
+
+		# The row is made all the same, with the Item's name
+		self.assertEqual(row["item_name"], "Mug (Item)")
+		log_error.assert_called_once()
+
 	def test_inclusive_rows_are_what_the_customer_paid(self):
 		sync = self.make([line(1, 10, 2, 400, total_tax=92)])
 		with patch.object(order_lines, "prices_include_tax", return_value=True):
@@ -1478,9 +1511,9 @@ class TestLines(IntegrationTestCase):
 			"delivery_date": "2026-11-06",
 		}
 
-	def update(self, sync, wanted):
+	def update(self, sync, wanted, server=None):
 		with (
-			patch.object(sync, "get_wc_server", return_value=_dict(name=SERVER)),
+			patch.object(sync, "get_wc_server", return_value=server or _dict(name=SERVER)),
 			patch.object(sync, "create_missing_items"),
 			patch.object(sync, "build_item_rows", return_value=(wanted, [])),
 			patch.object(order_lines, "update_child_qty_rate") as update_child_qty_rate,
@@ -1547,6 +1580,33 @@ class TestLines(IntegrationTestCase):
 		set_value.assert_called_once()
 		self.assertEqual(set_value.call_args.args[:2], ("Sales Order Item", "SOI-3"))
 		self.assertEqual(set_value.call_args.args[2]["woocommerce_line_item_id"], "3")
+
+	def test_rows_update_items_adds_get_the_mapped_values_sanitised(self):
+		sync = self.make([line(1, 10, 2, 18), line(3, 12, 1, 4)], items=[self.row(1, "MUG", 2, 9, "SOI-1")])
+
+		def reload():
+			sync.sales_order.items = [
+				self.row(1, "MUG", 2, 9, "SOI-1"),
+				_dict(name="SOI-3", item_code="PLATE", woocommerce_line_item_id=None),
+			]
+
+		sync.sales_order.reload.side_effect = reload
+		new_line = {**self.wanted(3, "PLATE", 1, 4), "additional_notes": "For Ala<script>alert(1)</script>"}
+		row = _dict(
+			erpnext_field_name="additional_notes | Notes", woocommerce_field_name="$.meta_data[0].value"
+		)
+		_trans_items, set_value = self.update(
+			sync,
+			[self.wanted(1, "MUG", 2, 9), new_line],
+			server=_dict(name=SERVER, order_item_field_map=[row]),
+		)
+
+		# One write, with the line's ids and its mapped value, as a save would store it
+		set_value.assert_called_once()
+		values = set_value.call_args.args[2]
+		self.assertEqual(values["woocommerce_line_item_id"], "3")
+		self.assertIn("For Ala", values["additional_notes"])
+		self.assertNotIn("<script>", values["additional_notes"])
 
 	def test_lines_of_a_delivered_or_invoiced_order_are_flagged(self):
 		for values in ({"per_delivered": 50}, {"per_billed": 100}, {"docstatus": 0}):

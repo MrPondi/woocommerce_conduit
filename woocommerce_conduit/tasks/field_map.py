@@ -1,6 +1,7 @@
 """
 The field maps of a WooCommerce Server. A row copies a value of a WooCommerce record, found with a JSONPath,
-into a field of an ERPNext document: the Item Field Map from a product into its Item. A row can have the
+into a field of an ERPNext document: the Item Field Map from a product into its Item, the Order Line Fields
+map from an order line into its Sales Order Item. A row can have the
 value changed first by a transform, a method another app registers under the `woocommerce_field_transforms`
 hook (see hooks.py).
 """
@@ -13,6 +14,7 @@ import frappe
 from frappe import _
 from frappe.model import no_value_fields, numeric_fieldtypes
 from frappe.utils import cint, cstr, escape_html
+from frappe.utils.html_utils import sanitize_html
 from jsonpath_ng.ext import parse
 from jsonpath_ng.jsonpath import Child, Fields, Root
 
@@ -33,6 +35,12 @@ REFUSED_ITEM_FIELDS = (
 	"opening_stock",
 	"standard_rate",
 )
+
+# The standard Sales Order Item fields the Order Line Fields map may write, besides the custom ones. The others
+# change what the line costs, how it is taxed or how it is delivered, which the sync and ERPNext work out.
+ORDER_ITEM_MAP_FIELDS = ("item_name", "description", "additional_notes")
+# The custom fields of Sales Order Item that the sync sets itself
+SYNC_ORDER_ITEM_FIELDS = ("woocommerce_id", "woocommerce_line_item_id")
 
 # Kept in frappe.flags, so a request or job logs each problem of a map once rather than once per record
 LOGGED_PROBLEMS_FLAG = "woocommerce_logged_map_problems"
@@ -90,6 +98,19 @@ def get_item_map_fields() -> set[str]:
 	The Item fields the Item Field Map may write
 	"""
 	return get_value_fields("Item") - set(REFUSED_ITEM_FIELDS)
+
+
+def get_order_item_map_fields() -> set[str]:
+	"""
+	The Sales Order Item fields the Order Line Fields map may write: the custom ones but the sync's own, and
+	the line's name, description and notes
+	"""
+	custom_fields = {
+		df.fieldname
+		for df in frappe.get_meta("Sales Order Item").get_custom_fields()
+		if df.fieldtype not in no_value_fields
+	}
+	return (custom_fields - set(SYNC_ORDER_ITEM_FIELDS)) | set(ORDER_ITEM_MAP_FIELDS)
 
 
 def get_product_fields() -> set[str]:
@@ -265,3 +286,13 @@ def log_problem(row, problem: str, record_name: str) -> None:
 		f"{row.woocommerce_field_name} → {get_target_fieldname(row)}: {problem}\n\n"
 		f"First seen on {record_name}; other records with the same problem aren't logged again in this run.",
 	)
+
+
+def sanitize_text(value):
+	"""
+	A mapped value as a save would store it, for one written without a save: text with markup in it, which can
+	come from a customer's checkout, without its scripts and event handlers
+	"""
+	if isinstance(value, str) and ("<" in value or ">" in value):
+		return sanitize_html(value)
+	return value

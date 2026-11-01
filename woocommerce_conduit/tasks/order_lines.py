@@ -6,6 +6,7 @@ from erpnext.controllers.accounts_controller import update_child_qty_rate
 from frappe import _
 from frappe.utils import cstr, flt
 
+from woocommerce_conduit.tasks.field_map import get_mapped_values, get_target_fieldname, sanitize_text
 from woocommerce_conduit.tasks.sync import unescape_text
 from woocommerce_conduit.tasks.sync_items import run_item_sync
 from woocommerce_conduit.tasks.taxes import get_vat_rates, prices_include_tax, split_vat
@@ -225,6 +226,7 @@ class SalesOrderLinesMixin:
 		Sales Order would not add up: one whose product is gone gets the placeholder Item.
 		"""
 		tax_inclusive = prices_include_tax(wc_server)
+		field_map = wc_server.get("order_item_field_map") or []
 		rows, issues = [], []
 		for line in get_line_items(self.woocommerce_order):
 			product_id = get_product_id(line)
@@ -237,16 +239,24 @@ class SalesOrderLinesMixin:
 						get_line_name(line), item_code
 					)
 				)
-			rows.append(
-				build_item_row(
+			row = build_item_row(
+				line,
+				item_code,
+				item_name,
+				get_line_rate(line, tax_inclusive),
+				wc_server.warehouse,
+				delivery_date,
+			)
+			# What the Order Line Fields map takes from the line, which may only write fields the sync doesn't
+			row.update(
+				get_mapped_values(
+					field_map,
 					line,
-					item_code,
-					item_name,
-					get_line_rate(line, tax_inclusive),
-					wc_server.warehouse,
-					delivery_date,
+					frappe.get_meta("Sales Order Item"),
+					f"{self.woocommerce_order.name}, line {line.get('id')}",
 				)
 			)
+			rows.append(row)
 		return rows, issues
 
 	def set_items_in_sales_order(self, new_sales_order: SyncedOrder):
@@ -363,8 +373,12 @@ class SalesOrderLinesMixin:
 
 	def link_new_rows(self, wanted: list[dict]) -> None:
 		"""
-		Update Items doesn't take custom fields, so the rows it added are linked to their line here
+		Update Items doesn't take custom fields, so the rows it added are linked to their line here, and get what
+		the Order Line Fields map takes from it. They are written without a save, so sanitised as a save would.
 		"""
+		mapped_fields = {
+			get_target_fieldname(row) for row in self.get_wc_server().get("order_item_field_map") or []
+		}
 		linked = {cstr(row.woocommerce_line_item_id) for row in self.sales_order.items}
 		unlinked = [row for row in self.sales_order.items if not row.woocommerce_line_item_id]
 		for line in wanted:
@@ -374,14 +388,10 @@ class SalesOrderLinesMixin:
 			if not row:
 				continue
 			unlinked.remove(row)
-			frappe.db.set_value(
-				"Sales Order Item",
-				row.name,
-				{
-					"woocommerce_id": line["woocommerce_id"],
-					"woocommerce_line_item_id": line["woocommerce_line_item_id"],
-				},
-				update_modified=False,
-			)
-			row.woocommerce_id = line["woocommerce_id"]
-			row.woocommerce_line_item_id = line["woocommerce_line_item_id"]
+			values = {
+				"woocommerce_id": line["woocommerce_id"],
+				"woocommerce_line_item_id": line["woocommerce_line_item_id"],
+				**{field: sanitize_text(line[field]) for field in mapped_fields if field in line},
+			}
+			frappe.db.set_value("Sales Order Item", row.name, values, update_modified=False)
+			row.update(values)

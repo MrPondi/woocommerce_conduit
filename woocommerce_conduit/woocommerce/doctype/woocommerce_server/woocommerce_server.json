@@ -50,6 +50,8 @@
   "enabled_order_status",
   "load_default_order_statuses",
   "sales_order_status_map",
+  "order_item_fields_section",
+  "order_item_field_map",
   "items_tab",
   "check_order_items",
   "name_by",
@@ -369,6 +371,19 @@
    "options": "WooCommerce Server Order Status"
   },
   {
+   "collapsible": 1,
+   "fieldname": "order_item_fields_section",
+   "fieldtype": "Section Break",
+   "label": "Order Line Fields"
+  },
+  {
+   "description": "Copies a value of each order line into a field of its Sales Order Item when the row is made, a plugin's line meta data into a custom field, say. Only custom fields, Item Name, Description and Additional Notes can be written.",
+   "fieldname": "order_item_field_map",
+   "fieldtype": "Table",
+   "label": "Order Line Fields Mapping",
+   "options": "WooCommerce Server Order Item Field"
+  },
+  {
    "fieldname": "column_break_velv",
    "fieldtype": "Column Break"
   },
@@ -501,7 +516,7 @@
  "icon": "server-plus",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-01 14:26:58.586831",
+ "modified": "2026-11-01 22:30:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",

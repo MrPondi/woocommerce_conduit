@@ -50,13 +50,31 @@ frappe.ui.form.on("WooCommerce Server", {
 			);
 		});
 
+		// The Sales Order Item fields the Order Line Fields map may write, as the server says
+		const order_item_fields = frm.doc.__onload?.order_item_fields || [];
+		frappe.model.with_doctype("Sales Order Item", () => {
+			const options = order_item_fields
+				.map((fieldname) => frappe.meta.get_docfield("Sales Order Item", fieldname))
+				.filter(Boolean)
+				.sort((a, b) => (a.label || a.fieldname).localeCompare(b.label || b.fieldname))
+				.map((df) => `${df.fieldname} | ${df.label || df.fieldname}`)
+				.join("\n");
+			frm.fields_dict.order_item_field_map.grid.update_docfield_property(
+				"erpnext_field_name",
+				"options",
+				options
+			);
+		});
+
 		// The transforms the installed apps register, after a blank for none
 		const transforms = ["", ...(frm.doc.__onload?.field_transforms || [])].join("\n");
-		frm.fields_dict.item_field_map.grid.update_docfield_property(
-			"transform",
-			"options",
-			transforms
-		);
+		for (const table of ["item_field_map", "order_item_field_map"]) {
+			frm.fields_dict[table].grid.update_docfield_property(
+				"transform",
+				"options",
+				transforms
+			);
+		}
 	},
 
 	// Add the order statuses of the shop that the Order Status Map lacks

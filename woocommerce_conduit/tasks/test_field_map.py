@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe import _dict
@@ -10,6 +10,7 @@ from woocommerce_conduit.tasks.field_map import (
 	fit_value,
 	get_first_field_names,
 	get_mapped_values,
+	get_order_item_map_fields,
 	get_transforms,
 	parse_path,
 	validate_map_row,
@@ -153,3 +154,17 @@ class TestTransforms(IntegrationTestCase):
 			self.assertRaises(frappe.ValidationError),
 		):
 			validate_map_row(row, "Item Field Map", "Item", {"item_name"})
+
+
+class TestOrderLineFields(IntegrationTestCase):
+	def test_the_map_writes_the_custom_fields_but_the_syncs_and_the_lines_text(self):
+		meta = MagicMock()
+		meta.get_custom_fields.return_value = [
+			_dict(fieldname="engraving", fieldtype="Data"),
+			_dict(fieldname="woocommerce_line_item_id", fieldtype="Data"),
+			_dict(fieldname="engraving_section", fieldtype="Section Break"),
+		]
+		with patch.object(frappe, "get_meta", return_value=meta):
+			fields = get_order_item_map_fields()
+
+		self.assertEqual(fields, {"engraving", "item_name", "description", "additional_notes"})

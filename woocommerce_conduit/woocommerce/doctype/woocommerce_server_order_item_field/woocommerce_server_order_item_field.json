@@ -1,0 +1,54 @@
+{
+ "actions": [],
+ "creation": "2026-11-01 22:30:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "erpnext_field_name",
+  "column_break_ordr",
+  "woocommerce_field_name",
+  "transform"
+ ],
+ "fields": [
+  {
+   "fieldname": "erpnext_field_name",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "ERPNext Field Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_ordr",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "<code>$</code> is the order line as WooCommerce sends it in the order's <code>line_items</code>: <code>$.sku</code>, <code>$.meta_data[?key=='Engraving'].value</code>, or <code>$.meta_data[?key=='pa_color'].display_value</code>",
+   "fieldname": "woocommerce_field_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "JSONPath on the Order Line",
+   "reqd": 1
+  },
+  {
+   "description": "Changes the value before it is set: a method that an installed app registers under the <code>woocommerce_field_transforms</code> hook",
+   "fieldname": "transform",
+   "fieldtype": "Select",
+   "label": "Transform"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-01 22:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "WooCommerce",
+ "name": "WooCommerce Server Order Item Field",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

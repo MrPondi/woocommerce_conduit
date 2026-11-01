@@ -287,3 +287,27 @@ class TestWooCommerceServer(IntegrationTestCase):
 		for erpnext_field_name in ("item_code | Item Code", "stock_uom | Default Unit of Measure"):
 			with self.subTest(field=erpnext_field_name), self.assertRaises(frappe.ValidationError):
 				self.validate_item_path("$.sku", erpnext_field_name=erpnext_field_name)
+
+	def test_the_order_line_fields_map_writes_only_what_it_may(self):
+		def validate(erpnext_field_name):
+			new_server(
+				order_item_field_map=[
+					{
+						"erpnext_field_name": erpnext_field_name,
+						"woocommerce_field_name": "$.meta_data[0].value",
+					}
+				]
+			).validate_order_item_map()
+
+		for erpnext_field_name in ("item_name | Item Name", "additional_notes | Additional Notes"):
+			validate(erpnext_field_name)
+		# A field the sync sets, one that changes what the line costs or how it is delivered, and one ERPNext
+		# computes
+		for erpnext_field_name in (
+			"woocommerce_line_item_id | WooCommerce Line Item ID",
+			"rate | Rate",
+			"supplier | Supplier",
+			"amount | Amount",
+		):
+			with self.subTest(field=erpnext_field_name), self.assertRaises(frappe.ValidationError):
+				validate(erpnext_field_name)

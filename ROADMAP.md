@@ -72,12 +72,6 @@ Start at: `SynchroniseSalesOrder.create_or_link_customer_and_address`, Fusion's 
 
 ## Items
 
-### Order line field mapping
-
-The Item Field Map copies product values into Items; nothing does the same for order lines. Fusion maps order line fields to Sales Order Item fields (`WooCommerce Server Order Item Field`), a plugin's line meta data into a custom field, say.
-
-Start at: `tasks/field_map.py`, `order_lines.build_item_row`.
-
 ### Bulk product import from the form
 
 `sync_woocommerce_products_modified_since` imports a shop's products, but it can only be run by hand (`bench execute`). A button on the server form that enqueues it and reports progress (`frappe.publish_progress`) would make a shop's first import self-service.
