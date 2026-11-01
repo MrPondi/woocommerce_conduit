@@ -12,7 +12,7 @@ from erpnext.selling.doctype.sales_order_item.sales_order_item import SalesOrder
 from frappe import _
 from frappe.contacts.doctype.address.address import Address
 from frappe.contacts.doctype.contact.contact import Contact
-from frappe.utils import cstr, get_datetime
+from frappe.utils import cint, cstr, get_datetime
 from frappe.utils.data import now
 from frappe.utils.synchronization import filelock
 
@@ -43,9 +43,9 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_settings.woocommerce_se
 	WooCommerceSettings,
 )
 from woocommerce_conduit.woocommerce.woocommerce_api import (
-	WooCommerceDocument,
 	generate_woocommerce_record_name_from_domain_and_id,
 	get_domain_and_id_from_woocommerce_record_name,
+	log_and_raise_error,
 )
 
 # The most orders one sync looks at, fetched 100 per request
@@ -542,50 +542,39 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 
 	def create_or_link_customer_and_address(self) -> str | None:
 		"""
-		Create or update Customer and Address records, with special handling for guest orders using order ID.
+		Create or update the Customer of the order, with its Address and Contact. The addresses are those of
+		the order, as the customer gave them for it, also when they have an account: the account's can be
+		out of date. A registered customer is identified by their username, a guest by the order.
 		"""
 		if not self.woocommerce_order:
 			return
 
-		# Determine if the order is from a guest user
-		is_customer = (
-			self.woocommerce_order.customer_id not in [None, 0]
-			and "customer" in self.woocommerce_order._links
-		)
-
-		if is_customer:
-			customer_data = WooCommerceDocument.get_api_response(
-				self.woocommerce_order.woocommerce_server,
-				json.loads(self.woocommerce_order._links)["customer"][0]["href"].split("/wp-json/wc/v3/", 1)[
-					1
-				],
-			)
-			billing_data = customer_data["billing"]
-			shipping_data = customer_data["shipping"]
-		else:
-			billing_data = get_address_data(self.woocommerce_order, "billing")
-			shipping_data = get_address_data(self.woocommerce_order, "shipping")
-			customer_data = billing_data
+		order = self.woocommerce_order
+		billing_data = get_address_data(order, "billing")
+		shipping_data = get_address_data(order, "shipping")
+		is_customer = cint(order.customer_id) > 0
+		# Only for what identifies the Customer. None when the shop no longer has the account.
+		account = self.get_customer_account() if is_customer else None
 
 		first_name = billing_data.get("first_name", "").strip()
 		last_name = billing_data.get("last_name", "").strip()
 		company_name = billing_data.get("company", "").strip()
-		email = customer_data.get("email", "").strip()
+		email = cstr((account or {}).get("email") or billing_data.get("email")).strip()
 		individual_name = f"{first_name} {last_name}".strip()
 
 		if not email and is_customer:
-			# Log raw_billing_data
 			frappe.log_error(
 				"WooCommerce Error",
-				f"Email is required to create or link a customer. \n\nCustomer Data: {customer_data}",
+				f"Email is required to create or link a customer. \n\nCustomer Data: {account or billing_data}",
 			)
 			return None
 
-		# Use order ID for guest users, otherwise use email
+		# The order for a guest, the username for a registered customer (the email when the account is gone)
+		username = cstr((account or {}).get("username")).strip()
 		if not is_customer:
-			customer_identifier = f"Guest-{self.woocommerce_order.woocommerce_id}"
-		elif "username" in customer_data and customer_data.get("username", "").strip():
-			customer_identifier = customer_data.get("username", "").strip()
+			customer_identifier = f"Guest-{order.woocommerce_id}"
+		elif username:
+			customer_identifier = username
 		elif company_name:
 			customer_identifier = f"{email}-{company_name}"
 		else:
@@ -601,8 +590,8 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 			customer: WooCustomer = frappe.new_doc("Customer")  # type: ignore
 			customer.woocommerce_identifier = customer_identifier
 			customer.customer_type = "Company" if company_name else "Individual"
-			if is_customer:
-				customer.image = customer_data["avatar_url"]
+			if account and account.get("avatar_url"):
+				customer.image = account["avatar_url"]
 		else:
 			# Edit Customer
 			customer: WooCustomer = frappe.get_doc("Customer", existing_customer)  # type: ignore
@@ -629,7 +618,12 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		billing_address = self.create_or_update_address(billing_data, shipping_data)
 		self.customer.customer_primary_address = billing_address.name
 		contact = create_contact(
-			customer_data,
+			{
+				"first_name": first_name,
+				"last_name": last_name,
+				"email": email,
+				"phone": billing_data.get("phone"),
+			},
 			billing_address,
 			self.customer,
 		)
@@ -643,6 +637,20 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 			frappe.log_error("WooCommerce Error", error_message)
 
 		return customer.name
+
+	def get_customer_account(self) -> dict | None:
+		"""
+		The account of the order's customer in the shop, for the username that identifies their Customer.
+		None when the shop no longer has it.
+		"""
+		order = self.woocommerce_order
+		endpoint = f"customers/{cint(order.customer_id)}"
+		response = order.current_wc_api.get(endpoint, params={"_fields": "email,username,avatar_url"})
+		if response.status_code == 404:
+			return None
+		if response.status_code != 200:
+			log_and_raise_error(error_text=f"Could not read {endpoint}", response=response)
+		return response.json()
 
 	def create_or_update_address(self, billing: dict, shipping: dict) -> Address:
 		"""

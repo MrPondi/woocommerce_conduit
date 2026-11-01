@@ -1577,3 +1577,68 @@ class TestInvoiceAndHold(InvoiceAndPaymentCase):
 		):
 			sync.sync_wc_order_with_erpnext_order()
 		create_sales_order.assert_called_once_with(ACTION_SUBMIT_INVOICE_HOLD)
+
+
+class TestCustomer(IntegrationTestCase):
+	def run_step(self, customer_id=0, account=None, account_status=200):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		order = _dict(
+			woocommerce_id="12",
+			customer_id=customer_id,
+			billing_first_name="Ann",
+			billing_last_name="Smith",
+			billing_company="",
+			billing_email="ann@order.example.com",
+			billing_phone="555-0100",
+			billing_address_1="Order Street 1",
+			billing_city="Kraków",
+			shipping_first_name="Ann",
+			shipping_last_name="Smith",
+			shipping_address_1="Order Street 1",
+			shipping_city="Kraków",
+		)
+		order.current_wc_api = MagicMock()
+		order.current_wc_api.get.return_value = MagicMock(status_code=account_status, json=lambda: account)
+		sync.woocommerce_order = order
+		customer = MagicMock(flags=_dict())
+		with (
+			patch.object(frappe, "get_value", return_value=None),
+			patch.object(frappe, "new_doc", return_value=customer),
+			patch.object(sync, "create_or_update_address") as create_or_update_address,
+			patch.object(sync_sales_orders, "create_contact") as create_contact,
+		):
+			sync.create_or_link_customer_and_address()
+		return order, customer, create_or_update_address, create_contact
+
+	def test_a_guest_is_a_customer_of_the_order(self):
+		order, customer, create_or_update_address, create_contact = self.run_step()
+
+		order.current_wc_api.get.assert_not_called()
+		self.assertEqual(customer.woocommerce_identifier, "Guest-12")
+		billing, _shipping = create_or_update_address.call_args.args
+		self.assertEqual(billing["address_1"], "Order Street 1")
+		self.assertEqual(create_contact.call_args.args[0]["phone"], "555-0100")
+
+	def test_a_registered_customer_is_their_account_with_the_addresses_of_the_order(self):
+		account = {
+			"email": "ann@account.example.com",
+			"username": "ann",
+			"avatar_url": "https://a.example.com/ann",
+		}
+
+		order, customer, create_or_update_address, create_contact = self.run_step(
+			customer_id=7, account=account
+		)
+
+		self.assertEqual(order.current_wc_api.get.call_args.args[0], "customers/7")
+		self.assertEqual(customer.woocommerce_identifier, "ann")
+		self.assertEqual(customer.image, "https://a.example.com/ann")
+		billing, _shipping = create_or_update_address.call_args.args
+		self.assertEqual(billing["address_1"], "Order Street 1")
+		contact = create_contact.call_args.args[0]
+		self.assertEqual((contact["email"], contact["phone"]), ("ann@account.example.com", "555-0100"))
+
+	def test_a_customer_whose_account_is_gone_is_known_by_email(self):
+		_order, customer, *_ = self.run_step(customer_id=7, account_status=404)
+
+		self.assertEqual(customer.woocommerce_identifier, "ann@order.example.com")

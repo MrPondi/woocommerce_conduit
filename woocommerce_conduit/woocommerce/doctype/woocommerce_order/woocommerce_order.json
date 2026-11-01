@@ -78,8 +78,7 @@
   "parent_id",
   "woocommerce_date_created",
   "woocommerce_date_modified",
-  "currency",
-  "_links"
+  "currency"
  ],
  "fields": [
   {
@@ -119,14 +118,14 @@
    "fieldtype": "Section Break"
   },
   {
+   "bold": 1,
    "fieldname": "number",
    "fieldtype": "Data",
    "in_filter": 1,
    "in_list_view": 1,
    "label": "WooCommerce Order Number",
    "read_only": 1,
-   "reqd": 1,
-   "bold": 1
+   "reqd": 1
   },
   {
    "fieldname": "created_via",
@@ -141,14 +140,14 @@
    "read_only": 1
   },
   {
+   "description": "Changing it here changes it in WooCommerce, and the Sales Order follows as the Order Status Map says",
    "fieldname": "status",
    "fieldtype": "Autocomplete",
    "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Status",
    "read_only": 0,
-   "reqd": 1,
-   "in_standard_filter": 1,
-   "description": "Changing it here changes it in WooCommerce, and the Sales Order follows as the Order Status Map says"
+   "reqd": 1
   },
   {
    "fieldname": "column_break_ngmb",
@@ -365,10 +364,10 @@
   {
    "fieldname": "woocommerce_date_created",
    "fieldtype": "Datetime",
+   "in_list_view": 1,
    "label": "Date Created",
    "read_only": 1,
-   "reqd": 1,
-   "in_list_view": 1
+   "reqd": 1
   },
   {
    "fieldname": "woocommerce_date_modified",
@@ -385,15 +384,6 @@
    "fieldname": "currency",
    "fieldtype": "Data",
    "label": "Currency",
-   "read_only": 1,
-   "reqd": 1
-  },
-  {
-   "default": "{}",
-   "fieldname": "_links",
-   "fieldtype": "JSON",
-   "hidden": 1,
-   "label": "Links",
    "read_only": 1,
    "reqd": 1
   },
@@ -424,9 +414,9 @@
   {
    "fieldname": "billing_email",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Email",
-   "read_only": 1,
-   "in_list_view": 1
+   "read_only": 1
   },
   {
    "fieldname": "billing_phone",
@@ -559,7 +549,7 @@
  "index_web_pages_for_search": 1,
  "is_virtual": 1,
  "links": [],
- "modified": "2026-10-31 10:00:00.000000",
+ "modified": "2026-11-01 13:51:25.645646",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Order",
@@ -580,9 +570,9 @@
   }
  ],
  "row_format": "Dynamic",
+ "show_title_field_in_link": 1,
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "title_field": "number",
- "show_title_field_in_link": 1
+ "title_field": "number"
 }

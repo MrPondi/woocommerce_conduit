@@ -14,7 +14,7 @@ ADDRESS_PREFIXES = ("billing", "shipping")
 # Prefixed fields that are not part of the nested address
 NON_ADDRESS_FIELDS = {"shipping_total", "shipping_tax", "shipping_lines"}
 # Indented in the form, so they can be read
-JSON_FIELDS = ("line_items", "shipping_lines", "fee_lines", "tax_lines", "coupon_lines", "refunds", "_links")
+JSON_FIELDS = ("line_items", "shipping_lines", "fee_lines", "tax_lines", "coupon_lines", "refunds")
 
 
 def get_address_data(order, prefix: str) -> dict:
@@ -36,7 +36,6 @@ class WooCommerceOrder(WooCommerceDocument):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		_links: DF.JSON
 		billing_address_1: DF.Data | None
 		billing_address_2: DF.Data | None
 		billing_city: DF.Data | None

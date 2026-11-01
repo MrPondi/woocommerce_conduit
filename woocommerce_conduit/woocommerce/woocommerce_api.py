@@ -783,20 +783,6 @@ class WooCommerceDocument(Document):
 				)
 		return total_count
 
-	@classmethod
-	def get_api_response(cls, server: str, endpoint: str, **kwargs):
-		# Initialise the WC API
-		try:
-			wc_api_list = cls._init_api()
-		except SyncDisabledError:
-			frappe.msgprint(
-				_("WooCommerce synchronization is disabled. Please enable at least one WooCommerce server.")
-			)
-			return {}
-
-		wcapi = next(api for api in wc_api_list if server in api.woocommerce_server_url)
-		return wcapi.get(endpoint, **kwargs).json()
-
 
 def generate_woocommerce_record_name_from_domain_and_id(
 	domain: str, resource_id: str | int, delimiter: str = WC_RESOURCE_DELIMITER
