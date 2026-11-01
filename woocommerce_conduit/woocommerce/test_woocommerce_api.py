@@ -16,6 +16,8 @@ from woocommerce_conduit.woocommerce.woocommerce_api import (
 	WooCommerceAPI,
 	clear_api_clients,
 	get_api_clients,
+	get_servers_from_filters,
+	map_frappe_filters_to_wc_params,
 )
 
 DATES = {"date_created": "2025-01-01T10:00:00", "date_modified": "2025-01-02T10:00:00"}
@@ -266,3 +268,75 @@ class TestRequestLog(IntegrationTestCase):
 		)
 
 		self.assertEqual(len(log["output"]), woocommerce_api.LOGGED_RESPONSE_LENGTH)
+
+
+class TestFilters(IntegrationTestCase):
+	def test_every_form_of_filter_is_understood(self):
+		expected = {"status": ["processing"]}
+		self.assertEqual(
+			map_frappe_filters_to_wc_params({"status": "processing"}, "WooCommerce Order"), expected
+		)
+		self.assertEqual(
+			map_frappe_filters_to_wc_params([["status", "=", "processing"]], "WooCommerce Order"), expected
+		)
+		self.assertEqual(
+			map_frappe_filters_to_wc_params([["WooCommerce Order", "status", "=", "processing"]]), expected
+		)
+
+	def test_a_date_range_is_whole_days(self):
+		filters = [["WooCommerce Order", "woocommerce_date_created", "Between", ["2026-10-01", "2026-10-31"]]]
+		self.assertEqual(
+			map_frappe_filters_to_wc_params(filters),
+			{"after": "2026-10-01T00:00:00", "before": "2026-11-01T00:00:00"},
+		)
+
+	def test_the_fields_of_the_doctype_filter_by_date_too(self):
+		filters = [["WooCommerce Order", "modified", ">", "2026-10-30 10:00:00.123456"]]
+		self.assertEqual(map_frappe_filters_to_wc_params(filters), {"modified_after": "2026-10-30T10:00:00"})
+
+	def test_names_are_asked_for_by_their_id(self):
+		self.assertEqual(
+			map_frappe_filters_to_wc_params([["WooCommerce Order", "name", "=", "one.example.com~12"]]),
+			{"include": ["12"]},
+		)
+		self.assertEqual(
+			map_frappe_filters_to_wc_params(
+				[["WooCommerce Order", "name", "in", ["one.example.com~12", "one.example.com~13"]]]
+			),
+			{"include": "12,13"},
+		)
+
+	def test_a_filter_on_the_server_picks_the_servers(self):
+		by_server = {"woocommerce_server": "two.example.com"}
+		self.assertEqual(map_frappe_filters_to_wc_params(by_server, "WooCommerce Order"), {})
+		self.assertEqual(get_servers_from_filters(by_server, "WooCommerce Order"), {"two.example.com"})
+		self.assertEqual(
+			get_servers_from_filters([["WooCommerce Order", "name", "=", "one.example.com~12"]]),
+			{"one.example.com"},
+		)
+		self.assertIsNone(get_servers_from_filters([["WooCommerce Order", "status", "=", "processing"]]))
+
+	def test_a_list_by_server_reads_only_that_server(self):
+		one, two = PagedAPI("one.example.com", 3), PagedAPI("two.example.com", 3)
+		with patch.object(WooCommerceOrder, "_init_api", return_value=[one, two]):
+			WooCommerceOrder.get_list_of_records({"filters": {"woocommerce_server": "two.example.com"}})
+
+		self.assertEqual(one.requests, [])
+		self.assertEqual(len(two.requests), 1)
+		self.assertNotIn("woocommerce_server", two.requests[0])
+
+	def test_the_count_has_the_filters_of_the_list(self):
+		one, two = PagedAPI("one.example.com", 3), PagedAPI("two.example.com", 5)
+		with patch.object(WooCommerceOrder, "_init_api", return_value=[one, two]):
+			count = WooCommerceOrder.get_count_of_records(
+				{
+					"filters": [
+						["WooCommerce Order", "status", "=", "processing"],
+						["WooCommerce Order", "woocommerce_server", "=", "two.example.com"],
+					]
+				}
+			)
+
+		self.assertEqual(count, 5)
+		self.assertEqual(one.requests, [])
+		self.assertEqual(two.requests[0]["status"], ["processing"])

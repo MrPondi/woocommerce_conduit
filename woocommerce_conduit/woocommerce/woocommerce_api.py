@@ -10,7 +10,8 @@ from frappe import _
 from frappe.deferred_insert import deferred_insert
 from frappe.model import no_value_fields, numeric_fieldtypes
 from frappe.model.document import Document
-from frappe.utils import cint
+from frappe.types.filter import Filters
+from frappe.utils import add_days, cint, cstr, get_datetime, getdate
 from frappe.utils.caching import request_cache
 from frappe.utils.password import get_decrypted_password
 from woocommerce import API
@@ -452,6 +453,16 @@ class WooCommerceDocument(Document):
 		return ",".join(dict.fromkeys(wc_fields))
 
 	@classmethod
+	def get_servers_to_read(cls, args) -> set[str] | None:
+		"""
+		The servers that `servers` and the filters of a list or count leave, or None for all of them
+		"""
+		servers = set(args.get("servers") or []) or None
+		if (from_filters := get_servers_from_filters(args.get("filters"), cls.doctype)) is not None:
+			servers = from_filters if servers is None else servers & from_filters
+		return servers
+
+	@classmethod
 	def get_wc_orderby(cls, fieldname: str) -> str | None:
 		"""
 		The WooCommerce `orderby` for a Frappe fieldname, or None if WooCommerce can't order by it
@@ -512,9 +523,9 @@ class WooCommerceDocument(Document):
 		# Map Frappe filters to WooCommerce parameters
 		if args.get("filters"):
 			# An unsupported filter must fail: dropping it would return unrelated records
-			params.update(map_frappe_filters_to_wc_params(args["filters"]))
+			params.update(map_frappe_filters_to_wc_params(args["filters"], cls.doctype))
 
-		servers = args.get("servers")
+		servers = cls.get_servers_to_read(args)
 		page_length = cint(args.get("page_length")) or WC_PAGE_LIMIT
 		per_page = min(cint(args.get("per_page")) or page_length, WC_PAGE_LIMIT)
 		endpoint = args.get("endpoint") or cls.resource
@@ -525,7 +536,7 @@ class WooCommerceDocument(Document):
 		for wc_api in wc_api_list:
 			if len(records) >= page_length:
 				break
-			if servers and wc_api.woocommerce_server not in servers:
+			if servers is not None and wc_api.woocommerce_server not in servers:
 				continue
 			server_records, total = cls._get_records_of_server(
 				wc_api, endpoint, params, offset, per_page, page_length - len(records), strict, args
@@ -720,7 +731,7 @@ class WooCommerceDocument(Document):
 	@classmethod
 	def get_count_of_records(cls, args) -> int:
 		"""
-		Returns count of WooCommerce Records across all enabled servers
+		Returns count of WooCommerce Records across the enabled servers, with the filters of the list
 
 		Args:
 			args: Dictionary containing request parameters (filters, etc.)
@@ -740,12 +751,20 @@ class WooCommerceDocument(Document):
 			)
 			return 0
 
+		args = args if isinstance(args, dict) else {}
+		params = {"per_page": 1, "_fields": "id"}
+		if args.get("filters"):
+			params.update(map_frappe_filters_to_wc_params(args["filters"], cls.doctype))
+		servers = cls.get_servers_to_read(args)
+
 		total_count = 0
 
 		# Get counts from each server
 		for wc_server in wc_api_list:
+			if servers is not None and wc_server.woocommerce_server not in servers:
+				continue
 			try:
-				response = wc_server.get(cls.resource, params={"per_page": 1, "_fields": "id"})
+				response = wc_server.get(cls.resource, params=params)
 
 				if response.status_code != 200:
 					frappe.log_error(
@@ -866,39 +885,114 @@ def get_domain_and_id_from_woocommerce_record_name(
 	return domain, int(record_id_str)
 
 
-def map_frappe_filters_to_wc_params(filters):
-	"""
-	Maps Frappe filters to WooCommerce API parameters
+# Frappe fieldname -> the WooCommerce parameters for after and before a date
+DATE_FILTER_PARAMS = {
+	"date_created": ("after", "before"),
+	"woocommerce_date_created": ("after", "before"),
+	"creation": ("after", "before"),
+	"date_modified": ("modified_after", "modified_before"),
+	"woocommerce_date_modified": ("modified_after", "modified_before"),
+	"modified": ("modified_after", "modified_before"),
+}
 
-	This handles the standard filters that Frappe will pass to get_list
+
+def normalise_filters(filters, doctype: str | None = None) -> list:
+	"""
+	The filters as Frappe's FilterTuples (doctype, fieldname, operator, value), whichever form they come in:
+	a dict, lists of three or four, or Filters
+	"""
+	if not filters:
+		return []
+	if isinstance(filters, str):
+		filters = json.loads(filters)
+	if isinstance(filters, Filters):
+		return list(filters)
+	return list(Filters(filters, doctype=doctype) if doctype else Filters(filters))
+
+
+def as_values(value) -> list:
+	return list(value) if isinstance(value, list | tuple | set) else [value]
+
+
+def to_wc_datetime(value) -> str:
+	"""
+	A date as WooCommerce takes it in a filter: ISO 8601, without microseconds
+	"""
+	return get_datetime(value).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def get_record_id(name) -> str:
+	"""
+	The WooCommerce id in a record name (`<server>~<id>`), or the value itself when it is an id already
+	"""
+	name = cstr(name)
+	return (
+		str(get_domain_and_id_from_woocommerce_record_name(name)[1])
+		if WC_RESOURCE_DELIMITER in name
+		else name
+	)
+
+
+def get_servers_from_filters(filters, doctype: str | None = None) -> set[str] | None:
+	"""
+	The servers that the filters on `woocommerce_server`, or on record names (`<server>~<id>`), leave, or None
+	when they leave every server. WooCommerce doesn't know these filters: they pick the servers to ask.
+	"""
+	servers = None
+	for f in normalise_filters(filters, doctype):
+		operator = f.operator.lower()
+		if operator not in ("=", "in"):
+			continue
+		if f.fieldname == "woocommerce_server":
+			values = {cstr(value) for value in as_values(f.value)}
+		elif f.fieldname == "name":
+			values = {
+				get_domain_and_id_from_woocommerce_record_name(cstr(value))[0]
+				for value in as_values(f.value)
+				if WC_RESOURCE_DELIMITER in cstr(value)
+			}
+			if not values:
+				continue
+		else:
+			continue
+		servers = values if servers is None else servers & values
+	return servers
+
+
+def map_frappe_filters_to_wc_params(filters, doctype: str | None = None):
+	"""
+	Maps Frappe filters to WooCommerce API parameters. An unsupported filter is an error: dropping it would
+	return unrelated records. A filter on the server picks the servers instead, see get_servers_from_filters.
 	"""
 	params = {}
-	standard_mappings = {
-		"date_modified": {">": "modified_after", "<": "modified_before"},
-		"date_created": {">": "after", "<": "before"},
-		# Add more mappings as needed
-	}
+	for f in normalise_filters(filters, doctype):
+		field, operator, value = f.fieldname, f.operator.lower(), f.value
 
-	for filter in filters:
-		_doctype, field, operator, value = filter
-
-		# Handle standard mappings
-		if field in standard_mappings and operator in standard_mappings[field]:
-			params[standard_mappings[field][operator]] = value
+		if field == "woocommerce_server" and operator in ("=", "in"):
 			continue
-
-		# Handle specific cases
-		if field in ["name", "woocommerce_name"] and operator == "like":
-			params["search"] = value.strip("%")
-		elif field in ("id", "woocommerce_id") and operator == "=":
-			params["include"] = [value]
-		elif field in ("id", "woocommerce_id") and operator == "in":
-			params["include"] = ",".join(str(v) for v in value)
+		if field in DATE_FILTER_PARAMS and operator in (">", "<"):
+			after, before = DATE_FILTER_PARAMS[field]
+			params[after if operator == ">" else before] = to_wc_datetime(value)
+		elif field in DATE_FILTER_PARAMS and operator == "between":
+			# Whole days, the last one included, as Frappe's date range filter means them
+			if value:
+				after, before = DATE_FILTER_PARAMS[field]
+				start, end = value
+				params[after] = to_wc_datetime(getdate(start))
+				params[before] = to_wc_datetime(add_days(getdate(end), 1))
+		elif field in ("name", "woocommerce_name") and operator == "like":
+			params["search"] = cstr(value).strip("%")
+		elif field in ("name", "id", "woocommerce_id") and operator == "=":
+			params["include"] = [get_record_id(value) if field == "name" else value]
+		elif field in ("name", "id", "woocommerce_id") and operator == "in":
+			params["include"] = ",".join(
+				get_record_id(item) if field == "name" else str(item) for item in as_values(value)
+			)
 		elif field == "status" and operator == "=":
 			params["status"] = [value]
 		elif field == "status" and operator == "in":
-			params["status"] = ",".join(value)
+			params["status"] = ",".join(as_values(value))
 		else:
-			frappe.throw(f"Unsupported operator '{operator}' for field '{field}'")
+			frappe.throw(f"Unsupported operator '{f.operator}' for field '{field}'")
 
 	return params
