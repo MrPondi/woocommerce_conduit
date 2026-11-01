@@ -153,7 +153,15 @@ def sync_paused_orders(woocommerce_server: str, since):
 			enqueue_sales_order_sync(woocommerce_order_name=order_name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
+def sync_woocommerce_order(woocommerce_order_name: str):
+	"""
+	Sync one WooCommerce Order with its Sales Order, from the WooCommerce Order form
+	"""
+	frappe.has_permission("Sales Order", "create", throw=True)
+	return run_sales_order_sync(woocommerce_order_name=woocommerce_order_name)
+
+
 def run_sales_order_sync(
 	sales_order_name: str | None = None,
 	sales_order: SyncedOrder | None = None,
@@ -334,27 +342,10 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		if not all([self.woocommerce_order.woocommerce_server, self.woocommerce_order.woocommerce_id]):
 			raise ValueError("Both woocommerce_server and woocommerce_id required")
 
-		filters = [
-			["Sales Order", "woocommerce_id", "is", "set"],
-			["Sales Order", "woocommerce_server", "is", "set"],
-		]
-		filters.append(["Sales Order", "woocommerce_id", "=", self.woocommerce_order.woocommerce_id])
-		filters.append(
-			[
-				"Sales Order",
-				"woocommerce_server",
-				"=",
-				self.woocommerce_order.woocommerce_server,
-			]
-		)
-
-		sales_orders = frappe.get_all(
-			"Sales Order",
-			filters=filters,
-			fields=["name"],
-		)
-		if sales_orders:
-			self.sales_order: SyncedOrder = frappe.get_doc("Sales Order", sales_orders[0].name)  # type: ignore
+		if name := find_sales_order(
+			self.woocommerce_order.woocommerce_server, self.woocommerce_order.woocommerce_id
+		):
+			self.sales_order: SyncedOrder = frappe.get_doc("Sales Order", name)  # type: ignore
 
 	def sync_wc_order_with_erpnext_order(self):
 		"""
@@ -490,7 +481,7 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 			new_sales_order.woocommerce_payment_method = payment_method
 		created_date = str(self.woocommerce_order.woocommerce_date_created).split("T", 1)
 		new_sales_order.transaction_date = created_date[0]
-		delivery_after = wc_server.delivery_after_days or 7
+		delivery_after = 7 if wc_server.delivery_after_days is None else cint(wc_server.delivery_after_days)
 		new_sales_order.delivery_date = frappe.utils.add_days(created_date[0], delivery_after)
 		new_sales_order.company = wc_server.company
 		new_sales_order.currency = self.woocommerce_order.currency
@@ -743,23 +734,9 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		is_shipping_address=0,
 	):
 		address: Address = frappe.new_doc("Address")  # type: ignore
-
 		address.address_type = address_type
-		address.address_line1 = raw_data.get("address_1", "Not Provided")
-		address.address_line2 = raw_data.get("address_2", "Not Provided")
-		address.city = raw_data.get("city", "Not Provided")
-		address.country = frappe.get_value("Country", {"code": raw_data.get("country", "PL").upper()})  # type: ignore
-		address.state = raw_data.get("state")
-		address.pincode = raw_data.get("postcode")
-		address.phone = raw_data.get("phone")
-		address.address_title = customer.customer_name
-		address.is_primary_address = is_primary_address
-		address.is_shipping_address = is_shipping_address
 		address.append("links", {"link_doctype": "Customer", "link_name": customer.name})
-
-		address.flags.ignore_mandatory = True
-		address.save()
-		return address
+		return self.save_address(address, raw_data, customer, is_primary_address, is_shipping_address)
 
 	def update_address(
 		self,
@@ -770,11 +747,18 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		is_shipping_address=0,
 	):
 		address: Address = frappe.get_doc("Address", address_name)  # type: ignore
+		return self.save_address(address, raw_data, customer, is_primary_address, is_shipping_address)
 
+	def save_address(
+		self, address: Address, raw_data: dict, customer: Customer, is_primary_address, is_shipping_address
+	):
+		"""
+		Fill an Address with an address of the order and save it
+		"""
 		address.address_line1 = raw_data.get("address_1", "Not Provided")
 		address.address_line2 = raw_data.get("address_2", "Not Provided")
 		address.city = raw_data.get("city", "Not Provided")
-		address.country = frappe.get_value("Country", {"code": raw_data.get("country", "PL").upper()})  # type: ignore
+		address.country = self.get_country(raw_data.get("country"))
 		address.state = raw_data.get("state")
 		address.pincode = raw_data.get("postcode")
 		address.phone = raw_data.get("phone")
@@ -786,6 +770,17 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		address.save()
 		return address
 
+	def get_country(self, code: str | None) -> str | None:
+		"""
+		The Country of a WooCommerce country code, else the country of the server's company
+		"""
+		if code and (country := frappe.db.get_value("Country", {"code": code.lower()})):
+			return country  # type: ignore
+		company = frappe.get_cached_value(
+			"WooCommerce Server", self.woocommerce_order.woocommerce_server, "company"
+		)
+		return frappe.get_cached_value("Company", company, "country") if company else None
+
 
 def push_order_status(sales_order_name: str) -> None:
 	"""
@@ -793,6 +788,25 @@ def push_order_status(sales_order_name: str) -> None:
 	status of the Sales Order to
 	"""
 	SynchroniseSalesOrder(sales_order_name=sales_order_name).push_status()
+
+
+def find_sales_order(woocommerce_server: str, woocommerce_id) -> str | None:
+	"""
+	The Sales Order of a WooCommerce Order: the newest that isn't cancelled, else the newest cancelled one.
+	So an order that was cancelled and amended is found by its amendment, and one that was cancelled in
+	ERPNext isn't made again.
+	"""
+	sales_orders = frappe.get_all(
+		"Sales Order",
+		# The id is text in the table. Compared as a number, MariaDB would read every row.
+		filters={"woocommerce_server": woocommerce_server, "woocommerce_id": cstr(woocommerce_id)},
+		fields=["name", "docstatus"],
+		order_by="creation desc",
+	)
+	return next(
+		(row.name for row in sales_orders if row.docstatus < 2),
+		sales_orders[0].name if sales_orders else None,
+	)
 
 
 def wc_order_changed(woocommerce_date_modified, last_sync_hash) -> bool:

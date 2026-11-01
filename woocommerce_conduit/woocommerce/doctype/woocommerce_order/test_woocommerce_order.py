@@ -46,13 +46,13 @@ class TestWooCommerceOrderForm(IntegrationTestCase):
 		order = make_order()
 		item_codes = {"11": "MUG-RED", "20": None}
 		with (
-			patch.object(frappe.db, "get_value", return_value="SAL-ORD-1") as get_value,
+			patch.object(sync_sales_orders, "find_sales_order", return_value="SAL-ORD-1") as find_sales_order,
 			patch.object(order_lines, "find_item_code", side_effect=lambda server, pid: item_codes[pid]),
 		):
 			order.onload()
 
 		self.assertEqual(order.sales_order, "SAL-ORD-1")
-		self.assertEqual(get_value.call_args.args[1], {"woocommerce_server": SERVER, "woocommerce_id": "12"})
+		find_sales_order.assert_called_once_with(SERVER, "12")
 		self.assertEqual(order.get_onload("item_codes"), item_codes)
 
 	def test_changed_status_syncs_the_sales_order(self):

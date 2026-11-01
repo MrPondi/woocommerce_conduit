@@ -187,18 +187,23 @@ class SalesOrderLinesMixin:
 
 	def create_missing_items(self):
 		"""
-		Pull the products of the lines that aren't linked to an Item yet
+		Pull the products of the lines that aren't linked to an Item yet. A product the shop no longer has
+		gets the placeholder Item instead, in build_item_rows.
 		"""
 		server = self.woocommerce_order.woocommerce_server
 		for line in get_line_items(self.woocommerce_order):
 			product_id = get_product_id(line)
 			# Deleted products have "0"
-			if product_id != "0" and not find_item_code(server, product_id):
+			if product_id == "0" or find_item_code(server, product_id):
+				continue
+			try:
 				run_item_sync(
 					woocommerce_product_name=generate_woocommerce_record_name_from_domain_and_id(
 						server, product_id
 					)
 				)
+			except frappe.DoesNotExistError:
+				continue
 
 	def build_item_rows(self, wc_server, delivery_date) -> tuple[list[dict], list[str]]:
 		"""

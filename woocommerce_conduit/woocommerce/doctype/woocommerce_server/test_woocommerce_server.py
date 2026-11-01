@@ -234,3 +234,21 @@ class TestWooCommerceServer(IntegrationTestCase):
 		):
 			server.track_order_sync_pause()
 		enqueue.assert_not_called()
+
+	def test_an_item_field_map_row_must_name_a_field_of_item(self):
+		for erpnext_field_name in ("not_a_field | Not a field", "attributes | Attributes"):
+			server = new_server(
+				item_field_map=[{"erpnext_field_name": erpnext_field_name, "woocommerce_field_name": "$.sku"}]
+			)
+			with self.assertRaises(frappe.ValidationError):
+				server.validate_item_map()
+
+		server = new_server(
+			item_field_map=[
+				{
+					"erpnext_field_name": "description | Description",
+					"woocommerce_field_name": "$.short_description",
+				}
+			]
+		)
+		server.validate_item_map()

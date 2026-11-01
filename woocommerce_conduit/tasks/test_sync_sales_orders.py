@@ -1,6 +1,9 @@
 # Copyright (c) 2025, Karol Parzonka and Contributors
 # See license.txt
 
+import base64
+import hashlib
+import hmac
 import json
 from contextlib import nullcontext
 from datetime import date, datetime
@@ -33,6 +36,7 @@ from woocommerce_conduit.tasks.order_status import (
 from woocommerce_conduit.tasks.sync_sales_orders import (
 	SynchroniseSalesOrder,
 	enqueue_sales_order_sync,
+	find_sales_order,
 	get_changed_order_names,
 	get_names_of_wc_orders,
 	sync_woocommerce_orders_modified_since,
@@ -270,6 +274,56 @@ class TestOrderLookup(IntegrationTestCase):
 
 		with self.assertRaises(frappe.ValidationError):
 			sync.get_corresponding_sales_order_or_woocommerce_order()
+
+	def find(self, *rows):
+		with patch.object(
+			frappe, "get_all", return_value=[_dict(name=n, docstatus=d) for n, d in rows]
+		) as get_all:
+			name = find_sales_order(SERVER, 12)
+		self.assertEqual(
+			get_all.call_args.kwargs["filters"], {"woocommerce_server": SERVER, "woocommerce_id": "12"}
+		)
+		return name
+
+	def test_the_amendment_of_a_cancelled_order_is_its_sales_order(self):
+		# Newest first
+		self.assertEqual(self.find(("SAL-ORD-1-1", 1), ("SAL-ORD-1", 2)), "SAL-ORD-1-1")
+
+	def test_a_cancelled_order_is_found_so_it_is_not_made_again(self):
+		self.assertEqual(self.find(("SAL-ORD-1", 2)), "SAL-ORD-1")
+		self.assertIsNone(self.find())
+
+	def test_a_product_the_shop_no_longer_has_is_left_to_the_placeholder(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.woocommerce_order = _dict(
+			woocommerce_server=SERVER,
+			line_items=json.dumps(
+				[{"id": 1, "product_id": 10, "variation_id": 0}, {"id": 2, "product_id": 20}]
+			),
+		)
+		with (
+			patch.object(order_lines, "find_item_code", return_value=None),
+			patch.object(
+				order_lines, "run_item_sync", side_effect=[frappe.DoesNotExistError, (None, None)]
+			) as run_item_sync,
+		):
+			sync.create_missing_items()
+
+		self.assertEqual(run_item_sync.call_count, 2)
+
+	def test_an_address_without_a_country_is_in_the_companys(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.woocommerce_order = _dict(woocommerce_server=SERVER)
+		values = {
+			("WooCommerce Server", SERVER, "company"): "Test Company",
+			("Company", "Test Company", "country"): "Poland",
+		}
+		with (
+			patch.object(frappe.db, "get_value", return_value=None),
+			patch.object(frappe, "get_cached_value", side_effect=lambda *key: values[key]),
+		):
+			self.assertEqual(sync.get_country(""), "Poland")
+			self.assertEqual(sync.get_country("XX"), "Poland")
 
 
 class TestJobs(IntegrationTestCase):
@@ -843,17 +897,20 @@ class TestStatusesToSync(IntegrationTestCase):
 
 
 class TestWebhook(IntegrationTestCase):
-	def post(self, event, body):
+	def post(self, event, body, **server):
 		headers = {"x-wc-webhook-event": event, "x-wc-webhook-source": f"https://{SERVER}/"}
+		wc_server = _dict({"name": SERVER, "enabled": 1, "creation_user": "Administrator", **server})
 		with (
-			patch.object(endpoint, "validate_request", return_value=(True, None)),
+			patch.object(endpoint, "validate_request", return_value=(wc_server, None)) as validate_request,
 			patch.object(frappe, "request", MagicMock(data=body)),
 			patch.object(
 				frappe, "get_request_header", side_effect=lambda key, default=None: headers.get(key, default)
 			),
+			patch.object(frappe, "set_user") as set_user,
 			patch.object(endpoint, "enqueue_sales_order_sync") as enqueue,
 		):
 			response = endpoint.order_created()
+		self.validate_request, self.set_user = validate_request, set_user
 		return response, enqueue
 
 	def test_created_and_updated_orders_are_synced(self):
@@ -861,6 +918,7 @@ class TestWebhook(IntegrationTestCase):
 			response, enqueue = self.post(event, b'{"id": 12}')
 			self.assertEqual(response.status_code, 200)
 			enqueue.assert_called_once_with(woocommerce_order_name=f"{SERVER}~12")
+			self.set_user.assert_called_once_with("Administrator")
 
 	def test_other_events_are_refused(self):
 		response, enqueue = self.post("deleted", b'{"id": 12}')
@@ -868,9 +926,53 @@ class TestWebhook(IntegrationTestCase):
 		enqueue.assert_not_called()
 
 	def test_ping_is_accepted(self):
+		# WooCommerce sends it unsigned and without headers when the webhook is saved
 		response, enqueue = self.post("created", b"webhook_id=3")
 		self.assertEqual(response.status_code, 200)
+		self.validate_request.assert_not_called()
 		enqueue.assert_not_called()
+
+	def test_a_shop_whose_sync_is_off_is_acknowledged_and_left_alone(self):
+		response, enqueue = self.post("updated", b'{"id": 12}', enabled=0)
+		self.assertEqual(response.status_code, 200)
+		enqueue.assert_not_called()
+		self.set_user.assert_not_called()
+
+
+class TestWebhookSignature(IntegrationTestCase):
+	def validate(self, signature: str | None, secret="s3cret", source=f"https://{SERVER}/"):
+		body = b'{"id": 12}'
+		headers = {"x-wc-webhook-source": source, "x-wc-webhook-signature": signature}
+		with (
+			patch.object(frappe, "request", MagicMock(data=body)),
+			patch.object(
+				frappe,
+				"get_request_header",
+				side_effect=lambda key, default=None: headers.get(key) or default,
+			),
+			patch.object(frappe, "get_doc", return_value=_dict(name=SERVER, secret=secret)),
+		):
+			return endpoint.validate_request()
+
+	@staticmethod
+	def sign(body: bytes, secret: str) -> str:
+		# As WooCommerce sends it in the X-WC-Webhook-Signature header
+		return base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
+
+	def test_a_signed_webhook_names_its_server(self):
+		server, refusal = self.validate(self.sign(b'{"id": 12}', "s3cret"))
+		self.assertIsNone(refusal)
+		self.assertEqual(server.name, SERVER)
+
+	def test_a_wrong_or_missing_signature_is_refused(self):
+		for signature in (self.sign(b'{"id": 12}', "guessed"), None):
+			server, refusal = self.validate(signature)
+			self.assertIsNone(server)
+			self.assertEqual(refusal.status_code, 401)
+
+	def test_a_webhook_without_its_source_is_refused(self):
+		_server, refusal = self.validate(self.sign(b'{"id": 12}', "s3cret"), source="")
+		self.assertEqual(refusal.status_code, 400)
 
 
 class InvoiceAndPaymentCase(IntegrationTestCase):

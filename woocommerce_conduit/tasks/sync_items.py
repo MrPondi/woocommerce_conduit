@@ -6,7 +6,7 @@ import frappe
 from erpnext.stock.doctype.item.item import Item
 from frappe import ValidationError, _
 from frappe.query_builder import Criterion
-from frappe.utils import convert_utc_to_system_timezone, flt, get_datetime, getdate, now
+from frappe.utils import convert_utc_to_system_timezone, cstr, flt, get_datetime, getdate, now
 from jsonpath_ng.ext import parse
 
 from woocommerce_conduit.exceptions import SyncDisabledError
@@ -322,7 +322,8 @@ class SynchroniseItem:
 
 		and_conditions = [
 			iws.woocommerce_server == self.woocommerce_product.woocommerce_server,
-			iws.woocommerce_id == self.woocommerce_product.woocommerce_id,
+			# The id is text in the table. Compared as a number, MariaDB would read every row.
+			iws.woocommerce_id == cstr(self.woocommerce_product.woocommerce_id),
 		]
 
 		item_codes = (  # pyright: ignore[reportCallIssue]

@@ -4,7 +4,7 @@
 import json
 
 import frappe
-from frappe.utils import cstr, flt
+from frappe.utils import flt
 
 from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceDocument
 
@@ -143,13 +143,9 @@ class WooCommerceOrder(WooCommerceDocument):
 		"""
 		# Imported here, as the sync imports this module
 		from woocommerce_conduit.tasks.order_lines import find_item_code, get_line_items, get_product_id
+		from woocommerce_conduit.tasks.sync_sales_orders import find_sales_order
 
-		self.sales_order = frappe.db.get_value(
-			"Sales Order",
-			{"woocommerce_server": self.woocommerce_server, "woocommerce_id": cstr(self.woocommerce_id)},
-			"name",
-			order_by="docstatus asc, creation desc",
-		)
+		self.sales_order = find_sales_order(self.woocommerce_server, self.woocommerce_id)
 		product_ids = {get_product_id(line) for line in get_line_items(self)}
 		self.set_onload(
 			"item_codes",

@@ -90,7 +90,7 @@ frappe.ui.form.on("WooCommerce Order", {
 	sync_sales_order: function (frm) {
 		// A failure is shown by frappe.call itself
 		frappe.call({
-			method: "woocommerce_conduit.tasks.sync_sales_orders.run_sales_order_sync",
+			method: "woocommerce_conduit.tasks.sync_sales_orders.sync_woocommerce_order",
 			args: {
 				woocommerce_order_name: frm.doc.name,
 			},

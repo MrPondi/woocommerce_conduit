@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 from http import HTTPStatus
 
 import frappe
@@ -13,30 +14,36 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_serv
 	WooCommerceServer,
 )
 from woocommerce_conduit.woocommerce.woocommerce_api import (
-	WC_RESOURCE_DELIMITER,
+	generate_woocommerce_record_name_from_domain_and_id,
 	parse_domain_from_url,
 )
 
+# The body of the ping WooCommerce sends when a webhook is saved, without a signature or source header
+PING = re.compile(rb"^webhook_id=\d+$")
 
-def validate_request() -> tuple[bool, Response | None]:
-	# Get relevant WooCommerce Server
+
+def validate_request() -> tuple[WooCommerceServer | None, Response | None]:
+	"""
+	The WooCommerce Server a webhook comes from, once its signature checks out against the server's secret,
+	or the response that refuses the webhook
+	"""
 	try:
 		webhook_source_url: str = frappe.get_request_header("x-wc-webhook-source", "")  # type: ignore
 		wc_server: WooCommerceServer = frappe.get_doc(
 			"WooCommerce Server", parse_domain_from_url(webhook_source_url)
 		)  # type: ignore
 	except Exception:
-		return False, Response(response=_("Missing Header"), status=HTTPStatus.BAD_REQUEST)
+		return None, Response(response=_("Missing Header"), status=HTTPStatus.BAD_REQUEST)
 
-	# Validate secret
-	sig = base64.b64encode(
-		hmac.new((wc_server.secret or "").encode("utf8"), frappe.request.data, hashlib.sha256).digest()
+	expected = base64.b64encode(
+		hmac.new((wc_server.secret or "").encode("utf8"), frappe.request.data or b"", hashlib.sha256).digest()
 	)
-	if frappe.request.data and not sig == frappe.get_request_header("x-wc-webhook-signature", "").encode():  # type: ignore
-		return False, Response(response=_("Unauthorized"), status=HTTPStatus.UNAUTHORIZED)
+	received = (frappe.get_request_header("x-wc-webhook-signature", "") or "").encode()  # type: ignore
+	# In constant time, so the signature can't be guessed from how long a refusal takes
+	if not hmac.compare_digest(expected, received):
+		return None, Response(response=_("Unauthorized"), status=HTTPStatus.UNAUTHORIZED)
 
-	frappe.set_user(wc_server.creation_user)
-	return True, None
+	return wc_server, None
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
@@ -45,30 +52,35 @@ def order_created(*args, **kwargs):
 	Accepts payload data from the WooCommerce "Order created" and "Order updated" webhooks. The name is
 	that of the first, and part of the delivery URL of the webhooks that are set up already.
 	"""
-	valid, response = validate_request()
-	if not valid:
-		return response
-
-	if frappe.request and frappe.request.data:
-		try:
-			order = json.loads(frappe.request.data)
-		except ValueError:
-			# woocommerce returns 'webhook_id=value' for the first request which is not JSON
-			order = frappe.request.data
-		event = frappe.get_request_header("x-wc-webhook-event")
-	else:
+	data = frappe.request.data if frappe.request else None
+	if not data:
 		return Response(response=_("Missing Header"), status=HTTPStatus.BAD_REQUEST)
-
-	if not isinstance(order, dict):
-		# The ping WooCommerce sends when a webhook is saved
+	# Answered, so WooCommerce saves the webhook without an error. Nothing is done for it.
+	if PING.match(data):
 		return Response(status=HTTPStatus.OK)
 
-	if event in ("created", "updated"):
-		webhook_source_url: str = frappe.get_request_header("x-wc-webhook-source", "")  # type: ignore
-		woocommerce_order_name = (
-			f"{parse_domain_from_url(webhook_source_url)}{WC_RESOURCE_DELIMITER}{order['id']}"  # type: ignore
-		)
-		enqueue_sales_order_sync(woocommerce_order_name=woocommerce_order_name)
+	wc_server, refusal = validate_request()
+	if refusal:
+		return refusal
+	# Acknowledged, so WooCommerce doesn't retry, and left alone: the shop's sync is off
+	if not wc_server.enabled:
 		return Response(status=HTTPStatus.OK)
-	else:
+
+	event = frappe.get_request_header("x-wc-webhook-event")
+	if event not in ("created", "updated"):
 		return Response(response=_("Event not supported"), status=HTTPStatus.BAD_REQUEST)
+
+	try:
+		order = json.loads(data)
+	except ValueError:
+		order = None
+	if not isinstance(order, dict) or not order.get("id"):
+		return Response(response=_("Invalid payload"), status=HTTPStatus.BAD_REQUEST)
+
+	frappe.set_user(wc_server.creation_user)
+	enqueue_sales_order_sync(
+		woocommerce_order_name=generate_woocommerce_record_name_from_domain_and_id(
+			wc_server.name, order["id"]
+		)
+	)
+	return Response(status=HTTPStatus.OK)

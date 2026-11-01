@@ -5,6 +5,7 @@ from urllib.parse import urlparse, urlunparse
 
 import frappe
 from frappe import _
+from frappe.model import no_value_fields
 from frappe.model.document import Document
 from frappe.utils import cstr, now
 from jsonpath_ng.ext import parse
@@ -497,7 +498,7 @@ class WooCommerceServer(Document):
 
 	def validate_item_map(self):
 		"""
-		Validate Item Map to have valid JSONPath expressions
+		Validate Item Map to have valid JSONPath expressions, and Item fields that a value can be written to
 		"""
 		disallowed_fields = ["attributes"]
 
@@ -505,8 +506,19 @@ class WooCommerceServer(Document):
 		if self.enable_image_sync:
 			disallowed_fields.append("images")
 
+		item_meta = frappe.get_meta("Item")
 		if self.item_field_map:
 			for map in self.item_field_map:
+				# The Select stores "fieldname | Label", the sync uses the fieldname
+				fieldname = cstr(map.erpnext_field_name).split(" | ")[0]
+				item_field = item_meta.get_field(fieldname)
+				if not item_field or item_field.fieldtype in no_value_fields:
+					frappe.throw(
+						_(
+							"Item Field Map Row {0}: {1} is not a field of Item that a value can be written to"
+						).format(map.idx, frappe.bold(fieldname))
+					)
+
 				jsonpath_expr = map.woocommerce_field_name
 				try:
 					parse(jsonpath_expr)

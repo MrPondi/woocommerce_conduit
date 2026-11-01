@@ -77,8 +77,8 @@ def get_price_sync_servers() -> list[WooCommerceServer]:
 
 def update_item_price_for_woocommerce_item_from_hook(doc, method=None):
 	"""
-	Intended to be triggered by a Document Controller hook from Item Price. Pushes the Item's prices once
-	the change is committed.
+	Intended to be triggered by the on_update and on_trash of an Item Price. Pushes the Item's prices once
+	the change is committed, so a deleted Item Price is gone by then.
 	"""
 	if frappe.flags.in_test or doc.flags.created_by_sync or not price_sync_is_enabled():
 		return
@@ -90,7 +90,6 @@ def update_item_price_for_woocommerce_item_from_hook(doc, method=None):
 	)
 
 
-@frappe.whitelist()
 def run_item_price_sync_in_background():
 	"""
 	Push the prices of every Item linked to a WooCommerce Product, ITEMS_PER_JOB Items a job
@@ -120,7 +119,6 @@ def sync_item_price_to_woocommerce(item_code: str):
 	run_item_price_sync(item_code=item_code)
 
 
-@frappe.whitelist()
 def run_item_price_sync(item_code: str | None = None, item_codes: list[str] | None = None):
 	sync = SynchroniseItemPrice(item_codes=[item_code] if item_code else item_codes)
 	sync.run()

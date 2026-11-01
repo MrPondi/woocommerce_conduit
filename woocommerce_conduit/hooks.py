@@ -38,6 +38,8 @@ doc_events = {
 	},
 	"Item Price": {
 		"on_update": "woocommerce_conduit.tasks.sync_item_prices.update_item_price_for_woocommerce_item_from_hook",
+		# A deleted sale price ends the sale in the shop
+		"on_trash": "woocommerce_conduit.tasks.sync_item_prices.update_item_price_for_woocommerce_item_from_hook",
 	},
 	# Every stock movement and its reversal, whichever document makes it
 	"Stock Ledger Entry": {
