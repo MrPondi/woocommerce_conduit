@@ -159,6 +159,26 @@ class TestItemCreation(IntegrationTestCase):
 
 		insert_item_price.assert_not_called()
 
+	def insert_price(self, existing_price):
+		sync = make_sync(item=ERPNextItemToSync(item=_dict(name="MUG-1"), item_woocommerce_server_idx=1))  # type: ignore
+		with (
+			patch.object(frappe.db, "exists", return_value=existing_price),
+			patch.object(frappe, "get_doc") as get_doc,
+		):
+			sync._insert_item_price("Standard Selling", 12.5)
+		return get_doc
+
+	def test_a_price_list_without_a_price_takes_the_products(self):
+		get_doc = self.insert_price(existing_price=None)
+
+		self.assertEqual(get_doc.call_args.args[0]["price_list_rate"], 12.5)
+		# Not pushed straight back to the shop it came from
+		self.assertTrue(get_doc.return_value.flags.created_by_sync)
+		get_doc.return_value.insert.assert_called_once()
+
+	def test_a_price_list_with_a_price_keeps_it(self):
+		self.insert_price(existing_price="PRICE-1").assert_not_called()
+
 	def test_a_variation_without_its_parent_is_not_created(self):
 		product = make_product(type="variation", parent_id=5, attributes="[]")
 		sync = make_sync(woocommerce_product=product)

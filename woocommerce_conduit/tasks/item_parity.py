@@ -9,7 +9,7 @@ from frappe import _
 from frappe.utils import cint, cstr, flt
 
 from woocommerce_conduit.tasks.order_lines import find_item_code, get_line_items, get_product_id
-from woocommerce_conduit.tasks.sync_items import find_item_by_sku
+from woocommerce_conduit.tasks.sync_items import SynchroniseItem, find_item_by_sku, load_wc_product
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import WooCommerceOrder
 from woocommerce_conduit.woocommerce.woocommerce_api import (
 	generate_woocommerce_record_name_from_domain_and_id,
@@ -85,7 +85,9 @@ def get_recent_orders(woocommerce_server: str, order_count: int) -> list[dict]:
 @frappe.whitelist(methods=["POST"])
 def link_product_to_item(woocommerce_server: str, product_id: str, item_code: str) -> None:
 	"""
-	Link a product of a shop to an Item that exists, instead of having the sync make a new one for it
+	Link a product of a shop to an Item that exists, instead of having the sync make a new one for it. The
+	Item takes the product's prices for the price lists it has none in, as the sync's own link does, so the
+	next price push doesn't end a sale that runs in the shop.
 	"""
 	product_id = cstr(product_id)
 	linked_item = find_item_code(woocommerce_server, product_id)
@@ -94,10 +96,10 @@ def link_product_to_item(woocommerce_server: str, product_id: str, item_code: st
 			_("Product {0} is linked to Item {1} already").format(product_id, frappe.bold(linked_item))
 		)
 
-	item = frappe.get_doc("Item", item_code)
-	item.check_permission("write")
-	item.append(
-		"woocommerce_servers",
-		{"woocommerce_server": woocommerce_server, "woocommerce_id": product_id, "enable_sync": 1},
+	frappe.get_doc("Item", item_code).check_permission("write")
+	product = load_wc_product(
+		generate_woocommerce_record_name_from_domain_and_id(woocommerce_server, product_id)
 	)
-	item.save()
+	SynchroniseItem(woocommerce_product=product).link_item(
+		item_code, frappe.get_cached_doc("WooCommerce Server", woocommerce_server)
+	)

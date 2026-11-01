@@ -5,6 +5,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from woocommerce_conduit.tasks import item_parity
+from woocommerce_conduit.tasks.sync_items import SynchroniseItem
 
 SERVER = "one.example.com"
 
@@ -67,24 +68,29 @@ class TestUnlinkedOrderProducts(IntegrationTestCase):
 
 
 class TestLinkingProducts(IntegrationTestCase):
-	def test_product_is_linked_to_the_item(self):
-		item = MagicMock()
+	def test_product_is_linked_to_the_item_with_its_prices(self):
+		item, product, server = MagicMock(), MagicMock(), frappe._dict(name=SERVER)
 		with (
 			patch.object(item_parity, "find_item_code", return_value=None),
 			patch.object(frappe, "get_doc", return_value=item),
+			patch.object(frappe, "get_cached_doc", return_value=server),
+			patch.object(item_parity, "load_wc_product", return_value=product) as load_wc_product,
+			patch.object(SynchroniseItem, "link_item", autospec=True) as link_item,
 		):
 			item_parity.link_product_to_item(SERVER, "51", "MOWER-1")
 
 		item.check_permission.assert_called_once_with("write")
-		item.append.assert_called_once_with(
-			"woocommerce_servers",
-			{"woocommerce_server": SERVER, "woocommerce_id": "51", "enable_sync": 1},
-		)
-		item.save.assert_called_once()
+		load_wc_product.assert_called_once_with(f"{SERVER}~51")
+		# The sync's own link, which takes the product's prices for the price lists the Item has none in
+		sync, item_code, link_server = link_item.call_args.args
+		self.assertEqual((sync.woocommerce_product, item_code, link_server), (product, "MOWER-1", server))
 
 	def test_product_linked_already_is_not_linked_twice(self):
 		with (
 			patch.object(item_parity, "find_item_code", return_value="OTHER"),
+			patch.object(item_parity, "load_wc_product") as load_wc_product,
 			self.assertRaises(frappe.ValidationError),
 		):
 			item_parity.link_product_to_item(SERVER, "51", "MOWER-1")
+
+		load_wc_product.assert_not_called()

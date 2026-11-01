@@ -90,12 +90,6 @@ Start at: `SynchroniseItem.set_item_fields`, `order_lines.build_item_row`.
 
 Start at: `sync_items.sync_woocommerce_products_modified_since`, `woocommerce_server.js`.
 
-### Prices of a product linked by hand
-
-Check Order Items links a product to an Item (`link_product_to_item`) and leaves the product's prices in the shop alone. The next price push sends the Item's prices instead, and when the server's Sales Price List has no price for the Item it ends a sale that is running in the shop. The sync's own link (`SynchroniseItem.link_item`) first takes the product's prices for the price lists the Item has none in. The button could do the same, which needs the product loaded.
-
-Start at: `item_parity.link_product_to_item`, `SynchroniseItem.link_item`.
-
 ### HTML entities in names
 
 WordPress stores term names HTML-escaped, so categories, tags and the options of global attributes come back as `Sleeves &amp; Toploader`, and so do product names saved by a user without the `unfiltered_html` capability. They reach Item names, Item Attribute values and mapped fields like that. Fusion unescapes the names and mapped values it takes from WooCommerce (`unescape_woocommerce_value`).
