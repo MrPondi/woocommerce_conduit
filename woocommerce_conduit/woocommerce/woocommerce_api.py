@@ -10,6 +10,8 @@ from frappe import _
 from frappe.deferred_insert import deferred_insert
 from frappe.model import no_value_fields
 from frappe.model.document import Document
+from frappe.utils import cint
+from frappe.utils.caching import request_cache
 from frappe.utils.password import get_decrypted_password
 from woocommerce import API
 
@@ -18,6 +20,9 @@ from woocommerce_conduit.exceptions import SyncDisabledError
 WC_RESOURCE_DELIMITER = "~"
 # The most of a response that an Integration Request keeps
 LOGGED_RESPONSE_LENGTH = 64 * 1024
+# The most records WooCommerce returns for one request
+WC_PAGE_LIMIT = 100
+NUMERIC_FIELDTYPES = ("Currency", "Float", "Int", "Percent", "Check")
 
 
 class WooCommerceAPI(API):
@@ -159,6 +164,66 @@ def sort_records(records: list[dict], order_by: list[tuple[str, bool]]) -> list[
 	return records
 
 
+def value_changed(df, value, old_value) -> bool:
+	"""
+	Whether a field's value changed. Numbers are compared by value and empty values are alike, so "10" and
+	10.0, or None and "", are no change.
+	"""
+	if df.fieldtype in NUMERIC_FIELDTYPES:
+		return frappe.utils.flt(value) != frappe.utils.flt(old_value)
+	return not (value == old_value or (value or None) == (old_value or None))
+
+
+@request_cache
+def get_api_clients() -> list[WooCommerceAPI]:
+	"""
+	A client for each enabled WooCommerce Server. Built once per request or background job, as each one has
+	the server's passwords decrypted.
+
+	Raises:
+		SyncDisabledError: If no enabled WooCommerce servers are found
+	"""
+	wc_servers = frappe.get_all(
+		"WooCommerce Server",
+		fields=["name", "woocommerce_server_url", "log_all_requests"],
+		filters={"enabled": 1},
+	)
+
+	wc_api_list = []
+	for server in wc_servers:
+		try:
+			wc_api_list.append(
+				WooCommerceAPI(
+					url=server.woocommerce_server_url,
+					consumer_key=get_decrypted_password(
+						"WooCommerce Server", server.name, "api_consumer_key", raise_exception=False
+					),
+					consumer_secret=get_decrypted_password(
+						"WooCommerce Server", server.name, "api_consumer_secret", raise_exception=False
+					),
+					woocommerce_server=server.name,
+					log_all_requests=server.log_all_requests,
+				)
+			)
+		except Exception as e:
+			frappe.log_error(
+				"WooCommerce Error", f"Error initializing WooCommerce API for server {server.name}: {e!s}"
+			)
+
+	if not wc_api_list:
+		frappe.throw(_("At least one WooCommerce Server should be Enabled"), SyncDisabledError)
+
+	return wc_api_list
+
+
+def clear_api_clients():
+	"""
+	Forget the clients built in this request, as a WooCommerce Server was changed
+	"""
+	if cache := getattr(frappe.local, "request_cache", None):
+		cache.pop(get_api_clients.__wrapped__, None)
+
+
 def parse_frappe_field(field: str) -> str | None:
 	"""
 	Extract the fieldname from a field as requested by Frappe, for example
@@ -187,45 +252,9 @@ class WooCommerceDocument(Document):
 	@staticmethod
 	def _init_api() -> list[WooCommerceAPI]:
 		"""
-		Initialise the WooCommerce API connections for all enabled servers
-
-		Returns:
-			List of initialized WooCommerceAPI instances
-
-		Raises:
-			SyncDisabledError: If no enabled WooCommerce servers are found
+		The WooCommerce API clients of all enabled servers, see get_api_clients
 		"""
-		# Get all WooCommerce servers in a single query and then filter
-		wc_servers = frappe.get_all(
-			"WooCommerce Server",
-			fields=["name", "woocommerce_server_url", "log_all_requests"],
-			filters={"enabled": 1},
-		)
-
-		# Create API instances for enabled servers
-		wc_api_list = []
-		for server in wc_servers:
-			try:
-				wc_api_list.append(
-					WooCommerceAPI(
-						url=server.woocommerce_server_url,
-						consumer_key=get_decrypted_password(
-							"WooCommerce Server", server.name, "api_consumer_key", raise_exception=False
-						),
-						consumer_secret=get_decrypted_password(
-							"WooCommerce Server", server.name, "api_consumer_secret", raise_exception=False
-						),
-						woocommerce_server=server.name,
-						log_all_requests=server.log_all_requests,
-					)
-				)
-			except Exception as e:
-				frappe.log_error(f"Error initializing WooCommerce API for server {server.name}: {e!s}")
-
-		if not wc_api_list:
-			frappe.throw(_("At least one WooCommerce Server should be Enabled"), SyncDisabledError)
-
-		return wc_api_list
+		return get_api_clients()
 
 	def init_api(self):
 		"""
@@ -239,18 +268,14 @@ class WooCommerceDocument(Document):
 
 		Raises:
 			SyncDisabledError: If synchronization is disabled
-			frappe.DoesNotExistError: If the record does not exist
-			ConnectionError: If there's a network issue
-			ValueError: If the response cannot be parsed as JSON
+			frappe.DoesNotExistError: If WooCommerce doesn't have the record
+			frappe.ValidationError: If WooCommerce can't be reached or answers with an error, which is logged
 		"""
 		# Parse the server domain and record_id from the Document name
 		wc_server_domain, record_id = get_domain_and_id_from_woocommerce_record_name(str(self.name))
 
-		# Map Frappe query parameters to WooCommerce query parameters
-		params = {}
-
 		# Request the fields of the DocType
-		params["_fields"] = self.get_wc_fields()
+		params = {"_fields": self.get_wc_fields()}
 
 		# Select the relevant WooCommerce server
 		try:
@@ -263,22 +288,22 @@ class WooCommerceDocument(Document):
 		# Get WooCommerce Record
 		try:
 			response = self.current_wc_api.get(f"{self.resource}/{record_id}", params=params)
-			if response.status_code != 200:
-				log_and_raise_error(error_text=f"API returned {response.status_code}", response=response)
-			record = response.json()
-		except ConnectionError as err:
+		except Exception as err:
 			log_and_raise_error(
-				exception=err,
-				error_text=f"Network error when fetching WooCommerce {self.resource} #{record_id}",
+				exception=err, error_text=f"load_from_db failed (WooCommerce {self.resource} #{record_id})"
 			)
+		# Not an error of the sync: the record was deleted, or never existed. The request is logged already.
+		if response.status_code == 404:
+			frappe.throw(_("{0} {1} not found").format(_(self.doctype), self.name), frappe.DoesNotExistError)
+		if response.status_code != 200:
+			log_and_raise_error(error_text=f"API returned {response.status_code}", response=response)
+		try:
+			record = response.json()
 		except ValueError as err:
 			log_and_raise_error(
 				exception=err,
 				error_text=f"Invalid JSON response for WooCommerce {self.resource} #{record_id}",
 			)
-		except Exception as err:
-			error_text = f"load_from_db failed (WooCommerce {self.resource} #{record_id})"
-			log_and_raise_error(exception=err, error_text=error_text)
 
 		if "id" not in record:
 			log_and_raise_error(
@@ -305,13 +330,21 @@ class WooCommerceDocument(Document):
 		rejects the save if it was modified in WooCommerce since this copy was loaded), so only the
 		difference against that is sent.
 		"""
-		changes = self.get_changed_values()
-		if not changes:
-			return
+		if changes := self.get_changed_values():
+			self.write(changes)
 
+	def write(self, changes: dict) -> dict:
+		"""
+		Write changed Frappe fields to WooCommerce, shaped by the subclass's before_db_update, without the
+		reload a save does. For the pushes, which compare with the record they just loaded (get_changes):
+		WooCommerce dates every save as a change, even one that changes nothing.
+
+		Returns:
+			The request body that was sent, empty when before_db_update left nothing to write
+		"""
 		changes = self.before_db_update(changes)
 		if not changes:
-			return
+			return {}
 
 		wc_server_domain, record_id = get_domain_and_id_from_woocommerce_record_name(str(self.name))
 		try:
@@ -334,6 +367,7 @@ class WooCommerceDocument(Document):
 		if date_modified:
 			self.woocommerce_date_modified = date_modified
 			self.modified = date_modified
+		return changes
 
 	# save() runs these before db_update. The record lives in WooCommerce and isn't stored here, so there are
 	# no column lengths to respect and WooCommerce decides which values are valid. Otherwise a name over 140
@@ -357,18 +391,23 @@ class WooCommerceDocument(Document):
 		before_values = self.deserialize_attributes_of_type_dict_or_list(before.to_dict()) if before else {}
 		values = self.deserialize_attributes_of_type_dict_or_list(self.to_dict())
 
-		changes = {}
-		for df in self.meta.fields:
-			if df.fieldtype in no_value_fields or df.fieldname not in values:
-				continue
-			value, old_value = values.get(df.fieldname), before_values.get(df.fieldname)
-			if df.fieldtype in ("Currency", "Float", "Int", "Percent", "Check"):
-				if frappe.utils.flt(value) == frappe.utils.flt(old_value):
-					continue
-			elif value == old_value or (value or None) == (old_value or None):
-				continue
-			changes[df.fieldname] = value
-		return changes
+		return {
+			df.fieldname: values.get(df.fieldname)
+			for df in self.meta.fields
+			if df.fieldtype not in no_value_fields
+			and df.fieldname in values
+			and value_changed(df, values.get(df.fieldname), before_values.get(df.fieldname))
+		}
+
+	def get_changes(self, values: dict) -> dict:
+		"""
+		The values that differ from what the record has now, compared as get_changed_values compares them
+		"""
+		return {
+			fieldname: value
+			for fieldname, value in values.items()
+			if not (df := self.meta.get_field(fieldname)) or value_changed(df, value, self.get(fieldname))
+		}
 
 	def before_db_update(self, changes: dict) -> dict:
 		"""
@@ -423,19 +462,20 @@ class WooCommerceDocument(Document):
 	@classmethod
 	def get_list_of_records(cls, args):
 		"""
-		Returns List of WooCommerce Records (List view and Report view).
+		WooCommerce records for the list and report views, and for the syncs.
 
-		Fetches data from each WooCommerce server and processes it for Frappe.
-		Implements efficient pagination and error handling without redundant caching.
+		The servers are read one after the other, as if their records were one list: a server whose records
+		all lie before the requested offset (by its `x-wp-total`) only moves the offset on, and no server is
+		asked once the page is full. Each server orders its records, and the page is ordered again as a whole.
 
-		Args:
-			args: Dictionary containing request parameters (filters, pagination, etc.)
-
-		Returns:
-			List: WooCommerce records processed for Frappe
+		Besides Frappe's arguments, args can have:
+			page_length: how many records to return, fetched `per_page` (at most 100) a request
+			servers: only read these WooCommerce Servers
+			endpoint: another endpoint than the resource, for example the variations of a product
+			extra_wc_fields: WooCommerce fields to request on top of those of the requested Frappe fields
+			strict: raise when a server fails, instead of logging it and going on without it
 		"""
-		# Validate required args
-		if not isinstance(args, dict) or not args.get("doctype"):
+		if not isinstance(args, dict):
 			frappe.log_error("WooCommerce API Error", "Invalid arguments for get_list_of_records")
 			return []
 
@@ -459,20 +499,8 @@ class WooCommerceDocument(Document):
 			frappe.log_error("WooCommerce API Error", f"Failed to initialize WooCommerce API: {e!s}")
 			return []
 
-		# Get configuration settings
-		wc_records_per_page_limit = 100
-
-		# Map Frappe query parameters to WooCommerce query parameters
-		params = {}
-
 		# Only request the fields that Frappe asked for
-		params["_fields"] = cls.get_wc_fields(args.get("fields"), args.get("extra_wc_fields"))
-
-		# Handle pagination
-		requested = int(args.get("page_length", wc_records_per_page_limit))
-		per_page = min(requested, wc_records_per_page_limit)
-		offset = int(args.get("start", 0))
-		params["per_page"] = per_page
+		params = {"_fields": cls.get_wc_fields(args.get("fields"), args.get("extra_wc_fields"))}
 
 		# Order on the WooCommerce side where it supports the field, so the right page is returned
 		order_by = parse_order_by(args.get("order_by"))
@@ -487,110 +515,92 @@ class WooCommerceDocument(Document):
 			# An unsupported filter must fail: dropping it would return unrelated records
 			params.update(map_frappe_filters_to_wc_params(args["filters"]))
 
-		# Initialize required variables
-		all_results = []
-		total_processed = 0
-		max_results = args.get("max_results", 1000)  # Limit maximum records to prevent runaway queries
+		servers = args.get("servers")
+		page_length = cint(args.get("page_length")) or WC_PAGE_LIMIT
+		per_page = min(cint(args.get("per_page")) or page_length, WC_PAGE_LIMIT)
+		endpoint = args.get("endpoint") or cls.resource
 
-		# Filter servers if specified
-		selected_servers = []
-		if args.get("servers"):
-			selected_servers = [
-				wc_server for wc_server in wc_api_list if wc_server.woocommerce_server in args["servers"]
-			]
-		else:
-			selected_servers = wc_api_list
-
-		if not selected_servers:
-			return []
-
-		for wc_server in selected_servers:
-			endpoint = args.get("endpoint", cls.resource)
-			server_offset = max(0, offset - total_processed)
-
-			if server_offset > 0:
-				params["offset"] = server_offset
-			else:
-				params.pop("offset", None)  # Remove offset if not needed
-
-			try:
-				# Fetch records from this server
-				response = wc_server.get(endpoint, params=params)
-
-				if response.status_code != 200:
-					frappe.log_error(
-						f"WooCommerce API error: {response.status_code} - {response.text}",
-						"WooCommerce API Error",
-					)
-					if strict:
-						raise ConnectionError(
-							f"WooCommerce API returned {response.status_code} for {endpoint}"
-						)
-					continue
-
-				# Parse the response
-				results = response.json()
-				if not results:
-					continue
-			except Exception as err:
-				frappe.log_error(
-					f"Error fetching WooCommerce records: {err!s}\nEndpoint: {endpoint}\nParams: {params}",
-					"WooCommerce API Error",
-				)
-				if strict:
-					raise
+		records = []
+		# How many records of the servers still to be read lie before the page
+		offset = cint(args.get("start"))
+		for wc_api in wc_api_list:
+			if len(records) >= page_length:
+				break
+			if servers and wc_api.woocommerce_server not in servers:
 				continue
+			server_records, total = cls._get_records_of_server(
+				wc_api, endpoint, params, offset, per_page, page_length - len(records), strict, args
+			)
+			records.extend(server_records)
+			# The next server's records come after all of this one's
+			if total is not None:
+				offset = max(0, offset - total)
+			elif server_records:
+				offset = 0
 
-			# Get total count from headers if available
-			total_records_in_server = 0
-			if "x-wp-total" in response.headers:
-				total_records_in_server = int(response.headers["x-wp-total"])
-			else:
-				total_records_in_server = len(results)  # Fallback estimate
+		# Every server was ordered on its own, so order the page again
+		return sort_records(records, order_by)
 
-			# Process the results
-			records_needed = min(requested - len(all_results), max_results - total_processed)
+	@classmethod
+	def _get_records_of_server(
+		cls, wc_api, endpoint: str, params: dict, offset: int, per_page: int, wanted: int, strict: bool, args
+	) -> tuple[list[dict], int | None]:
+		"""
+		Up to `wanted` records of one server from `offset` on, and how many records the server has in all
+		(None when it didn't say)
+		"""
+		records, total, received = [], None, 0
+		while received < wanted:
+			size = min(per_page, wanted - received)
+			page_params = {**params, "per_page": size}
+			if offset + received:
+				page_params["offset"] = offset + received
+			response = cls._get_page(wc_api, endpoint, page_params, strict)
+			if response is None:
+				break
+			if total is None and "x-wp-total" in response.headers:
+				total = cint(response.headers["x-wp-total"])
 
-			while results:
-				# Process this batch of records
-				processed_batch = []
-				for record in results:
-					try:
-						record = cls.pre_init_document(
-							record=record, woocommerce_server_url=wc_server.woocommerce_server_url
-						)
-						record = cls.during_get_list_of_records(record, args)
-						processed_batch.append(record)
-					except Exception as e:
-						frappe.log_error(
-							f"Error processing record {record.get('id', 'unknown')}: {e!s}",
-							"WooCommerce Record Error",
-						)
-
-				records_needed -= len(results)
-				server_offset += len(results)
-				all_results.extend(processed_batch)
-				total_processed += min(total_records_in_server, len(processed_batch))
-
-				if records_needed <= 0 or len(results) < params["per_page"]:
-					break
-
+			page = response.json() or []
+			received += len(page)
+			for record in page:
 				try:
-					batch_params = params.copy()
-					batch_params["per_page"] = min(records_needed, params["per_page"])
-					batch_params["offset"] = server_offset
-					response = wc_server.get(endpoint, params=batch_params)
+					record = cls.pre_init_document(
+						record=record, woocommerce_server_url=wc_api.woocommerce_server_url
+					)
+					records.append(cls.during_get_list_of_records(record, args))
+				except Exception as e:
+					frappe.log_error(
+						"WooCommerce Record Error",
+						f"Error processing record {record.get('id', 'unknown')}: {e!s}",
+					)
+			if len(page) < size:
+				break
+		return records, total
 
-					if response.status_code != 200:
-						break
-
-					# Parse the response
-					results = response.json()
-				except Exception:
-					break
-
-		# Every server was ordered on its own, so order the combined list again
-		return sort_records(all_results, order_by)
+	@staticmethod
+	def _get_page(wc_api, endpoint: str, params: dict, strict: bool):
+		"""
+		One page of a list endpoint, or None when the server failed (which raises instead with `strict`)
+		"""
+		try:
+			response = wc_api.get(endpoint, params=params)
+		except Exception as err:
+			frappe.log_error(
+				"WooCommerce API Error",
+				f"Error fetching WooCommerce records: {err!s}\nEndpoint: {endpoint}\nParams: {params}",
+			)
+			if strict:
+				raise
+			return None
+		if response.status_code != 200:
+			frappe.log_error(
+				"WooCommerce API Error", f"WooCommerce API error: {response.status_code} - {response.text}"
+			)
+			if strict:
+				raise ConnectionError(f"WooCommerce API returned {response.status_code} for {endpoint}")
+			return None
+		return response
 
 	@classmethod
 	def during_get_list_of_records(cls, record: dict, args):
@@ -704,15 +714,9 @@ class WooCommerceDocument(Document):
 	@classmethod
 	def get_json_fields(cls):
 		"""
-		Returns a list of fields that have been defined with type "JSON"
+		The JSON fields of the doctype, from its cached meta: this runs for every record of a list
 		"""
-		fields = frappe.db.get_all(
-			"DocField",
-			{"parent": cls.doctype, "fieldtype": "JSON"},
-			["name", "fieldname", "fieldtype"],
-		)
-
-		return fields
+		return frappe.get_meta(cls.doctype).get("fields", {"fieldtype": "JSON"})
 
 	@classmethod
 	def get_count_of_records(cls, args) -> int:

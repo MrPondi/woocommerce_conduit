@@ -866,7 +866,6 @@ def get_names_of_wc_orders(
 			"filters": filters,
 			"fields": ["name"],
 			"page_length": MAX_ORDERS_PER_SYNC,
-			"max_results": MAX_ORDERS_PER_SYNC,
 			"strict": True,
 		}
 	)

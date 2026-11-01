@@ -16,7 +16,7 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woo
 	get_default_status_rows,
 	normalise_status,
 )
-from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceAPI
+from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceAPI, clear_api_clients
 
 
 def normalise_server_url(url: str | None) -> str | None:
@@ -146,6 +146,13 @@ class WooCommerceServer(Document):
 
 		if not self.secret:
 			self.secret = frappe.generate_hash()
+
+	def on_update(self):
+		# The clients built earlier in this request may have the old URL or credentials
+		clear_api_clients()
+
+	def on_trash(self):
+		clear_api_clients()
 
 	def track_order_sync_pause(self):
 		"""

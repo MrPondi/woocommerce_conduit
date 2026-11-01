@@ -76,7 +76,6 @@ def get_recent_orders(woocommerce_server: str, order_count: int) -> list[dict]:
 			"fields": ["name", "status", "line_items", "woocommerce_date_created"],
 			"servers": [woocommerce_server],
 			"page_length": order_count,
-			"max_results": order_count,
 			"strict": True,
 		}
 	)

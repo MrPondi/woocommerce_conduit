@@ -98,10 +98,18 @@ class WooCommerceProduct(WooCommerceDocument):
 		"backorders",
 	)
 
+	@classmethod
+	def pre_init_document(cls, record: dict, woocommerce_server_url: str):
+		# A variation has one `image` where a product has a list of `images`
+		if "images" not in record and "image" in record:
+			image = record.pop("image")
+			record["images"] = [image] if image else []
+		# The first image is the picture of the product, also in the list view
+		if images := record.get("images"):
+			record["image"] = images[0].get("src")
+		return super().pre_init_document(record, woocommerce_server_url)
+
 	def after_load_from_db(self, record: dict):
-		images = json.loads(record["images"])
-		if len(images) > 0:
-			record["image"] = images[0]["src"]
 		# Indent the JSON fields so they are readable in the form
 		for fieldname in ("images", "attributes"):
 			if isinstance(record.get(fieldname), str):
@@ -157,20 +165,23 @@ class WooCommerceProduct(WooCommerceDocument):
 			return products
 
 		max_variations = frappe.utils.cint(settings.max_variations) or 100
-		batch_size = min(frappe.utils.cint(settings.variation_batch_size) or 20, max_variations)
 		variations = []
 		for product in products:
 			if product.get("type") != "variable":
 				continue
 
-			variation_args = args.copy()
-			variation_args["endpoint"] = f"products/{product['id']}/variations"
-			variation_args["metadata"] = {"parent_woocommerce_name": product.get("woocommerce_name")}
-			# Needed to build the variation name
-			variation_args["extra_wc_fields"] = ["attributes"]
-			variation_args["page_length"] = batch_size
-			variation_args["max_results"] = max_variations
-			variation_args["start"] = 0
+			variation_args = {
+				"doctype": args.get("doctype"),
+				"fields": args.get("fields"),
+				# The parent's own server: another shop's product with the same id is another product
+				"servers": [product["woocommerce_server"]],
+				"endpoint": f"products/{product['id']}/variations",
+				"metadata": {"parent_woocommerce_name": product.get("woocommerce_name")},
+				# The attributes build the variation name; a variation has one image, not a list
+				"extra_wc_fields": ["attributes", "image"],
+				"page_length": max_variations,
+				"per_page": frappe.utils.cint(settings.variation_batch_size) or 20,
+			}
 
 			try:
 				variations.extend(WooCommerceProduct.get_list_of_records(variation_args))
