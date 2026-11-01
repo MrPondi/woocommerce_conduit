@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import frappe
 import frappe.utils
 from frappe import _
+from frappe.deferred_insert import deferred_insert
 from frappe.model import no_value_fields
 from frappe.model.document import Document
 from frappe.utils.password import get_decrypted_password
@@ -15,44 +16,71 @@ from woocommerce import API
 from woocommerce_conduit.exceptions import SyncDisabledError
 
 WC_RESOURCE_DELIMITER = "~"
+# The most of a response that an Integration Request keeps
+LOGGED_RESPONSE_LENGTH = 64 * 1024
 
 
 class WooCommerceAPI(API):
-	"""WooCommerce API with Request Logging."""
+	"""
+	The REST API client of one WooCommerce Server. Its failed requests, and all of them when the server has
+	Log All Requests ticked, are kept as Integration Requests.
+	"""
+
+	def __init__(
+		self,
+		url: str,
+		consumer_key: str,
+		consumer_secret: str,
+		woocommerce_server: str | None = None,
+		log_all_requests: bool = False,
+		**kwargs,
+	):
+		kwargs.setdefault("version", "wc/v3")
+		kwargs.setdefault("timeout", 40)
+		super().__init__(url=url, consumer_key=consumer_key, consumer_secret=consumer_secret, **kwargs)
+		self.woocommerce_server = woocommerce_server
+		self.woocommerce_server_url = url
+		self.log_all_requests = bool(log_all_requests)
 
 	def _API__request(self, method, endpoint, data, params=None, **kwargs):
-		"""Override _request method to also create a 'WooCommerce Request Log'"""
-		result = None
 		try:
-			result = super()._API__request(method, endpoint, data, params, **kwargs)  # type: ignore
-			if not frappe.flags.in_test:
-				frappe.enqueue(
-					"woocommerce_conduit.tasks.utils.log_woocommerce_request",
-					url=self.url,
-					endpoint=endpoint,
-					request_method=method,
-					params=params,
-					data=data,
-					res=result,
-					traceback="".join(traceback.format_stack(limit=8)),
-				)
-			return result
+			response = super()._API__request(method, endpoint, data, params, **kwargs)  # type: ignore
 		except Exception:
-			if not frappe.flags.in_test:
-				frappe.enqueue(
-					"woocommerce_conduit.tasks.utils.log_woocommerce_request",
-					url=self.url,
-					endpoint=endpoint,
-					request_method=method,
-					params=params,
-					data=data,
-					res=result,
-					traceback="".join(traceback.format_stack(limit=8)),
-				)
+			self.log_request(method, endpoint, params, data, error=traceback.format_exc())
 			raise
+		if self.log_all_requests or not response.ok:
+			self.log_request(method, endpoint, params, data, response=response)
+		return response
 
-	woocommerce_server_url: str
-	woocommerce_server: str
+	def log_request(self, method: str, endpoint: str, params, data, response=None, error: str | None = None):
+		"""
+		Keep a request as an Integration Request, which Log Settings clears after a while. The insert is
+		deferred, so it survives a sync that is rolled back and costs no background job. Frappe writes the
+		deferred inserts every 15 minutes.
+		"""
+		if frappe.in_test:
+			return
+		failed = bool(error) or not response.ok
+		if failed and not error:
+			error = f"{response.status_code} {response.reason or ''}".strip()
+		elapsed = f" ({response.elapsed.total_seconds():.2f} s)" if response is not None else ""
+		deferred_insert(
+			"Integration Request",
+			[
+				{
+					"integration_request_service": "WooCommerce",
+					"request_description": f"{method} {endpoint}{elapsed}"[:140],
+					# Not the URL of the request, which carries the OAuth signature on a shop without https
+					"url": f"{self.url.rstrip('/')}/wp-json/{self.version}/{endpoint}",
+					"data": frappe.as_json({"params": params, "data": data}),
+					"output": response.text[:LOGGED_RESPONSE_LENGTH] if response is not None else None,
+					"error": error,
+					"status": "Failed" if failed else "Completed",
+					"reference_doctype": "WooCommerce Server" if self.woocommerce_server else None,
+					"reference_docname": self.woocommerce_server,
+				}
+			],
+		)
 
 
 # Frappe fields that are derived on our side, so there is nothing to request from WooCommerce for them
@@ -170,7 +198,7 @@ class WooCommerceDocument(Document):
 		# Get all WooCommerce servers in a single query and then filter
 		wc_servers = frappe.get_all(
 			"WooCommerce Server",
-			fields=["name", "woocommerce_server_url"],
+			fields=["name", "woocommerce_server_url", "log_all_requests"],
 			filters={"enabled": 1},
 		)
 
@@ -178,21 +206,19 @@ class WooCommerceDocument(Document):
 		wc_api_list = []
 		for server in wc_servers:
 			try:
-				wc_api = WooCommerceAPI(
-					url=server.woocommerce_server_url,
-					consumer_key=get_decrypted_password(
-						"WooCommerce Server", server.name, "api_consumer_key", raise_exception=False
-					),
-					consumer_secret=get_decrypted_password(
-						"WooCommerce Server", server.name, "api_consumer_secret", raise_exception=False
-					),
-					version="wc/v3",
-					timeout=40,
+				wc_api_list.append(
+					WooCommerceAPI(
+						url=server.woocommerce_server_url,
+						consumer_key=get_decrypted_password(
+							"WooCommerce Server", server.name, "api_consumer_key", raise_exception=False
+						),
+						consumer_secret=get_decrypted_password(
+							"WooCommerce Server", server.name, "api_consumer_secret", raise_exception=False
+						),
+						woocommerce_server=server.name,
+						log_all_requests=server.log_all_requests,
+					)
 				)
-				# Add server name for easier identification
-				wc_api.woocommerce_server = server.name
-				wc_api.woocommerce_server_url = server.woocommerce_server_url
-				wc_api_list.append(wc_api)
 			except Exception as e:
 				frappe.log_error(f"Error initializing WooCommerce API for server {server.name}: {e!s}")
 

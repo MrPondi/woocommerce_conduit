@@ -89,6 +89,7 @@ class WooCommerceServer(Document):
 		item_field_map: DF.Table[WooCommerceServerItemField]
 		item_group: DF.Link
 		last_sync_time: DF.Datetime | None
+		log_all_requests: DF.Check
 		name_by: DF.Literal["WooCommerce ID", "Product SKU"]
 		order_sync_paused_since: DF.Datetime | None
 		pause_order_sync: DF.Check
@@ -210,7 +211,9 @@ class WooCommerceServer(Document):
 			url=normalise_server_url(self.woocommerce_server_url) or "",
 			consumer_key=self._credential("api_consumer_key"),
 			consumer_secret=self._credential("api_consumer_secret"),
-			version="wc/v3",
+			# An unsaved server can't be linked to from the log yet
+			woocommerce_server=None if self.is_new() else self.name,
+			log_all_requests=self.log_all_requests,
 		)
 
 	def test_api_credentials(self):

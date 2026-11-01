@@ -12,6 +12,7 @@
   "server_defaults_section",
   "creation_user",
   "last_sync_time",
+  "log_all_requests",
   "endpoint_section",
   "secret",
   "view_webhook_config",
@@ -117,6 +118,13 @@
    "in_list_view": 1,
    "label": "Last Sync Time",
    "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Keep every request to this shop as an Integration Request, not only the failed ones. Meant for debugging, as the log grows quickly.",
+   "fieldname": "log_all_requests",
+   "fieldtype": "Check",
+   "label": "Log All Requests"
   },
   {
    "default": "1",
@@ -478,7 +486,7 @@
  "icon": "server-plus",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-01 12:32:16.623782",
+ "modified": "2026-11-01 12:45:09.677748",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",
