@@ -50,14 +50,16 @@ def add_backorders(item, wc_server, bins, stock_values):
 	return None
 
 
-def stock_values(server, bins=BINS, item_disabled=False):
+def stock_values(server, bins=BINS, item_disabled=False, conversion_factor=1.0):
 	# The warehouses aren't groups, so they stand for themselves
 	with patch.object(
 		stock_update,
 		"get_warehouses_with_descendants",
 		side_effect=lambda rows: {row.warehouse for row in rows or []},
 	):
-		return get_woocommerce_stock_values(server, bins, item_disabled=item_disabled)
+		return get_woocommerce_stock_values(
+			server, bins, item_disabled=item_disabled, conversion_factor=conversion_factor
+		)
 
 
 class TestStockValues(IntegrationTestCase):
@@ -78,6 +80,14 @@ class TestStockValues(IntegrationTestCase):
 
 	def test_a_disabled_item_has_no_stock(self):
 		self.assertEqual(stock_values(make_server(), item_disabled=True)["stock_quantity"], 0)
+
+	def test_stock_in_sales_units_is_whole_units(self):
+		bins = [_dict(warehouse="Stores", actual_qty=52900, reserved_qty=0)]
+		self.assertEqual(stock_values(make_server(), bins=bins, conversion_factor=1000)["stock_quantity"], 52)
+
+		# Not 29.999...
+		bins = [_dict(warehouse="Stores", actual_qty=3, reserved_qty=0)]
+		self.assertEqual(stock_values(make_server(), bins=bins, conversion_factor=0.1)["stock_quantity"], 30)
 
 	def test_the_shops_backorder_setting_is_left_alone(self):
 		self.assertNotIn("backorders", stock_values(make_server(), bins=BINS[2:]))
@@ -115,9 +125,10 @@ class TestStockValueHooks(IntegrationTestCase):
 
 
 class TestStockPush(IntegrationTestCase):
-	def push(self, item, server, hooks=(), product=None):
+	def push(self, item, server, hooks=(), product=None, sales_units=None):
 		product = product or MagicMock()
 		with (
+			patch.object(stock_update, "get_sales_units", return_value=sales_units or {}),
 			patch("frappe.get_doc", return_value=item),
 			patch("frappe.get_all", return_value=BINS),
 			patch("frappe.get_cached_doc", return_value=server),
@@ -153,6 +164,16 @@ class TestStockPush(IntegrationTestCase):
 		product.get_changes.assert_called_once_with({"manage_stock": 1, "stock_quantity": 7})
 		product.write.assert_called_once_with(product.get_changes.return_value)
 		self.record_sync_time.assert_called_once_with("one.example.com")
+
+	def test_the_stock_goes_in_the_sales_uom_when_the_server_syncs_in_it(self):
+		unit = _dict(uom="Box", stock_uom="Nos", factor=4)
+
+		_result, _load, product = self.push(
+			self.make_item(), make_server(sync_in_sales_uom=1), sales_units={"MUG-1": unit}
+		)
+
+		# 7.6 in the warehouse are 1.9 boxes
+		product.get_changes.assert_called_once_with({"manage_stock": 1, "stock_quantity": 1})
 
 	def test_a_product_that_has_the_stock_already_is_not_written(self):
 		product = MagicMock()

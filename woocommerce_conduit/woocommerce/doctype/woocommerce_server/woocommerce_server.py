@@ -104,6 +104,7 @@ class WooCommerceServer(Document):
 		shipping_rule_map: DF.Table[WooCommerceServerShippingRule]
 		submit_sales_invoice: DF.Check
 		subtract_reserved_stock: DF.Check
+		sync_in_sales_uom: DF.Check
 		sync_prices_for_disabled_items: DF.Check
 		tax_class_map: DF.Table[WooCommerceServerTaxClass]
 		uom: DF.Link

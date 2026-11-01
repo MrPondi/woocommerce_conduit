@@ -3,13 +3,17 @@ from collections import defaultdict
 from datetime import date
 
 import frappe
-from erpnext.stock.get_item_details import get_item_prices_for_stock_uom
+from erpnext.stock.get_item_details import get_item_prices_for_stock_uom, get_price_list_rate_for
 from frappe import _, _dict, qb
 from frappe.query_builder import Criterion
 from frappe.query_builder.functions import IfNull
 from frappe.utils import create_batch, get_datetime, getdate, today
 
-from woocommerce_conduit.tasks.sync import enqueue_after_commit_unless_queued, record_sync_time
+from woocommerce_conduit.tasks.sync import (
+	enqueue_after_commit_unless_queued,
+	get_sales_units,
+	record_sync_time,
+)
 from woocommerce_conduit.woocommerce.doctype.woocommerce_product.woocommerce_product import (
 	WooCommerceProduct,
 )
@@ -145,6 +149,8 @@ class SynchroniseItemPrice:
 		self.wc_server = None
 		self.item_price_list = []
 		self.sale_price_map = {}
+		# The Items whose prices go in their Sales UOM, see get_sales_units
+		self.sales_units = {}
 
 	def run(self) -> None:
 		"""
@@ -159,22 +165,43 @@ class SynchroniseItemPrice:
 	def get_erpnext_item_prices(self) -> None:
 		"""
 		The Items linked to products of the server, each with its price in the server's Price List: the Item
-		Price that ERPNext would charge today (valid today, in the stock UOM, for anyone, the newest)
+		Price that ERPNext would charge today (valid today, for anyone, the newest). In the stock UOM, or in
+		the Item's Sales UOM when the server syncs in it, as a Sales Order line in that UOM would be priced.
 		"""
 		self.item_price_list = []
+		self.sales_units = {}
 		server = self.wc_server
 		if not (server and server.enabled and server.enable_price_list_sync and server.price_list):
 			return
 
 		connections = self.get_connections()
+		item_codes = list(dict.fromkeys(connection.item_code for connection in connections))
+		if server.get("sync_in_sales_uom"):
+			self.sales_units = get_sales_units(item_codes)
+
+		pctx = {"price_list": server.price_list, "transaction_date": today()}
 		prices = get_item_prices_for_stock_uom(
-			{"price_list": server.price_list, "transaction_date": today()},
-			list(dict.fromkeys(connection.item_code for connection in connections)),
+			pctx, [item_code for item_code in item_codes if item_code not in self.sales_units]
 		)
+		rates = {item_code: price.price_list_rate for item_code, price in prices.items()}
+		for item_code, unit in self.sales_units.items():
+			rate = get_price_list_rate_for(
+				{
+					**pctx,
+					"uom": unit.uom,
+					"stock_uom": unit.stock_uom,
+					"conversion_factor": unit.factor,
+					"qty": 1,
+				},
+				item_code,
+			)
+			if rate is not None:
+				rates[item_code] = rate
+
 		self.item_price_list = [
-			_dict(connection, price_list_rate=prices[connection.item_code].price_list_rate)
+			_dict(connection, price_list_rate=rates[connection.item_code])
 			for connection in connections
-			if connection.item_code in prices
+			if connection.item_code in rates
 		]
 
 	def get_connections(self) -> list:
@@ -226,6 +253,11 @@ class SynchroniseItemPrice:
 		item = qb.DocType("Item")
 		on_date = getdate(today())
 
+		# In the stock UOM, like the regular price, or in the Sales UOM when the server syncs in it
+		in_unit = (IfNull(ip.uom, "") == "") | (ip.uom == item.stock_uom)
+		if server.get("sync_in_sales_uom"):
+			in_unit |= ip.uom == item.sales_uom
+
 		and_conditions = [
 			ip.price_list == server.sales_price_list,
 			iwc.woocommerce_server == server.name,
@@ -233,8 +265,7 @@ class SynchroniseItemPrice:
 			iwc.enable_sync == 1,
 			iwc.woocommerce_id.isnotnull(),
 			*item_wide_price_conditions(ip),
-			# In the stock UOM, like the regular price
-			(IfNull(ip.uom, "") == "") | (ip.uom == item.stock_uom),
+			in_unit,
 			# A sale that has ended doesn't count
 			IfNull(ip.valid_upto, "2500-12-31") >= on_date,
 		]
@@ -250,7 +281,13 @@ class SynchroniseItemPrice:
 			.inner_join(item)
 			.on(item.name == ip.item_code)
 			.select(
-				ip.name, ip.item_code, ip.price_list_rate, ip.valid_from, ip.valid_upto, iwc.woocommerce_id
+				ip.name,
+				ip.item_code,
+				ip.uom,
+				ip.price_list_rate,
+				ip.valid_from,
+				ip.valid_upto,
+				iwc.woocommerce_id,
 			)
 			.where(Criterion.all(and_conditions))
 			.run(as_dict=True)
@@ -306,8 +343,18 @@ class SynchroniseItemPrice:
 		if self.wc_server and self.wc_server.enable_sales_price_list_sync and self.wc_server.sales_price_list:
 			sale = self.sale_price_map.get(item_price.woocommerce_id)
 			values.update(
-				sale_price=frappe.utils.flt(sale.price_list_rate) if sale else 0,
+				sale_price=self.get_sale_rate(item_price.item_code, sale) if sale else 0,
 				date_on_sale_from=_format_sale_date(sale.valid_from) if sale else None,
 				date_on_sale_to=_format_sale_date(sale.valid_upto) if sale else None,
 			)
 		return values
+
+	def get_sale_rate(self, item_code: str, sale) -> float:
+		"""
+		The rate of a sale in the unit the product is sold in: a price of the stock UOM goes times the
+		factor when the Item sells in its Sales UOM, as ERPNext prices a Sales Order line in that UOM
+		"""
+		rate = frappe.utils.flt(sale.price_list_rate)
+		if (unit := self.sales_units.get(item_code)) and sale.get("uom") != unit.uom:
+			rate *= unit.factor
+		return rate

@@ -3,9 +3,9 @@ import math
 import frappe
 from erpnext.stock.doctype.warehouse.warehouse import get_child_warehouses
 from frappe import _
-from frappe.utils import create_batch
+from frappe.utils import create_batch, flt
 
-from woocommerce_conduit.tasks.sync import enqueue_unless_queued, record_sync_time
+from woocommerce_conduit.tasks.sync import enqueue_unless_queued, get_sales_units, record_sync_time
 from woocommerce_conduit.tasks.sync_items import load_wc_product
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
 	WooCommerceServer,
@@ -196,11 +196,19 @@ def update_stock_levels_on_woocommerce_site(item_code: str) -> bool:
 		if item.disabled and not wc_server.push_zero_stock_for_disabled_items:
 			continue
 
+		sales_unit = (
+			get_sales_units([item.name]).get(item.name) if wc_server.get("sync_in_sales_uom") else None
+		)
 		stock_values = apply_stock_value_hooks(
 			item,
 			wc_server,
 			bins,
-			get_woocommerce_stock_values(wc_server, bins, item_disabled=bool(item.disabled)),
+			get_woocommerce_stock_values(
+				wc_server,
+				bins,
+				item_disabled=bool(item.disabled),
+				conversion_factor=sales_unit.factor if sales_unit else 1.0,
+			),
 		)
 		wc_product_name = generate_woocommerce_record_name_from_domain_and_id(
 			wc_server.name, connection.woocommerce_id
@@ -223,12 +231,14 @@ def update_stock_levels_on_woocommerce_site(item_code: str) -> bool:
 	return True
 
 
-def get_woocommerce_stock_values(wc_server: WooCommerceServer, bins: list, item_disabled: bool) -> dict:
+def get_woocommerce_stock_values(
+	wc_server: WooCommerceServer, bins: list, item_disabled: bool, conversion_factor: float = 1.0
+) -> dict:
 	"""
 	The WooCommerce Product's stock fields for an Item's Bins.
 
 	The quantity is the stock of the server's warehouses, rounded down, as WooCommerce only takes whole
-	numbers. The shop's backorder setting is left as it is; another app can change it, or anything else
+	numbers. It is in the Stock UOM, or in Sales UOMs of `conversion_factor` Stock UOMs each. The shop's backorder setting is left as it is; another app can change it, or anything else
 	in writable_fields, through the woocommerce_stock_values hook.
 	"""
 	own_qty = 0
@@ -239,7 +249,8 @@ def get_woocommerce_stock_values(wc_server: WooCommerceServer, bins: list, item_
 			for row in bins
 			if row.warehouse in own_warehouses
 		)
-	return {"manage_stock": 1, "stock_quantity": max(math.floor(own_qty), 0)}
+	# Rounded to six places first, so 3 / 0.1 is 30 and not 29.999...
+	return {"manage_stock": 1, "stock_quantity": max(math.floor(flt(own_qty / conversion_factor, 6)), 0)}
 
 
 def apply_stock_value_hooks(item, wc_server: WooCommerceServer, bins: list, stock_values: dict) -> dict:

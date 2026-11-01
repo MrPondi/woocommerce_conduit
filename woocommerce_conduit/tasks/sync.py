@@ -1,5 +1,7 @@
 import frappe
-from frappe.utils import now
+from erpnext.stock.get_item_details import get_conversion_factor
+from frappe import _dict
+from frappe.utils import flt, now
 from frappe.utils.background_jobs import get_job_status
 from rq.job import JobStatus
 
@@ -10,6 +12,26 @@ def record_sync_time(server_name: str):
 	the server doesn't get a new modified timestamp (and a version) for every push.
 	"""
 	frappe.db.set_value("WooCommerce Server", server_name, "last_sync_time", now(), update_modified=False)
+
+
+def get_sales_units(item_codes) -> dict[str, _dict]:
+	"""
+	The Items among these that sell in another unit than they are stocked in: their Sales UOM (`uom`), their
+	`stock_uom`, and how many Stock UOMs one Sales UOM holds (`factor`). The factor is ERPNext's own
+	conversion: the UOMs of the Item or its template, else the UOM Conversion Factors.
+	"""
+	if not item_codes:
+		return {}
+	units = {}
+	for item in frappe.get_all(
+		"Item", filters={"name": ["in", list(item_codes)]}, fields=["name", "stock_uom", "sales_uom"]
+	):
+		if not item.sales_uom or item.sales_uom == item.stock_uom:
+			continue
+		factor = flt(get_conversion_factor(item.name, item.sales_uom).get("conversion_factor"))
+		if factor > 0:
+			units[item.name] = _dict(uom=item.sales_uom, stock_uom=item.stock_uom, factor=factor)
+	return units
 
 
 def enqueue_unless_queued(method: str, job_id: str, **kwargs):

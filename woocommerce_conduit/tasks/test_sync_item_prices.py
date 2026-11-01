@@ -160,6 +160,51 @@ class TestPriceChoice(IntegrationTestCase):
 			],
 		)
 
+	def test_an_item_that_sells_in_its_sales_uom_is_priced_in_it(self):
+		server = _dict(
+			name="one.example.com",
+			enabled=1,
+			enable_price_list_sync=1,
+			price_list="Standard Selling",
+			sync_in_sales_uom=1,
+		)
+		sync = SynchroniseItemPrice(servers=[server])
+		sync.wc_server = server
+		connections = [
+			_dict(item_code="MUG-1", woocommerce_server="one.example.com", woocommerce_id="12"),
+			_dict(item_code="CUP-1", woocommerce_server="one.example.com", woocommerce_id="13"),
+		]
+		unit = _dict(uom="Box", stock_uom="Nos", factor=12)
+		with (
+			patch.object(sync, "get_connections", return_value=connections),
+			patch.object(sync_item_prices, "today", return_value="2026-11-01"),
+			patch.object(sync_item_prices, "get_sales_units", return_value={"MUG-1": unit}),
+			patch.object(
+				sync_item_prices,
+				"get_item_prices_for_stock_uom",
+				return_value={"CUP-1": _dict(price_list_rate=3.0)},
+			) as get_item_prices,
+			patch.object(sync_item_prices, "get_price_list_rate_for", return_value=120.0) as get_rate,
+		):
+			sync.get_erpnext_item_prices()
+
+		self.assertEqual(get_item_prices.call_args.args[1], ["CUP-1"])
+		ctx, item_code = get_rate.call_args.args
+		self.assertEqual(item_code, "MUG-1")
+		self.assertEqual((ctx["uom"], ctx["conversion_factor"], ctx["qty"]), ("Box", 12, 1))
+		self.assertEqual(
+			{row.item_code: row.price_list_rate for row in sync.item_price_list},
+			{"MUG-1": 120.0, "CUP-1": 3.0},
+		)
+
+	def test_a_sale_of_the_stock_uom_goes_times_the_sales_uom(self):
+		sync = SynchroniseItemPrice(servers=[_dict(name="one.example.com")])
+		sync.sales_units = {"MUG-1": _dict(uom="Box", stock_uom="Nos", factor=12)}
+
+		self.assertEqual(sync.get_sale_rate("MUG-1", _dict(price_list_rate=2.0, uom="")), 24.0)
+		self.assertEqual(sync.get_sale_rate("MUG-1", _dict(price_list_rate=20.0, uom="Box")), 20.0)
+		self.assertEqual(sync.get_sale_rate("CUP-1", _dict(price_list_rate=2.0, uom="")), 2.0)
+
 	def test_the_running_sale_that_started_last_is_shown(self):
 		rows = [
 			_dict(name="old", valid_from=date(2026, 10, 1)),

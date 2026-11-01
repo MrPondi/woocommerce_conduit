@@ -53,6 +53,7 @@
   "check_order_items",
   "name_by",
   "enable_image_sync",
+  "sync_in_sales_uom",
   "item_field_map",
   "price_list_tab",
   "enable_price_list_sync",
@@ -132,6 +133,13 @@
    "fieldname": "enable_image_sync",
    "fieldtype": "Check",
    "label": "Enable Image Sync"
+  },
+  {
+   "default": "0",
+   "description": "Publish the stock and prices of an Item in its Sales UOM instead of its Stock UOM, as its Sales Order lines have it. For stock kept in pieces and sold in boxes of 1000, the shop then shows 52 boxes instead of 52900, at the price of a box.",
+   "fieldname": "sync_in_sales_uom",
+   "fieldtype": "Check",
+   "label": "Sync in Sales UOM"
   },
   {
    "fieldname": "items_tab",
@@ -486,7 +494,7 @@
  "icon": "server-plus",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-01 12:45:09.677748",
+ "modified": "2026-11-01 14:16:49.224520",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",
