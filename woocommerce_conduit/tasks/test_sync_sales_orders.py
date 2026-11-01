@@ -233,10 +233,12 @@ class TestSyncHash(IntegrationTestCase):
 			payment_method="stripe",
 			woocommerce_date_modified="2026-10-30T10:00:00",
 		)
-		sync.update_sales_order()
+		# The lines of a mock can't be updated, and the failure would be logged as an Error Log
+		with patch.object(sync, "update_sales_order_items"):
+			sync.update_sales_order()
 
-		# The first write; the lines that follow are flagged, as the Sales Order is a mock
-		bookkeeping = sync.sales_order.db_set.call_args_list[0]
+		sync.sales_order.db_set.assert_called_once()
+		bookkeeping = sync.sales_order.db_set.call_args
 		self.assertEqual(bookkeeping.args[0]["woocommerce_last_sync_hash"], datetime(2026, 10, 30, 10, 0, 0))
 		self.assertEqual(bookkeeping.kwargs, {"update_modified": False})
 		self.assertTrue(sync.sales_order.flags.created_by_sync)
