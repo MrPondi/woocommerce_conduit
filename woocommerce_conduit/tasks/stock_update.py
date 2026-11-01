@@ -47,7 +47,7 @@ def update_stock_levels_from_ledger(doc, method=None):
 	movement of every document, and one that reverses it when the document is cancelled, so no stock change
 	is missed, whichever doctype makes it. Each Item is pushed once the transaction is committed.
 	"""
-	if frappe.flags.in_test or not doc.item_code:
+	if frappe.in_test or not doc.item_code:
 		return
 	enqueue_stock_updates({doc.item_code})
 
@@ -57,7 +57,7 @@ def update_stock_levels_for_woocommerce_item(doc, method=None):
 	Intended to be triggered by the on_submit and on_cancel of a Sales Order. A Sales Order reserves stock
 	without a Stock Ledger Entry, and that only counts on a server that subtracts reserved stock.
 	"""
-	if frappe.flags.in_test or doc.doctype != "Sales Order" or not reserved_stock_is_subtracted():
+	if frappe.in_test or doc.doctype != "Sales Order" or not reserved_stock_is_subtracted():
 		return
 	enqueue_stock_updates({row.item_code for row in doc.get("items") or [] if row.item_code})
 

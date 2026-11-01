@@ -130,9 +130,9 @@ class WooCommerceServer(Document):
 		# A new server starts with what the core statuses mean, which the user can then change
 		if not self.sales_order_status_map:
 			self.add_default_order_statuses()
-		if not self.payment_method_map and not frappe.flags.in_test:
+		if not self.payment_method_map and not frappe.in_test:
 			self.add_missing_payment_methods()
-		if not self.tax_class_map and not frappe.flags.in_test:
+		if not self.tax_class_map and not frappe.in_test:
 			self.add_missing_tax_classes()
 
 	def validate(self):
@@ -316,7 +316,7 @@ class WooCommerceServer(Document):
 		Add a row for each status that the Sales Order Status Map lacks. Rows that are there stay as they are.
 		The core statuses are known without the shop, so a shop that can't be reached isn't an error here.
 		"""
-		live_statuses = self.fetch_order_statuses()[0] if not frappe.flags.in_test else {}
+		live_statuses = self.fetch_order_statuses()[0] if not frappe.in_test else {}
 		rows = get_default_status_rows(
 			live_statuses, existing=[row.woocommerce_status for row in self.sales_order_status_map]
 		)

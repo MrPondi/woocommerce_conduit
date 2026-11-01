@@ -1,6 +1,6 @@
 ### Woocommerce Conduit
 
-Connect your woocomemrce site to frappe
+Connect your WooCommerce site to Frappe
 
 ### Installation
 

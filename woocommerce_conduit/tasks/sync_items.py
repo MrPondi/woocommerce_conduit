@@ -165,7 +165,7 @@ def run_item_sync(
 			run_item_sync,
 			queue="long",
 			timeout=300,
-			now=bool(frappe.flags.in_test),
+			now=bool(frappe.in_test),
 			force_update=force_update,
 			**kwargs,
 		)
@@ -348,7 +348,7 @@ class SynchroniseItem:
 
 	def sync_wc_product_with_erpnext_item(self):
 		"""
-		Syncronise an ERPNext Item from its WooCommerce Product
+		Synchronise an ERPNext Item from its WooCommerce Product
 		"""
 		if self.woocommerce_product and not self.item:
 			# create missing item in ERPNext

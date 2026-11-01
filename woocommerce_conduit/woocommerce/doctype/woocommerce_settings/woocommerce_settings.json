@@ -35,7 +35,7 @@
   {
    "fieldname": "wc_last_sync_date_items",
    "fieldtype": "Datetime",
-   "label": "Last Items Syncronisation Date"
+   "label": "Last Items Synchronisation Date"
   },
   {
    "fieldname": "minimum_creation_date",
@@ -47,14 +47,14 @@
   {
    "fieldname": "wc_last_sync_date_orders",
    "fieldtype": "Datetime",
-   "label": "Last Orders Syncronisation Date"
+   "label": "Last Orders Synchronisation Date"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-10-28 18:34:43.726299",
+ "modified": "2026-11-01 14:36:56.603159",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Settings",

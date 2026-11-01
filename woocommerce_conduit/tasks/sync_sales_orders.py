@@ -349,7 +349,7 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 
 	def sync_wc_order_with_erpnext_order(self):
 		"""
-		Syncronise Sales Order between ERPNext and WooCommerce
+		Synchronise Sales Order between ERPNext and WooCommerce
 		"""
 		if not self.woocommerce_order:
 			return

@@ -239,7 +239,7 @@ class TestStockHook(IntegrationTestCase):
 		Run the hooks for the documents and then what runs after the commit, and return the push jobs
 		"""
 		with (
-			patch.dict(frappe.flags, {"in_test": False}),
+			patch.object(frappe, "in_test", False),
 			patch.object(stock_update, "stock_sync_is_enabled", return_value=enabled),
 			patch.object(stock_update, "reserved_stock_is_subtracted", return_value=reserved_stock_counts),
 			patch.object(frappe.db, "after_commit") as after_commit,

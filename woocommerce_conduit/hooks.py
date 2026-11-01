@@ -1,7 +1,7 @@
 app_name = "woocommerce_conduit"
 app_title = "WooCommerce Conduit"
 app_publisher = "Karol Parzonka"
-app_description = "Connect your woocomemrce site to frappe"
+app_description = "Connect your WooCommerce site to Frappe"
 app_email = "me@pondi.dev"
 app_license = "gpl-3.0"
 app_logo_url = "/assets/woocommerce_conduit/images/woocommerce-logo.svg"

@@ -813,7 +813,7 @@ class TestPushingStatus(IntegrationTestCase):
 		doc = self.make_sales_order()
 		doc.name = "SAL-ORD-1"
 		with (
-			patch.dict(frappe.flags, {"in_test": False}),
+			patch.object(frappe, "in_test", False),
 			patch.object(frappe, "get_cached_doc", return_value=make_server()),
 			patch.object(frappe, "enqueue") as enqueue,
 		):
@@ -829,7 +829,7 @@ class TestPushingStatus(IntegrationTestCase):
 			doc = self.make_sales_order(**values)
 			doc.name = "SAL-ORD-1"
 			with (
-				patch.dict(frappe.flags, {"in_test": False}),
+				patch.object(frappe, "in_test", False),
 				patch.object(frappe, "get_cached_doc", return_value=make_server()),
 				patch.object(frappe, "enqueue") as enqueue,
 			):

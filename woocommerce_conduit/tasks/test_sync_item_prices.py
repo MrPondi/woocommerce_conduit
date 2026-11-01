@@ -31,7 +31,7 @@ def make_product(**values) -> WooCommerceProduct:
 class TestItemPriceHook(IntegrationTestCase):
 	def run_hook(self, doc, enabled=True):
 		with (
-			patch.dict(frappe.flags, {"in_test": False}),
+			patch.object(frappe, "in_test", False),
 			patch.object(sync_item_prices, "price_sync_is_enabled", return_value=enabled),
 			patch.object(sync_item_prices, "enqueue_after_commit_unless_queued") as enqueue,
 		):

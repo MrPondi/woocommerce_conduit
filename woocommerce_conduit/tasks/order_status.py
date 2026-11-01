@@ -62,7 +62,7 @@ def enqueue_status_push_from_hook(doc, method=None):
 	Intended to be triggered by the on_change of a Sales Order. That includes the status changes that
 	ERPNext makes itself when a Delivery Note or Sales Invoice is submitted.
 	"""
-	if frappe.flags.in_test or doc.docstatus == 0 or doc.flags.get("created_by_sync"):
+	if frappe.in_test or doc.docstatus == 0 or doc.flags.get("created_by_sync"):
 		return
 	if not get_status_to_push(doc):
 		return

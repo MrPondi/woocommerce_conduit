@@ -84,7 +84,7 @@ def update_item_price_for_woocommerce_item_from_hook(doc, method=None):
 	Intended to be triggered by the on_update and on_trash of an Item Price. Pushes the Item's prices once
 	the change is committed, so a deleted Item Price is gone by then.
 	"""
-	if frappe.flags.in_test or doc.flags.created_by_sync or not price_sync_is_enabled():
+	if frappe.in_test or doc.flags.created_by_sync or not price_sync_is_enabled():
 		return
 	# Only the name goes in the job. It runs after the commit, so it reads the saved price.
 	enqueue_after_commit_unless_queued(
@@ -154,7 +154,7 @@ class SynchroniseItemPrice:
 
 	def run(self) -> None:
 		"""
-		Run synchornisation
+		Run synchronisation
 		"""
 		for server in self.servers:
 			self.wc_server = server
@@ -324,7 +324,7 @@ class SynchroniseItemPrice:
 					pushed = True
 					# Space out the writes of a full sweep, so the shop isn't flooded
 					if (delay := frappe.utils.flt(self.wc_server.price_list_delay_per_item)) > 0 and not (
-						frappe.flags.in_test
+						frappe.in_test
 					):
 						time.sleep(delay)
 			except Exception:
