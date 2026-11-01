@@ -54,10 +54,12 @@
   "order_item_field_map",
   "items_tab",
   "import_products",
-  "check_order_items",
   "name_by",
+  "column_break_clla",
+  "check_order_items",
   "enable_image_sync",
   "sync_in_sales_uom",
+  "section_break_msbs",
   "item_field_map",
   "price_list_tab",
   "enable_price_list_sync",
@@ -518,13 +520,21 @@
   {
    "fieldname": "column_break_bnkn",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_clla",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_msbs",
+   "fieldtype": "Section Break"
   }
  ],
  "grid_page_length": 50,
  "icon": "server-plus",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-01 22:30:01.000000",
+ "modified": "2026-11-02 00:15:45.782033",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",
