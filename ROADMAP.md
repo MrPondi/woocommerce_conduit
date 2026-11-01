@@ -19,11 +19,18 @@ Start at: `stock_update.update_stock_levels_of_items`, `SynchroniseItemPrice.syn
 
 ## Orders and accounting
 
-### Refunds as credit notes
+### Refunds from ERPNext
 
-A refunded order closes its Sales Order (the `refunded` row of the Order Status Map), but no money moves in ERPNext: there is no Credit Note and no refund Payment Entry. Full and partial refunds are in the order's `refunds` field, with details at `orders/{id}/refunds`.
+Once a shop is synced, a refund is made in ERPNext, as a Credit Note against the order's Sales Invoice, and sent to the shop. No refund should then be made in WooCommerce. Nothing sends one yet.
 
-Start at: `order_status.SalesOrderStatusMixin`, ERPNext's `make_sales_return` (Sales Invoice), and `get_payment_entry` for the return.
+- Push: when a return Sales Invoice that bills a synced Sales Order is submitted, POST it to `orders/{id}/refunds`. Run it as a job after commit, under the order's lock, like the status push. Send the `amount`, and the lines found through each item's `so_detail` and the Sales Order Item's `woocommerce_line_item_id`. Send `api_restock: false`: ERPNext owns stock, and its own push sets the shop's stock once the goods are back.
+- Money: with `api_refund: true` the gateway pays the customer back. It fails for a method that can't refund, such as cash on delivery or a bank transfer. A tick on each row of the Payment Method Map could say which methods refund through the gateway. The others are only recorded in the shop, and the money goes back by hand. Either way, book a Payment Entry that pays out the Credit Note (ERPNext's `get_payment_entry` on the return).
+- Once only: a retried job must never refund twice. Put the Credit Note's name in the refund's `reason`, and look for it among the order's refunds before sending.
+- Coming back: a full refund sets the order to `refunded`, and the pull closes the Sales Order (the `refunded` row of the Order Status Map). A partial one leaves the status as it was. A refund that names no Credit Note was made in the shop, so flag it (`woocommerce_sync_issue`) rather than book it.
+
+The one place to pull refunds is an order seen for the first time. A fully refunded order is skipped, as `refunded` isn't one of the `CREATING_ACTIONS`, so it never reaches ERPNext. A partly refunded order is still processing or completed, so it gets its Sales Order, invoice and payment at the full amount. The totals check doesn't notice, as WooCommerce's `total` doesn't subtract refunds. This happens to an order from before the shop was connected, or to one refunded while Pause Order Sync was on. When the Sales Order is created, make a Credit Note for each refund in the order's `refunds` (details at `orders/{id}/refunds`), or at least flag the order.
+
+Start at: ERPNext's `make_sales_return` (Sales Invoice) and `get_payment_entry`, `order_status.enqueue_status_push_from_hook` and `SynchroniseSalesOrder.push_status_to_woocommerce` for the shape of a push, `SynchroniseSalesOrder.create_sales_order`, and `woocommerce_server_payment_method.json`.
 
 ### Deleted orders by webhook
 
@@ -37,21 +44,17 @@ Sales Orders follow ERPNext's naming series, and the shop's order number goes in
 
 Start at: `SynchroniseSalesOrder.create_sales_order`.
 
-### Vouchers and untaxed fees
+### Untaxed shipping and fees
 
-Every fee line is booked on the Fee Account, a negative one too. Germanized for WooCommerce turns a coupon marked as a voucher into a negative fee, so redeeming a voucher lowers the fee income rather than the account its sale was booked on. Fusion books negative fees on an account of their own (`account_for_negative_order_fee_lines`).
-
-With a template whose VAT is included in the rate, the sync also takes VAT out of every fee at the rates of the default Item Tax Template, including a fee that WooCommerce charged no tax on, such as an untaxed voucher, and the VAT of the order drops.
+With a template whose VAT is included in the rate, the sync takes VAT out of shipping and every fee at the rates of the default Item Tax Template, even when WooCommerce charged no tax on it. ERPNext then books VAT the shop didn't charge, and less income. The grand total still matches the shop's, so the totals check doesn't flag it. Shipping or a fee with no `shipping_tax` or `total_tax` should be booked as it is.
 
 Start at: `order_lines.build_charges`.
 
-### Payment reference and paid date per payment method
+### What counts as paid, per payment method
 
-A Payment Entry's reference is the order's `transaction_id`, else the title of its payment method. Some gateways keep their id in the order's meta instead: Fusion reads Yoco's `yoco_order_payment_id`. A meta key on each row of the Payment Method Map would cover any gateway. The order's `meta_data` isn't fetched yet.
+A mapped method is booked once `date_paid` is set, which WooCommerce does when a payment completes or the order reaches processing or completed. An order that a gateway or plugin marks paid with a status of its own isn't booked until it is completed. Cash on delivery goes the other way: WooCommerce puts the order in processing at checkout, so a mapped COD method is booked as paid before the courier has collected the money. Fusion can ignore the date for a whole server (`ignore_date_paid`), which books pending orders as well. Say per method, or per status of the Order Status Map, what counts as paid instead.
 
-A mapped method is booked once `date_paid` is set, which WooCommerce does when a payment completes or the order reaches processing or completed. An order that a gateway or plugin marks paid with a status of its own isn't booked until it is completed. Fusion can ignore the date for a whole server (`ignore_date_paid`), which books pending orders as well. Say per method, or per status of the Order Status Map, what counts as paid instead.
-
-Start at: `SalesOrderPaymentMixin.create_payment_entry`, `woocommerce_server_payment_method.json`, and `woocommerce_order.json` for `meta_data`.
+Start at: `SalesOrderPaymentMixin.create_payment_entry`, `woocommerce_server_payment_method.json`.
 
 ## Customers
 
