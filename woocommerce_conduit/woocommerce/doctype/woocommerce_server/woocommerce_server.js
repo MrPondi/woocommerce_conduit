@@ -2,6 +2,24 @@
 // For license information, please see license.txt
 
 frappe.ui.form.on("WooCommerce Server", {
+	setup(frm) {
+		// Only list enabled warehouses
+		frm.set_query("warehouses", () => ({
+			filters: {
+				disabled: 0,
+				is_group: 0,
+			},
+		}));
+
+		// Only the tax templates of the server's company
+		const tax_template_query = () => ({
+			filters: { company: frm.doc.company, disabled: 0 },
+		});
+		frm.set_query("sales_taxes_and_charges_template", tax_template_query);
+		frm.set_query("default_item_tax_template", tax_template_query);
+		frm.set_query("item_tax_template", "tax_class_map", tax_template_query);
+	},
+
 	refresh(frm) {
 		// The Item fields a WooCommerce field can be mapped to, from Item's meta (custom fields included)
 		frappe.model.with_doctype("Item", () => {
@@ -21,24 +39,6 @@ frappe.ui.form.on("WooCommerce Server", {
 				options,
 			);
 		});
-
-		// Only list enabled warehouses
-		frm.fields_dict.warehouses.get_query = function (doc) {
-			return {
-				filters: {
-					disabled: 0,
-					is_group: 0,
-				},
-			};
-		};
-
-		// Only the tax templates of the server's company
-		const tax_template_query = () => ({
-			filters: { company: frm.doc.company, disabled: 0 },
-		});
-		frm.set_query("sales_taxes_and_charges_template", tax_template_query);
-		frm.set_query("default_item_tax_template", tax_template_query);
-		frm.set_query("item_tax_template", "tax_class_map", tax_template_query);
 	},
 
 	// Add the order statuses of the shop that the Order Status Map lacks
@@ -210,7 +210,7 @@ class OrderItemCheck {
 					? `<button class="btn btn-xs btn-primary" data-action="link" data-product-id="${esc(p.product_id)}" data-item-code="${esc(p.suggested_item)}">${__("Link to {0}", [esc(p.suggested_item)])}</button>`
 					: "";
 				return `<tr>
-					<td><a href="/app/woocommerce-product/${encodeURIComponent(p.woocommerce_product_name)}" target="_blank">${esc(p.name || p.product_id)}</a></td>
+					<td><a href="${frappe.utils.get_form_link("WooCommerce Product", p.woocommerce_product_name)}" target="_blank">${esc(p.name || p.product_id)}</a></td>
 					<td>${esc(p.sku || "")}</td>
 					<td class="text-right">${p.orders}</td>
 					<td class="text-right">${format_number(p.qty)}</td>

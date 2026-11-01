@@ -29,7 +29,7 @@ frappe.ui.form.on("WooCommerce Product", {
 		set_no_referrer(true);
 		frm.trigger("set_image_gallery");
 
-		// Add a custom button to sync this WooCommerce order to a Sales Order
+		// Pull this product into its ERPNext Item, making the Item if there is none
 		frm.add_custom_button(
 			__("Sync this Item to ERPNext"),
 			function () {
@@ -75,16 +75,15 @@ frappe.ui.form.on("WooCommerce Product", {
 		$(frm.wrapper).trigger("attachments_change");
 	},
 	sync_product: function (frm) {
-		// Sync this WooCommerce Product
-		frappe.dom.freeze(__("Sync Product with ERPNext..."));
+		// A failure is shown by frappe.call itself
 		frappe.call({
 			method: "woocommerce_conduit.tasks.sync_items.sync_woocommerce_product",
 			args: {
 				woocommerce_product_name: frm.doc.name,
 			},
-			callback: function (r) {
-				console.log(r);
-				frappe.dom.unfreeze();
+			freeze: true,
+			freeze_message: __("Sync Product with ERPNext..."),
+			callback: function () {
 				frappe.show_alert(
 					{
 						message: __("Sync completed successfully"),
@@ -93,16 +92,6 @@ frappe.ui.form.on("WooCommerce Product", {
 					5
 				);
 				frm.reload_doc();
-			},
-			error: (r) => {
-				frappe.dom.unfreeze();
-				frappe.show_alert(
-					{
-						message: __("There was an error processing the request. See Error Log."),
-						indicator: "red",
-					},
-					5
-				);
 			},
 		});
 	},

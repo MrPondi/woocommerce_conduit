@@ -88,14 +88,15 @@ frappe.ui.form.on("WooCommerce Order", {
 	},
 
 	sync_sales_order: function (frm) {
-		frappe.dom.freeze(__("Sync Order with ERPNext..."));
+		// A failure is shown by frappe.call itself
 		frappe.call({
 			method: "woocommerce_conduit.tasks.sync_sales_orders.run_sales_order_sync",
 			args: {
 				woocommerce_order_name: frm.doc.name,
 			},
+			freeze: true,
+			freeze_message: __("Sync Order with ERPNext..."),
 			callback: function (r) {
-				frappe.dom.unfreeze();
 				const sales_order = r.message && r.message[0];
 				frappe.show_alert(
 					{
@@ -109,16 +110,6 @@ frappe.ui.form.on("WooCommerce Order", {
 					5,
 				);
 				frm.reload_doc();
-			},
-			error: () => {
-				frappe.dom.unfreeze();
-				frappe.show_alert(
-					{
-						message: __("There was an error processing the request. See Error Log."),
-						indicator: "red",
-					},
-					5,
-				);
 			},
 		});
 	},
