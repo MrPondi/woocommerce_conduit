@@ -5,6 +5,7 @@ from datetime import datetime
 import frappe
 from erpnext.stock.doctype.item.item import Item
 from frappe import ValidationError, _
+from frappe.model.naming import append_number_if_name_exists
 from frappe.query_builder import Criterion
 from frappe.utils import convert_utc_to_system_timezone, cstr, flt, get_datetime, getdate, now
 from jsonpath_ng.ext import parse
@@ -61,6 +62,34 @@ def get_primary_connection(item) -> ItemWooCommerceServer | None:
 	return next(
 		(row for row in connections if row.get("is_primary")), connections[0] if connections else None
 	)
+
+
+def find_item_by_sku(woocommerce_server: str, sku: str | None, has_variants: bool = False) -> str | None:
+	"""
+	An enabled Item whose code or barcode is the SKU, and that isn't linked to a product of this server yet.
+	A template only with `has_variants`, which a variable product needs: no other product can be one, as a
+	template can't be on a Sales Order line.
+	"""
+	sku = cstr(sku).strip()
+	if not sku:
+		return None
+
+	# The code as the Item has it, which can differ in case
+	candidates = [item_code] if (item_code := frappe.db.exists("Item", sku)) else []
+	candidates += frappe.get_all(
+		"Item Barcode", filters={"barcode": sku, "parenttype": "Item"}, pluck="parent", order_by="idx"
+	)
+	for item_code in dict.fromkeys(candidates):
+		item = frappe.db.get_value("Item", item_code, ["disabled", "has_variants"], as_dict=True)
+		if not item or item.disabled or bool(item.has_variants) != has_variants:
+			continue
+		if frappe.db.exists(
+			"Item WooCommerce Server",
+			{"parenttype": "Item", "parent": item_code, "woocommerce_server": woocommerce_server},
+		):
+			continue
+		return item_code
+	return None
 
 
 def sync_woocommerce_products_modified_since(date_time_from=None):
@@ -420,7 +449,8 @@ class SynchroniseItem:
 
 	def create_item(self):
 		"""
-		Create a new ERPNext Item from a WooCommerce Product.
+		Create a new ERPNext Item from a WooCommerce Product, or link the product to the Item of its SKU when
+		the server names Items by SKU.
 		"""
 		if not self.woocommerce_product:
 			raise ValueError("WooCommerce product is required")
@@ -429,6 +459,18 @@ class SynchroniseItem:
 		wc_server: WooCommerceServer = frappe.get_cached_doc(
 			"WooCommerce Server", self.woocommerce_product.woocommerce_server
 		)  # type: ignore
+
+		# The Item of the SKU is this product, made by hand or for another shop. Looked for first, so nothing
+		# is made for a variation (its parent, attributes) that is linked.
+		if wc_server.name_by == "Product SKU" and (
+			item_code := find_item_by_sku(
+				wc_server.name,
+				self.woocommerce_product.sku,
+				has_variants=self.woocommerce_product.type == "variable",
+			)
+		):
+			self.link_item(item_code, wc_server)
+			return
 
 		# Create new Item document
 		item: SyncedItem = frappe.new_doc("Item")  # type: ignore
@@ -462,6 +504,28 @@ class SynchroniseItem:
 		self.create_item_prices(wc_server)
 
 		# Update sync hash
+		self.set_sync_hash()
+
+	def link_item(self, item_code: str, wc_server: WooCommerceServer):
+		"""
+		Link the WooCommerce Product to an Item that exists. The Item keeps its fields, as a person or another
+		shop fills them in. It takes the product's prices for the price lists it has none in, as the price
+		sync would otherwise end a sale that runs in the shop.
+		"""
+		item: SyncedItem = frappe.get_doc("Item", item_code)  # type: ignore
+		row = item.append(
+			"woocommerce_servers",
+			{
+				"woocommerce_server": wc_server.name,
+				"woocommerce_id": self.woocommerce_product.woocommerce_id,  # type: ignore
+				"enable_sync": 1,
+			},
+		)
+		item.flags.created_by_sync = True
+		item.save()
+
+		self.item = ERPNextItemToSync(item=item, item_woocommerce_server_idx=row.idx)
+		self.create_item_prices(wc_server)
 		self.set_sync_hash()
 
 	def create_item_prices(self, wc_server: WooCommerceServer):
@@ -593,12 +657,12 @@ class SynchroniseItem:
 		if not self.woocommerce_product:
 			return
 
-		# Set item code based on server configuration
-		item.item_code = (
-			self.woocommerce_product.sku
-			if wc_server.name_by == "Product SKU" and self.woocommerce_product.sku
-			else str(self.woocommerce_product.woocommerce_id)
-		)
+		# Set item code based on server configuration. A code that is taken gets a number: an id repeats
+		# across shops, and an Item of the SKU that create_item didn't link to isn't this product's.
+		code = str(self.woocommerce_product.woocommerce_id)
+		if wc_server.name_by == "Product SKU" and (sku := cstr(self.woocommerce_product.sku).strip()):
+			code = sku
+		item.item_code = append_number_if_name_exists("Item", code)
 
 		# Set basic item properties
 		item.stock_uom = wc_server.uom or _("Nos")

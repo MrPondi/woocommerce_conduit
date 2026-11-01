@@ -33,7 +33,7 @@ class TestUnlinkedOrderProducts(IntegrationTestCase):
 			patch.object(
 				item_parity, "find_item_code", side_effect=lambda s, pid: "ITEM" if pid in linked else None
 			),
-			patch.object(item_parity, "suggest_item", side_effect=lambda s, sku: suggestions.get(sku)),
+			patch.object(item_parity, "find_item_by_sku", side_effect=lambda s, sku: suggestions.get(sku)),
 		):
 			rows = item_parity.get_unlinked_order_products(SERVER, 50)
 		server.check_permission.assert_called_once_with("read")
@@ -64,24 +64,6 @@ class TestUnlinkedOrderProducts(IntegrationTestCase):
 	def test_item_with_the_sku_is_suggested(self):
 		rows = self.check([order("processing", line(1, sku="MOWER-1"))], suggestions={"MOWER-1": "M1"})
 		self.assertEqual(rows[0]["suggested_item"], "M1")
-
-
-class TestSuggestedItem(IntegrationTestCase):
-	def test_item_linked_to_the_server_already_is_not_suggested(self):
-		def exists(doctype, filters):
-			if doctype == "Item":
-				return True
-			return filters["parent"] == "MOWER-1"
-
-		with (
-			patch.object(frappe.db, "exists", side_effect=exists),
-			patch.object(frappe, "get_all", return_value=["BARCODED"]),
-			patch.object(frappe.db, "get_value", return_value=0),
-		):
-			self.assertEqual(item_parity.suggest_item(SERVER, "MOWER-1"), "BARCODED")
-
-	def test_nothing_is_suggested_without_a_sku(self):
-		self.assertIsNone(item_parity.suggest_item(SERVER, ""))
 
 
 class TestLinkingProducts(IntegrationTestCase):

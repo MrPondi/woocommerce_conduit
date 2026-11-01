@@ -37,14 +37,6 @@ Sales Orders follow ERPNext's naming series, and the shop's order number goes in
 
 Start at: `SynchroniseSalesOrder.create_sales_order`.
 
-### Free lines on a new Sales Order
-
-A line that WooCommerce sold for nothing (a 100% coupon, a free gift) is added with a rate of 0, and ERPNext replaces a rate of 0 with the price list rate when the Item has one (`calculate_item_rate` in `erpnext/controllers/taxes_and_totals.py`). The Sales Order then totals more than the order and is flagged, which stops its invoice and payment. Fusion sets `discount_percentage` to 100 on such a line. Update Items, which later line changes go through, keeps the 0, as it works out the discount itself.
-
-The price list rate is that of Selling Settings' default price list, which `new_doc` puts on every Sales Order, so the discount a line shows is against that list. Fusion uses the customer's default price list when it is in the order's currency (`get_customer_selling_price_list`). The server's Price List, which the shop's prices come from, would do too.
-
-Start at: `order_lines.build_item_row`, `SalesOrderLinesMixin.set_items_in_sales_order`.
-
 ### Vouchers and untaxed fees
 
 Every fee line is booked on the Fee Account, a negative one too. Germanized for WooCommerce turns a coupon marked as a voucher into a negative fee, so redeeming a voucher lowers the fee income rather than the account its sale was booked on. Fusion books negative fees on an account of their own (`account_for_negative_order_fee_lines`).
@@ -62,12 +54,6 @@ A mapped method is booked once `date_paid` is set, which WooCommerce does when a
 Start at: `SalesOrderPaymentMixin.create_payment_entry`, `woocommerce_server_payment_method.json`, and `woocommerce_order.json` for `meta_data`.
 
 ## Customers
-
-### The shop in the Customer lookup
-
-A Customer is found by its `woocommerce_identifier` alone: `Guest-{order id}` for a guest, the username for an account. Both repeat across shops. A second shop's guest order 1234 lands on the first shop's `Guest-1234` Customer and overwrites its name and addresses, and accounts with the same username in two shops share one Customer. Fusion has a `Customer-woocommerce_server` Link field for this, which it no longer reads. The existing guests need a patch. Whether a person who buys in two shops should be one Customer is under Open questions.
-
-Start at: `SynchroniseSalesOrder.create_or_link_customer_and_address`, `fixtures/custom_field.json`.
 
 ### Duplicate Customers report
 
@@ -101,11 +87,11 @@ Start at: `SynchroniseItem.set_item_fields`, `order_lines.build_item_row`.
 
 Start at: `sync_items.sync_woocommerce_products_modified_since`, `woocommerce_server.js`.
 
-### Products whose Item code is taken
+### Prices of a product linked by hand
 
-`create_item` inserts the Item without looking for one with its code. If there is one, made by hand, by another shop with the same SKU, or (with WooCommerce ID naming) for another shop's product with the same id, the insert fails. `create_missing_items` only lets a `DoesNotExistError` pass, so the sync of every order with that product fails too, until the product is linked by hand in Check Order Items. Fusion links the product to the Item of that code instead (`link_existing_item`), and can match the SKU of a product that isn't linked yet to an Item code (`match_items_by_sku`). Do that for an SKU, with `item_parity.suggest_item`, which looks at barcodes too. An id that is taken belongs to another shop's product, which needs a code of its own.
+Check Order Items links a product to an Item (`link_product_to_item`) and leaves the product's prices in the shop alone. The next price push sends the Item's prices instead, and when the server's Sales Price List has no price for the Item it ends a sale that is running in the shop. The sync's own link (`SynchroniseItem.link_item`) first takes the product's prices for the price lists the Item has none in. The button could do the same, which needs the product loaded.
 
-Start at: `SynchroniseItem.create_item`, `_set_core_item_fields`.
+Start at: `item_parity.link_product_to_item`, `SynchroniseItem.link_item`.
 
 ### HTML entities in names
 
@@ -171,4 +157,5 @@ These need a decision before anything is built.
 
 - **A deleted regular price.** Deleting the server's Price List price for an Item leaves the shop's old price in place, while deleting a sale price ends the sale. Clearing the regular price would make the product unpurchasable, so leaving it may be right.
 - **Guest customers.** Each guest order gets its own Customer (`Guest-{order id}`). Fusion merges guests by email and has a Duplicate Customers report. Merging would change how existing guests are found.
-- **One customer in several shops.** With the shop in the Customer lookup, a person who buys in two shops gets a Customer in each. Matching across shops by email, as Fusion does, makes them one, but then the Customer's name and addresses follow whichever shop it last ordered in.
+- **One customer in several shops.** A Customer is looked up within its shop (`Customer.woocommerce_server`), so a person who buys in two shops gets a Customer in each. Matching across shops by email, as Fusion does, makes them one, but then the Customer's name and addresses follow whichever shop it last ordered in, and one shop field can't say which shops it is in.
+- **The Sales Order's price list.** A synced Sales Order has Selling Settings' default price list, which `new_doc` puts on it, so the discount a line shows (a free line's 100% too) is against that list. Fusion uses the customer's default price list when it is in the order's currency (`get_customer_selling_price_list`). The server's Price List, which the shop's prices come from, would show each line's discount against the shop's regular price. Either changes every new Sales Order, and a list in another currency or not enabled for selling would have to be passed over.

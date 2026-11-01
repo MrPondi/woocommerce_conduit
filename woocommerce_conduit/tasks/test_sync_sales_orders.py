@@ -10,11 +10,13 @@ from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import frappe
+from erpnext.controllers.taxes_and_totals import calculate_taxes_and_totals
 from frappe import _dict
 from frappe.tests import IntegrationTestCase
 
 from woocommerce_conduit import endpoint
 from woocommerce_conduit.exceptions import SyncDisabledError
+from woocommerce_conduit.patches.v1 import set_customer_woocommerce_server
 from woocommerce_conduit.tasks import order_lines, order_payment, sync_sales_orders
 from woocommerce_conduit.tasks.order_lines import (
 	build_charges,
@@ -1407,6 +1409,25 @@ class TestLines(IntegrationTestCase):
 			rows, _issues = self.build(sync, {"10": "MOWER"})
 		self.assertEqual(rows[0]["rate"], 246)
 
+	def test_a_free_line_is_a_full_discount(self):
+		sync = self.make([line(1, 10, 1, 0, name="Gift"), line(2, 11, 2, 18)])
+		rows, _issues = self.build(sync, {"10": "GIFT", "11": "MUG"})
+
+		self.assertEqual((rows[0]["rate"], rows[0]["discount_percentage"]), (0, 100))
+		self.assertNotIn("discount_percentage", rows[1])
+
+	def test_erpnext_keeps_a_free_line_at_nothing(self):
+		# Without the discount ERPNext puts the price list rate in place of a rate of 0
+		totals = calculate_taxes_and_totals.__new__(calculate_taxes_and_totals)
+		totals.doc = _dict(ignore_pricing_rule=1)
+		for discount_percentage, rate in ((0, 20), (100, 0)):
+			row = frappe.new_doc("Sales Order Item")
+			row.update({"price_list_rate": 20, "rate": 0, "discount_percentage": discount_percentage})
+			# As calculate_item_values does before it
+			row.round_floats_in(row)
+			totals.calculate_item_rate(row)
+			self.assertEqual(row.rate, rate)
+
 	def test_product_without_an_item_is_flagged_too(self):
 		sync = self.make([line(1, 10, 1, 5)])
 		rows, issues = self.build(sync, {})
@@ -1687,6 +1708,7 @@ class TestCustomer(IntegrationTestCase):
 	def run_step(self, customer_id=0, account=None, account_status=200):
 		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
 		order = _dict(
+			woocommerce_server=SERVER,
 			woocommerce_id="12",
 			customer_id=customer_id,
 			billing_first_name="Ann",
@@ -1706,13 +1728,23 @@ class TestCustomer(IntegrationTestCase):
 		sync.woocommerce_order = order
 		customer = MagicMock(flags=_dict())
 		with (
-			patch.object(frappe, "get_value", return_value=None),
+			patch.object(frappe, "get_value", return_value=None) as self.lookup,
 			patch.object(frappe, "new_doc", return_value=customer),
 			patch.object(sync, "create_or_update_address") as create_or_update_address,
 			patch.object(sync_sales_orders, "create_contact") as create_contact,
 		):
 			sync.create_or_link_customer_and_address()
 		return order, customer, create_or_update_address, create_contact
+
+	def test_a_customer_is_of_the_shop_of_the_order(self):
+		# A guest's order id and a username repeat across shops
+		_order, customer, *_ = self.run_step()
+
+		self.assertEqual(
+			self.lookup.call_args.args[1],
+			{"woocommerce_server": SERVER, "woocommerce_identifier": "Guest-12"},
+		)
+		self.assertEqual(customer.woocommerce_server, SERVER)
 
 	def test_a_guest_is_a_customer_of_the_order(self):
 		order, customer, create_or_update_address, create_contact = self.run_step()
@@ -1746,3 +1778,53 @@ class TestCustomer(IntegrationTestCase):
 		_order, customer, *_ = self.run_step(customer_id=7, account_status=404)
 
 		self.assertEqual(customer.woocommerce_identifier, "ann@order.example.com")
+
+
+class TestCustomerShopPatch(IntegrationTestCase):
+	def test_customers_get_the_shop_of_their_first_order(self):
+		other = "two.example.com"
+		for name, identifier in (("Ann", "ann"), ("Guest", "Guest-12"), ("Bob", "bob"), ("Hand", None)):
+			frappe.get_doc(
+				{
+					"doctype": "Customer",
+					"name": f"_Test WC {name}",
+					"customer_name": name,
+					"woocommerce_identifier": identifier,
+				}
+			).db_insert()
+		for idx, (customer, server, creation) in enumerate(
+			(
+				("Ann", other, "2026-01-02"),
+				("Ann", SERVER, "2026-01-01"),
+				("Guest", SERVER, "2026-01-03"),
+				("Hand", SERVER, "2026-01-03"),
+			)
+		):
+			frappe.get_doc(
+				{
+					"doctype": "Sales Order",
+					"name": f"_Test WC SO {idx}",
+					"customer": f"_Test WC {customer}",
+					"woocommerce_server": server,
+					"creation": creation,
+				}
+			).db_insert()
+
+		def run(servers):
+			with patch.object(frappe, "get_all", return_value=servers), patch("builtins.print") as print_:
+				set_customer_woocommerce_server.execute()
+			shops = {
+				name: frappe.db.get_value("Customer", f"_Test WC {name}", "woocommerce_server")
+				for name in ("Ann", "Guest", "Bob", "Hand")
+			}
+			return shops, print_
+
+		# Ann ordered in both shops, in this one first. Bob has no Sales Order, Hand was made by hand.
+		shops, print_ = run([SERVER, other])
+		self.assertEqual(shops, {"Ann": SERVER, "Guest": SERVER, "Bob": None, "Hand": None})
+		self.assertIn("_Test WC Ann", print_.call_args.args[0])
+
+		# With one shop, a Customer the sync made is of that shop, with or without a Sales Order
+		shops, print_ = run([SERVER])
+		self.assertEqual((shops["Bob"], shops["Hand"]), (SERVER, None))
+		print_.assert_not_called()

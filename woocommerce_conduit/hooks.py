@@ -94,6 +94,7 @@ fixtures = [
 					"Item-woocommerce_tab",
 					"Item-woocommerce_servers",
 					"Customer-woocommerce_identifier",
+					"Customer-woocommerce_server",
 					"Sales Order-woocommerce_id",
 					"Sales Order-woocommerce_server",
 					"Sales Order-woocommerce_status",

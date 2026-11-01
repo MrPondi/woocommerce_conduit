@@ -74,6 +74,7 @@ class SyncedOrder(SalesOrder):
 
 class WooCustomer(Customer):
 	woocommerce_identifier: str
+	woocommerce_server: str
 
 
 def enqueue_sales_order_sync(
@@ -535,7 +536,8 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		"""
 		Create or update the Customer of the order, with its Address and Contact. The addresses are those of
 		the order, as the customer gave them for it, also when they have an account: the account's can be
-		out of date. A registered customer is identified by their username, a guest by the order.
+		out of date. A registered customer is identified by their username, a guest by the order, both within
+		the order's shop.
 		"""
 		if not self.woocommerce_order:
 			return
@@ -571,14 +573,17 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		else:
 			customer_identifier = email
 
-		# Check if customer exists using the identifier
+		# The identifier is looked up within the shop, as order ids and usernames repeat across shops
 		existing_customer = frappe.get_value(
-			"Customer", {"woocommerce_identifier": customer_identifier}, "name"
+			"Customer",
+			{"woocommerce_server": order.woocommerce_server, "woocommerce_identifier": customer_identifier},
+			"name",
 		)
 
 		if not existing_customer:
 			# Create Customer
 			customer: WooCustomer = frappe.new_doc("Customer")  # type: ignore
+			customer.woocommerce_server = order.woocommerce_server
 			customer.woocommerce_identifier = customer_identifier
 			customer.customer_type = "Company" if company_name else "Individual"
 			if account and account.get("avatar_url"):

@@ -80,6 +80,10 @@ def build_item_row(line: dict, item_code: str, item_name: str | None, rate: floa
 	}
 	if delivery_date:
 		row["delivery_date"] = delivery_date
+	# ERPNext takes a rate of 0 for one that isn't set and puts the price list rate in its place. A line sold
+	# for nothing (a 100% coupon, a free gift) keeps it as a full discount. Update Items works it out itself.
+	if not flt(rate, 2):
+		row["discount_percentage"] = 100
 	return row
 
 

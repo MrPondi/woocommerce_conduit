@@ -1,15 +1,17 @@
 # Copyright (c) 2025, Karol Parzonka and Contributors
 # See license.txt
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe import _dict
 from frappe.tests import IntegrationTestCase
 
+from woocommerce_conduit.tasks import sync_items
 from woocommerce_conduit.tasks.sync_items import (
 	ERPNextItemToSync,
 	SynchroniseItem,
+	find_item_by_sku,
 	get_primary_connection,
 	to_item_name,
 	validate_primary_connection,
@@ -167,6 +169,132 @@ class TestItemCreation(IntegrationTestCase):
 			self.assertRaises(frappe.ValidationError),
 		):
 			sync._handle_product_variants(frappe.new_doc("Item"))  # type: ignore
+
+
+class TestItemOfTheSku(IntegrationTestCase):
+	def find(self, sku="MOWER-1", has_variants=False, disabled=(), templates=(), linked=()):
+		"""
+		find_item_by_sku when an Item has the SKU as its code and another as its barcode. `linked` are linked
+		to a product of the server already.
+		"""
+
+		def exists(doctype, filters):
+			# An Item's name, as the Item has it
+			if doctype == "Item":
+				return filters
+			return filters["parent"] in linked
+
+		def get_value(doctype, item_code, fields, as_dict=False):
+			return _dict(disabled=int(item_code in disabled), has_variants=int(item_code in templates))
+
+		with (
+			patch.object(frappe.db, "exists", side_effect=exists),
+			patch.object(frappe, "get_all", return_value=["BARCODED"]),
+			patch.object(frappe.db, "get_value", side_effect=get_value),
+		):
+			return find_item_by_sku("one.example.com", sku, has_variants=has_variants)
+
+	def test_the_item_of_the_code_comes_before_the_one_of_the_barcode(self):
+		self.assertEqual(self.find(sku=" MOWER-1 "), "MOWER-1")
+		self.assertEqual(self.find(disabled={"MOWER-1"}), "BARCODED")
+		self.assertEqual(self.find(linked={"MOWER-1"}), "BARCODED")
+		self.assertIsNone(self.find(linked={"MOWER-1", "BARCODED"}))
+
+	def test_a_template_only_for_a_variable_product(self):
+		self.assertEqual(self.find(templates={"MOWER-1"}), "BARCODED")
+		self.assertEqual(self.find(has_variants=True, templates={"BARCODED"}), "BARCODED")
+		self.assertIsNone(self.find(has_variants=True))
+
+	def test_nothing_without_a_sku(self):
+		self.assertIsNone(find_item_by_sku("one.example.com", " "))
+
+
+class TestItemCodeTaken(IntegrationTestCase):
+	def create(self, name_by, found=None, **product):
+		"""
+		create_item, with all but the choice between linking an Item and making one mocked
+		"""
+		sync = make_sync(woocommerce_product=make_product(sku="MOWER-1", **product))
+		server = _dict(name="one.example.com", name_by=name_by)
+		item = MagicMock(woocommerce_servers=[_dict(idx=1, woocommerce_server="one.example.com")])
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=server),
+			patch.object(sync_items, "find_item_by_sku", return_value=found) as find_item_by_sku,
+			patch.object(SynchroniseItem, "link_item") as link_item,
+			patch.object(frappe, "new_doc", return_value=item),
+			patch.object(SynchroniseItem, "_handle_product_variants"),
+			patch.object(SynchroniseItem, "_set_core_item_fields"),
+			patch.object(SynchroniseItem, "_set_item_tax_template"),
+			patch.object(SynchroniseItem, "set_item_fields", return_value=(False, item)),
+			patch.object(SynchroniseItem, "create_item_prices"),
+			patch.object(SynchroniseItem, "set_sync_hash"),
+		):
+			sync.create_item()
+		return find_item_by_sku, link_item, item
+
+	def test_a_product_is_linked_to_the_item_of_its_sku(self):
+		find_item_by_sku, link_item, item = self.create("Product SKU", found="MOWER-1", type="simple")
+
+		find_item_by_sku.assert_called_once_with("one.example.com", "MOWER-1", has_variants=False)
+		self.assertEqual(link_item.call_args.args[0], "MOWER-1")
+		item.insert.assert_not_called()
+
+	def test_a_variable_product_is_linked_to_a_template(self):
+		find_item_by_sku, *_ = self.create("Product SKU", type="variable")
+
+		self.assertTrue(find_item_by_sku.call_args.kwargs["has_variants"])
+
+	def test_without_an_item_of_the_sku_one_is_made(self):
+		_find_item_by_sku, link_item, item = self.create("Product SKU", type="simple")
+
+		link_item.assert_not_called()
+		item.insert.assert_called_once()
+
+	def test_items_named_by_id_are_not_linked_by_sku(self):
+		find_item_by_sku, link_item, item = self.create("WooCommerce ID", found="MOWER-1", type="simple")
+
+		find_item_by_sku.assert_not_called()
+		link_item.assert_not_called()
+		item.insert.assert_called_once()
+
+	def test_a_linked_item_takes_the_prices_it_lacks(self):
+		sync = make_sync(woocommerce_product=make_product(sku="MOWER-1"))
+		server = _dict(name="one.example.com")
+		item = MagicMock(flags=_dict())
+		item.append.return_value = _dict(idx=2)
+		with (
+			patch.object(frappe, "get_doc", return_value=item),
+			patch.object(SynchroniseItem, "create_item_prices") as create_item_prices,
+			patch.object(SynchroniseItem, "set_sync_hash") as set_sync_hash,
+		):
+			sync.link_item("MOWER-1", server)  # type: ignore
+
+		item.append.assert_called_once_with(
+			"woocommerce_servers",
+			{"woocommerce_server": "one.example.com", "woocommerce_id": "1", "enable_sync": 1},
+		)
+		item.save.assert_called_once()
+		self.assertTrue(item.flags.created_by_sync)
+		self.assertEqual((sync.item.item, sync.item.item_woocommerce_server_idx), (item, 2))  # type: ignore
+		create_item_prices.assert_called_once_with(server)
+		set_sync_hash.assert_called_once()
+
+	def test_a_taken_code_gets_a_number(self):
+		for name_by, sku, code in (
+			("WooCommerce ID", "MOWER-1", "1"),
+			("Product SKU", " MOWER-1 ", "MOWER-1"),
+			("Product SKU", "", "1"),
+		):
+			item = MagicMock()
+			sync = make_sync(woocommerce_product=make_product(sku=sku))
+			server = _dict(name="one.example.com", name_by=name_by, uom="Nos", item_group="Products")
+			with patch.object(
+				sync_items, "append_number_if_name_exists", return_value=f"{code}-1"
+			) as append_number_if_name_exists:
+				sync._set_core_item_fields(item, server)  # type: ignore
+
+			append_number_if_name_exists.assert_called_once_with("Item", code)
+			self.assertEqual(item.item_code, f"{code}-1")
 
 
 class TestItemFields(IntegrationTestCase):

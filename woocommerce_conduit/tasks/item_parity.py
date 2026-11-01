@@ -9,6 +9,7 @@ from frappe import _
 from frappe.utils import cint, cstr, flt
 
 from woocommerce_conduit.tasks.order_lines import find_item_code, get_line_items, get_product_id
+from woocommerce_conduit.tasks.sync_items import find_item_by_sku
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import WooCommerceOrder
 from woocommerce_conduit.woocommerce.woocommerce_api import (
 	generate_woocommerce_record_name_from_domain_and_id,
@@ -62,7 +63,7 @@ def get_unlinked_order_products(woocommerce_server: str, order_count: int = 200)
 		if not find_item_code(woocommerce_server, product_id)
 	]
 	for product in unlinked:
-		product["suggested_item"] = suggest_item(woocommerce_server, product["sku"])
+		product["suggested_item"] = find_item_by_sku(woocommerce_server, product["sku"])
 	return sorted(unlinked, key=lambda product: (-product["orders"], -product["qty"]))
 
 
@@ -79,29 +80,6 @@ def get_recent_orders(woocommerce_server: str, order_count: int) -> list[dict]:
 			"strict": True,
 		}
 	)
-
-
-def suggest_item(woocommerce_server: str, sku: str) -> str | None:
-	"""
-	An enabled Item whose code or barcode is the SKU, and that isn't linked to a product of this server yet
-	"""
-	if not sku:
-		return None
-
-	candidates = [sku] if frappe.db.exists("Item", {"name": sku, "disabled": 0}) else []
-	candidates += frappe.get_all(
-		"Item Barcode", filters={"barcode": sku, "parenttype": "Item"}, pluck="parent", order_by="idx"
-	)
-	for item_code in dict.fromkeys(candidates):
-		if frappe.db.get_value("Item", item_code, "disabled"):
-			continue
-		if frappe.db.exists(
-			"Item WooCommerce Server",
-			{"parenttype": "Item", "parent": item_code, "woocommerce_server": woocommerce_server},
-		):
-			continue
-		return item_code
-	return None
 
 
 @frappe.whitelist(methods=["POST"])
