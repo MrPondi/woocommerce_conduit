@@ -71,6 +71,12 @@ The stock hooks enqueue a job for each Item a transaction moves (`push_pending_s
 
 Start at: `stock_update.push_pending_stock_updates`, `enqueue_stock_updates`.
 
+### Apply the Item Field Map to linked Items
+
+The Item Field Map runs when the sync creates an Item, and when a manual sync finds the product changed since the last pull and newer than the Item. A row added later never reaches the Items linked already: mapping the products' weight and size to Weight Per Unit and erpnext_shipping's package fields (`$.weight`, `$.length`, `$.width`, `$.height`) fills new Items only, and the others are left to a Data Import. A server button could apply the map to the server's linked Items in a job: read their products 100 a request with only the fields the map's paths start at (`load_products`, which reads the push's `writable_fields` now), run `SynchroniseItem.set_item_fields` on each primary-linked Item, and save those that differ. Mind that `load_records` leaves out what `after_load_from_db` adds, the dimensions among it (their flattening could move to `pre_init_document`), and that saving a template copies its weight to its variants while Item Variant Settings lists the weight fields, so save templates first.
+
+Start at: `SynchroniseItem.set_item_fields`, `product_push.load_products`, `get_first_field_names` in `field_map.py`.
+
 ## Configuration
 
 ### Webhook secret as a Password field

@@ -7,3 +7,4 @@
 woocommerce_conduit.patches.v1.remove_sales_order_link_fields
 woocommerce_conduit.patches.v1.set_customer_woocommerce_server
 woocommerce_conduit.patches.v1.unescape_woocommerce_names
+woocommerce_conduit.patches.v1.set_item_default_warehouses

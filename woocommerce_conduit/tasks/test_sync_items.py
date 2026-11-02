@@ -2,7 +2,7 @@
 # See license.txt
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import frappe
 from frappe import _dict
@@ -14,6 +14,7 @@ from woocommerce_conduit.tasks.sync_items import (
 	SynchroniseItem,
 	find_item_by_sku,
 	get_primary_connection,
+	set_default_warehouse,
 	to_item_name,
 	validate_primary_connection,
 	values_match,
@@ -241,9 +242,11 @@ class TestItemCodeTaken(IntegrationTestCase):
 		create_item, with all but the choice between linking an Item and making one mocked
 		"""
 		sync = make_sync(woocommerce_product=make_product(sku="MOWER-1", **product))
-		server = _dict(name="one.example.com", name_by=name_by)
+		server = _dict(name="one.example.com", name_by=name_by, company="Prestige Garden")
 		item = MagicMock(woocommerce_servers=[_dict(idx=1, woocommerce_server="one.example.com")])
 		with (
+			# A mock of the Item's, so item.mock_calls shows whether it comes after the insert
+			patch.object(sync_items, "set_default_warehouse", item.set_default_warehouse),
 			patch.object(frappe, "get_cached_doc", return_value=server),
 			patch.object(sync_items, "find_item_by_sku", return_value=found) as find_item_by_sku,
 			patch.object(SynchroniseItem, "link_item") as link_item,
@@ -264,6 +267,8 @@ class TestItemCodeTaken(IntegrationTestCase):
 		find_item_by_sku.assert_called_once_with("one.example.com", "MOWER-1", has_variants=False)
 		self.assertEqual(link_item.call_args.args[0], "MOWER-1")
 		item.insert.assert_not_called()
+		# link_item sets it on the Item it links
+		item.set_default_warehouse.assert_not_called()
 
 	def test_a_variable_product_is_linked_to_a_template(self):
 		find_item_by_sku, *_ = self.create("Product SKU", type="variable")
@@ -283,12 +288,20 @@ class TestItemCodeTaken(IntegrationTestCase):
 		link_item.assert_not_called()
 		item.insert.assert_called_once()
 
-	def test_a_linked_item_takes_the_prices_it_lacks(self):
+	def test_a_made_item_gets_the_default_warehouse_of_the_company_after_its_insert(self):
+		_find_item_by_sku, _link_item, item = self.create("WooCommerce ID", type="simple")
+
+		# Not before, as ERPNext gives an Item without defaults those of its Item Group
+		steps = [step for step in item.mock_calls if step[0] in ("insert", "set_default_warehouse")]
+		self.assertEqual(steps, [call.insert(), call.set_default_warehouse(item.name, "Prestige Garden")])
+
+	def test_a_linked_item_takes_the_prices_and_the_warehouse_it_lacks(self):
 		sync = make_sync(woocommerce_product=make_product(sku="MOWER-1"))
-		server = _dict(name="one.example.com")
+		server = _dict(name="one.example.com", company="Prestige Garden")
 		item = MagicMock(flags=_dict())
 		item.append.return_value = _dict(idx=2)
 		with (
+			patch.object(sync_items, "set_default_warehouse", item.set_default_warehouse),
 			patch.object(frappe, "get_doc", return_value=item),
 			patch.object(SynchroniseItem, "create_item_prices") as create_item_prices,
 			patch.object(SynchroniseItem, "set_sync_hash") as set_sync_hash,
@@ -304,6 +317,9 @@ class TestItemCodeTaken(IntegrationTestCase):
 		self.assertEqual((sync.item.item, sync.item.item_woocommerce_server_idx), (item, 2))  # type: ignore
 		create_item_prices.assert_called_once_with(server)
 		set_sync_hash.assert_called_once()
+		# After the save, which gives an Item without defaults those of its Item Group
+		steps = [step for step in item.mock_calls if step[0] in ("save", "set_default_warehouse")]
+		self.assertEqual(steps, [call.save(), call.set_default_warehouse("MOWER-1", "Prestige Garden")])
 
 	def test_a_taken_code_gets_a_number(self):
 		for name_by, sku, code in (
@@ -321,6 +337,27 @@ class TestItemCodeTaken(IntegrationTestCase):
 
 			append_number_if_name_exists.assert_called_once_with("Item", code)
 			self.assertEqual(item.item_code, f"{code}-1")
+
+
+class TestDefaultWarehouse(IntegrationTestCase):
+	def set_default_warehouse(self, company_warehouse):
+		with (
+			patch.object(frappe, "get_cached_value", return_value=company_warehouse) as get_cached_value,
+			patch.object(sync_items, "set_item_default") as set_item_default,
+		):
+			set_default_warehouse("MUG-1", "Prestige Garden")
+
+		get_cached_value.assert_called_once_with("Company", "Prestige Garden", "default_warehouse")
+		return set_item_default
+
+	def test_the_item_gets_the_default_warehouse_of_the_company(self):
+		# ERPNext's own, which keeps a warehouse the Item has for the company and fills an empty one
+		self.set_default_warehouse("Stores - PG").assert_called_once_with(
+			"MUG-1", "Prestige Garden", "default_warehouse", "Stores - PG"
+		)
+
+	def test_a_company_without_a_default_warehouse_gives_none(self):
+		self.set_default_warehouse(None).assert_not_called()
 
 
 class TestItemFields(IntegrationTestCase):

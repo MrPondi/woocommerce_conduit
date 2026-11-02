@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import frappe
-from erpnext.stock.doctype.item.item import Item
+from erpnext.stock.doctype.item.item import Item, set_item_default
 from frappe import ValidationError, _
 from frappe.model.naming import append_number_if_name_exists
 from frappe.query_builder import Criterion
@@ -113,6 +113,18 @@ def get_linked_item_code(woocommerce_server: str, woocommerce_id) -> str | None:
 		},
 		"parent",
 	)
+
+
+def set_default_warehouse(item_code: str, company: str):
+	"""
+	Give the Item the company's default warehouse in its Item Defaults, unless it has one for the company.
+	ERPNext 16 moved the default warehouse from Stock Settings to the Company, but a new Item still looks
+	for it among the global defaults, where Stock Settings kept it, so it gets none unless its Item Group
+	has defaults. ERPNext's set_item_default writes the row without saving the Item, so the Item's modified,
+	which a pull compares with the product's, stays as it is.
+	"""
+	if warehouse := frappe.get_cached_value("Company", company, "default_warehouse"):
+		set_item_default(item_code, company, "default_warehouse", warehouse)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -647,6 +659,8 @@ class SynchroniseItem:
 		item.flags.created_by_sync = True
 		item.flags.ignore_mandatory = True
 		item.insert()
+		# Only after the insert, as ERPNext gives an Item without defaults those of its Item Group
+		set_default_warehouse(item.name, wc_server.company)
 
 		# Update self reference
 		self.item = ERPNextItemToSync(
@@ -668,7 +682,8 @@ class SynchroniseItem:
 		"""
 		Link the WooCommerce Product to an Item that exists. The Item keeps its fields, as a person or another
 		shop fills them in. It takes the product's prices for the price lists it has none in, as the price
-		sync would otherwise end a sale that runs in the shop.
+		sync would otherwise end a sale that runs in the shop, and the default warehouse of the server's
+		company when it has none for that company.
 		"""
 		item: SyncedItem = frappe.get_doc("Item", item_code)  # type: ignore
 		row = item.append(
@@ -681,6 +696,8 @@ class SynchroniseItem:
 		)
 		item.flags.created_by_sync = True
 		item.save()
+		# After the save, which gives an Item without defaults those of its Item Group
+		set_default_warehouse(item_code, wc_server.company)
 
 		self.item = ERPNextItemToSync(item=item, item_woocommerce_server_idx=row.idx)
 		self.create_item_prices(wc_server)
