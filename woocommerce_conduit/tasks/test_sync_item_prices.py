@@ -13,6 +13,7 @@ from woocommerce_conduit.tasks import sync_item_prices
 from woocommerce_conduit.tasks.sync_item_prices import (
 	SynchroniseItemPrice,
 	pick_sale,
+	run_item_price_sync,
 	run_item_price_sync_in_background,
 	update_item_price_for_woocommerce_item_from_hook,
 )
@@ -235,6 +236,49 @@ class TestDailyPricePush(IntegrationTestCase):
 			run_item_price_sync_in_background()
 
 		self.assertEqual([len(call.kwargs["item_codes"]) for call in enqueue.call_args_list], [100, 50])
+
+	def test_a_job_goes_in_batches_and_one_item_product_by_product(self):
+		with patch.object(sync_item_prices, "SynchroniseItemPrice") as sync_class:
+			run_item_price_sync(item_codes=["MUG-1", "CUP-1"])
+			run_item_price_sync(item_code="MUG-1")
+
+		self.assertEqual([call.kwargs["in_batches"] for call in sync_class.call_args_list], [True, False])
+
+	def push(self, written: int):
+		server = _dict(
+			name="one.example.com",
+			price_list="Standard Selling",
+			enable_sales_price_list_sync=0,
+			price_list_delay_per_item=0.5,
+		)
+		sync = SynchroniseItemPrice(servers=[server], in_batches=True)
+		sync.wc_server = server
+		sync.item_price_list = [
+			_dict(woocommerce_server="one.example.com", woocommerce_id="12", price_list_rate=15.0),
+			_dict(woocommerce_server="one.example.com", woocommerce_id="13", price_list_rate=20.0),
+		]
+		with (
+			patch.object(sync_item_prices, "push_to_products", return_value=written) as push_to_products,
+			patch.object(sync_item_prices, "record_sync_time") as record_sync_time,
+		):
+			sync.sync_items_with_woocommerce_products()
+		return push_to_products, record_sync_time
+
+	def test_the_prices_of_a_job_are_pushed_in_batches_with_the_delay(self):
+		push_to_products, record_sync_time = self.push(written=2)
+
+		push_to_products.assert_called_once_with(
+			"one.example.com",
+			{"12": {"regular_price": 15.0}, "13": {"regular_price": 20.0}},
+			"WooCommerce Error: Price List Sync",
+			delay_per_product=0.5,
+		)
+		record_sync_time.assert_called_once_with("one.example.com")
+
+	def test_the_sync_time_is_only_noted_when_a_price_was_written(self):
+		_push_to_products, record_sync_time = self.push(written=0)
+
+		record_sync_time.assert_not_called()
 
 
 class TestSchedule(IntegrationTestCase):

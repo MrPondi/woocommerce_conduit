@@ -243,6 +243,73 @@ class TestChanges(IntegrationTestCase):
 		self.assertEqual(changes, {"stock_quantity": 5})
 
 
+class TestBatches(IntegrationTestCase):
+	@staticmethod
+	def make_api(**values) -> MagicMock:
+		return MagicMock(
+			woocommerce_server="one.example.com", woocommerce_server_url="https://one.example.com", **values
+		)
+
+	def test_records_are_read_by_id_a_hundred_a_request_with_only_the_fields_asked_for(self):
+		def get(endpoint, params=None, **kwargs):
+			records = [{"id": int(i), "parent_id": 7, **DATES} for i in params["include"].split(",")]
+			return MagicMock(status_code=200, headers={}, json=lambda: records)
+
+		api = self.make_api()
+		api.get.side_effect = get
+		ids = [str(i) for i in range(1, 151)]
+		with patch.object(WooCommerceProduct, "_init_api", return_value=[api]):
+			products = WooCommerceProduct.load_records(
+				"one.example.com", ids, ["stock_quantity"], endpoint="products/7/variations"
+			)
+
+		self.assertEqual(list(products), ids)
+		self.assertEqual(products["12"].name, "one.example.com~12")
+		requests_sent = api.get.call_args_list
+		self.assertEqual([call.args[0] for call in requests_sent], ["products/7/variations"] * 2)
+		self.assertEqual([call.kwargs["params"]["per_page"] for call in requests_sent], [100, 50])
+		self.assertEqual(requests_sent[1].kwargs["params"]["include"], ",".join(ids[100:]))
+		self.assertEqual(
+			requests_sent[0].kwargs["params"]["_fields"],
+			"id,name,type,parent_id,date_created,date_modified,date_modified_gmt,stock_quantity",
+		)
+
+	def test_a_batch_is_answered_by_id(self):
+		answers = [{"id": 12, "stock_quantity": 3}, {"id": 13, "error": {"code": "invalid_id"}}]
+		api = self.make_api()
+		api.post.return_value = MagicMock(status_code=200, json=lambda: {"update": answers})
+		updates = [{"id": 12, "stock_quantity": 3}, {"id": 13, "stock_quantity": 1}]
+		with patch.object(WooCommerceProduct, "_init_api", return_value=[api]):
+			result = WooCommerceProduct.write_batch("one.example.com", "products/batch", updates)
+
+		api.post.assert_called_once_with("products/batch", {"update": updates}, idempotent=True)
+		self.assertEqual(result, {"12": answers[0], "13": answers[1]})
+
+	def test_a_batch_the_shop_fails_raises_and_is_logged_once(self):
+		api = self.make_api()
+		api.post.return_value = MagicMock(status_code=500, text="boom", request=MagicMock(url="u", body=None))
+		with (
+			patch.object(WooCommerceProduct, "_init_api", return_value=[api]),
+			patch.object(frappe, "log_error") as log_error,
+		):
+			with self.assertRaises(frappe.ValidationError):
+				WooCommerceProduct.write_batch("one.example.com", "products/batch", [{"id": 12}])
+
+		log_error.assert_called_once()
+
+	def test_a_variation_is_written_in_a_batch_of_its_parent(self):
+		with patch.object(WooCommerceProduct, "_init_api", return_value=[]):
+			variation = frappe.get_doc(
+				{"doctype": "WooCommerce Product", "name": "one.example.com~71", "parent_id": 7}
+			)
+			product = frappe.get_doc(
+				{"doctype": "WooCommerce Product", "name": "one.example.com~12", "parent_id": 0}
+			)
+
+		self.assertEqual(variation.get_batch_endpoint(), "products/7/variations/batch")
+		self.assertEqual(product.get_batch_endpoint(), "products/batch")
+
+
 class TestApiClients(IntegrationTestCase):
 	def test_clients_are_built_once_per_request(self):
 		server = _dict(
@@ -347,6 +414,10 @@ def post_refund(api: WooCommerceAPI):
 	return api.post("orders/12/refunds", {"amount": "10.00"})
 
 
+def post_batch(api: WooCommerceAPI):
+	return api.post("products/batch", {"update": [{"id": 12, "stock_quantity": 3}]}, idempotent=True)
+
+
 class TestRetries(IntegrationTestCase):
 	def send(self, *answers, request=get_order, in_web_request: bool = False):
 		"""
@@ -365,6 +436,7 @@ class TestRetries(IntegrationTestCase):
 			try:
 				return request(api)
 			finally:
+				self.sent = sent
 				self.tries = sent.call_count
 				self.waits = [call.args[0] for call in sleep.call_args_list]
 
@@ -423,6 +495,17 @@ class TestRetries(IntegrationTestCase):
 		self.assertEqual(
 			self.send(make_response(429), make_response(201), request=post_refund).status_code, 201
 		)
+
+	def test_a_batch_of_updates_is_sent_again_like_a_put(self):
+		# It only sets values, so another try sets the same ones
+		for answer in (make_response(500), requests.exceptions.ConnectionError("Connection reset by peer")):
+			with self.subTest(answer=answer):
+				response = self.send(answer, make_response(200), request=post_batch)
+
+				self.assertEqual(response.status_code, 200)
+				self.assertEqual(self.tries, 2)
+		# requests doesn't know it
+		self.assertNotIn("idempotent", self.sent.call_args.kwargs)
 
 	def test_a_dropped_connection_is_tried_again(self):
 		response = self.send(

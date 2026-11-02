@@ -9,6 +9,7 @@ from frappe.query_builder import Criterion
 from frappe.query_builder.functions import IfNull
 from frappe.utils import create_batch, get_datetime, getdate, today
 
+from woocommerce_conduit.tasks.product_push import push_to_products
 from woocommerce_conduit.tasks.sync import (
 	enqueue_after_commit_unless_queued,
 	get_sales_units,
@@ -124,7 +125,8 @@ def sync_item_price_to_woocommerce(item_code: str):
 
 
 def run_item_price_sync(item_code: str | None = None, item_codes: list[str] | None = None):
-	sync = SynchroniseItemPrice(item_codes=[item_code] if item_code else item_codes)
+	# One Item is pushed product by product, a list of them (the daily push) in batches
+	sync = SynchroniseItemPrice(item_codes=[item_code] if item_code else item_codes, in_batches=not item_code)
 	sync.run()
 	return True
 
@@ -142,10 +144,13 @@ class SynchroniseItemPrice:
 		self,
 		servers: list[WooCommerceServer | _dict] | None = None,
 		item_codes: list[str] | None = None,
+		in_batches: bool = False,
 	) -> None:
 		self.servers = servers or get_price_sync_servers()
 		# All the Items when there are none
 		self.item_codes = item_codes
+		# Read and write the products in batches (push_to_products) rather than one by one
+		self.in_batches = in_batches
 		self.wc_server = None
 		self.item_price_list = []
 		self.sale_price_map = {}
@@ -307,6 +312,18 @@ class SynchroniseItemPrice:
 		"""
 		if not self.wc_server:
 			return
+		if self.in_batches:
+			values = {row.woocommerce_id: self.get_price_values(row) for row in self.item_price_list}
+			pushed = push_to_products(
+				self.wc_server.name,
+				values,
+				"WooCommerce Error: Price List Sync",
+				delay_per_product=frappe.utils.flt(self.wc_server.price_list_delay_per_item),
+			)
+			if pushed:
+				record_sync_time(self.wc_server.name)
+			return
+
 		pushed = False
 		for item_price in self.item_price_list:
 			wc_product_name = generate_woocommerce_record_name_from_domain_and_id(

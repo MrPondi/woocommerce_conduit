@@ -1,10 +1,12 @@
 import math
+from collections import defaultdict
 
 import frappe
 from erpnext.stock.doctype.warehouse.warehouse import get_child_warehouses
 from frappe import _
 from frappe.utils import create_batch, flt
 
+from woocommerce_conduit.tasks.product_push import push_to_products
 from woocommerce_conduit.tasks.sync import enqueue_unless_queued, get_sales_units, record_sync_time
 from woocommerce_conduit.tasks.sync_items import load_wc_product
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_server import (
@@ -145,14 +147,24 @@ def update_stock_levels_for_all_enabled_items_in_background():
 
 def update_stock_levels_of_items(item_codes: list[str]):
 	"""
-	Background job: push the stock of these Items, carrying on past an Item that fails
+	Background job of the daily push: push the stock of these Items, their products read and written in
+	batches (push_to_products). An Item or product that fails is logged, and the others go on.
 	"""
+	pushes = defaultdict(dict)
 	for item_code in item_codes:
 		try:
-			update_stock_levels_on_woocommerce_site(item_code)
+			item = frappe.get_doc("Item", item_code)
+			if has_stock_to_sync(item):
+				for server, woocommerce_id, stock_values in get_stock_pushes(item):
+					pushes[server][woocommerce_id] = stock_values
 		except Exception:
-			# Each product that failed was logged
-			continue
+			frappe.log_error(
+				"WooCommerce Error: Stock Sync", f"{frappe.get_traceback()}\n\nItem: {item_code}"
+			)
+
+	for server, values in pushes.items():
+		if push_to_products(server, values, "WooCommerce Error: Stock Sync"):
+			record_sync_time(server)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -175,15 +187,45 @@ def update_stock_levels_on_woocommerce_site(item_code: str) -> bool:
 		bool: whether the Item has stock to sync at all
 	"""
 	item = frappe.get_doc("Item", item_code)
-	# A template's stock lives on its variants, as in WooCommerce
-	if not item.get("woocommerce_servers") or not item.is_stock_item or item.has_variants:
+	if not has_stock_to_sync(item):
 		return False
 
+	errors = []
+	for server, woocommerce_id, stock_values in get_stock_pushes(item):
+		wc_product_name = generate_woocommerce_record_name_from_domain_and_id(server, woocommerce_id)
+		try:
+			# Variations come back with their parent_id, so the write goes through the parent's endpoint
+			wc_product = load_wc_product(wc_product_name)
+			changes = wc_product.get_changes(stock_values)
+			if changes and wc_product.write(changes):
+				record_sync_time(server)
+		except Exception as err:
+			frappe.log_error(
+				"WooCommerce Error: Stock Sync",
+				f"{frappe.get_traceback()}\n\nProduct: {wc_product_name}\nStock: {stock_values}",
+			)
+			errors.append(err)
+
+	if errors:
+		raise errors[0]
+	return True
+
+
+def has_stock_to_sync(item) -> bool:
+	# A template's stock lives on its variants, as in WooCommerce
+	return bool(item.get("woocommerce_servers") and item.is_stock_item and not item.has_variants)
+
+
+def get_stock_pushes(item) -> list[tuple[str, str, dict]]:
+	"""
+	The stock to push for an Item, as (server, product id, stock values), for each shop it is linked to that
+	has stock sync on
+	"""
 	bins = frappe.get_all(
-		"Bin", filters={"item_code": item_code}, fields=["warehouse", "actual_qty", "reserved_qty"]
+		"Bin", filters={"item_code": item.name}, fields=["warehouse", "actual_qty", "reserved_qty"]
 	)
 
-	errors = []
+	pushes = []
 	for connection in item.woocommerce_servers:
 		# A connection can be left out of the stock (and price) sync, to manage it by hand in that shop
 		if not (connection.woocommerce_server and connection.woocommerce_id and connection.enable_sync):
@@ -210,25 +252,8 @@ def update_stock_levels_on_woocommerce_site(item_code: str) -> bool:
 				conversion_factor=sales_unit.factor if sales_unit else 1.0,
 			),
 		)
-		wc_product_name = generate_woocommerce_record_name_from_domain_and_id(
-			wc_server.name, connection.woocommerce_id
-		)
-		try:
-			# Variations come back with their parent_id, so the write goes through the parent's endpoint
-			wc_product = load_wc_product(wc_product_name)
-			changes = wc_product.get_changes(stock_values)
-			if changes and wc_product.write(changes):
-				record_sync_time(wc_server.name)
-		except Exception as err:
-			frappe.log_error(
-				"WooCommerce Error: Stock Sync",
-				f"{frappe.get_traceback()}\n\nProduct: {wc_product_name}\nStock: {stock_values}",
-			)
-			errors.append(err)
-
-	if errors:
-		raise errors[0]
-	return True
+		pushes.append((wc_server.name, connection.woocommerce_id, stock_values))
+	return pushes
 
 
 def get_woocommerce_stock_values(

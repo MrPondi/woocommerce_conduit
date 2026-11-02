@@ -19,6 +19,7 @@ from woocommerce_conduit.tasks.stock_update import (
 	update_stock_levels_for_all_enabled_items_in_background,
 	update_stock_levels_for_woocommerce_item,
 	update_stock_levels_from_ledger,
+	update_stock_levels_of_items,
 	update_stock_levels_on_woocommerce_site,
 )
 
@@ -321,3 +322,67 @@ class TestDailyStockPush(IntegrationTestCase):
 			update_stock_levels_for_all_enabled_items_in_background()
 
 		self.assertEqual([len(call.kwargs["item_codes"]) for call in enqueue.call_args_list], [100, 100, 50])
+
+	def push(self, items: dict, servers: dict, written=1):
+		"""
+		Run a job of the daily push for these Items, and return the calls of push_to_products
+		"""
+
+		def get_doc(doctype, name):
+			if name not in items:
+				raise frappe.DoesNotExistError
+			return items[name]
+
+		with (
+			patch.object(stock_update, "get_sales_units", return_value={}),
+			patch("frappe.get_doc", side_effect=get_doc),
+			patch("frappe.get_all", return_value=BINS),
+			patch("frappe.get_cached_doc", side_effect=lambda doctype, name: servers[name]),
+			patch("frappe.get_hooks", return_value=[]),
+			patch.object(stock_update, "get_warehouses_with_descendants", return_value={"Stores"}),
+			patch.object(stock_update, "push_to_products", return_value=written) as push_to_products,
+			patch.object(stock_update, "record_sync_time") as record_sync_time,
+			patch.object(frappe, "log_error") as log_error,
+		):
+			update_stock_levels_of_items([*items, "GONE-1"])
+		self.record_sync_time, self.log_error = record_sync_time, log_error
+		return push_to_products.call_args_list
+
+	def test_a_job_pushes_the_stock_of_its_items_to_each_server_in_batches(self):
+		mug = TestStockPush.make_item()
+		cup = TestStockPush.make_item(
+			name="CUP-1",
+			woocommerce_servers=[
+				_dict(woocommerce_server="one.example.com", woocommerce_id="13", enable_sync=1),
+				_dict(woocommerce_server="two.example.com", woocommerce_id="7", enable_sync=1),
+			],
+		)
+		servers = {"one.example.com": make_server(), "two.example.com": make_server(name="two.example.com")}
+
+		calls = self.push({"MUG-1": mug, "CUP-1": cup}, servers)
+
+		values = {"manage_stock": 1, "stock_quantity": 7}
+		self.assertEqual(
+			[call.args for call in calls],
+			[
+				("one.example.com", {"12": values, "13": values}, "WooCommerce Error: Stock Sync"),
+				("two.example.com", {"7": values}, "WooCommerce Error: Stock Sync"),
+			],
+		)
+		self.assertEqual(
+			[call.args[0] for call in self.record_sync_time.call_args_list],
+			["one.example.com", "two.example.com"],
+		)
+		# The Item that was deleted since the job was made
+		self.log_error.assert_called_once()
+		self.assertIn("GONE-1", self.log_error.call_args.args[1])
+
+	def test_a_server_without_stock_sync_is_not_pushed_to(self):
+		servers = {"one.example.com": make_server(enable_stock_level_synchronisation=0)}
+
+		self.assertEqual(self.push({"MUG-1": TestStockPush.make_item()}, servers), [])
+
+	def test_the_sync_time_is_only_noted_when_something_was_written(self):
+		self.push({"MUG-1": TestStockPush.make_item()}, {"one.example.com": make_server()}, written=0)
+
+		self.record_sync_time.assert_not_called()

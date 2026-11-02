@@ -18,7 +18,7 @@ from frappe.deferred_insert import deferred_insert
 from frappe.model import no_value_fields, numeric_fieldtypes
 from frappe.model.document import Document
 from frappe.types.filter import Filters
-from frappe.utils import add_days, cint, cstr, get_datetime, getdate
+from frappe.utils import add_days, cint, create_batch, cstr, get_datetime, getdate
 from frappe.utils.caching import request_cache
 from frappe.utils.password import get_decrypted_password
 from woocommerce import API
@@ -30,6 +30,8 @@ WC_RESOURCE_DELIMITER = "~"
 LOGGED_RESPONSE_LENGTH = 64 * 1024
 # The most records WooCommerce returns for one request
 WC_PAGE_LIMIT = 100
+# The most updates WooCommerce takes in one batch request
+WC_BATCH_LIMIT = 100
 # How many more times a request is sent when the shop is busy or failing, see get_retry_delay
 MAX_RETRIES = 3
 # How long after its first try a request may still be sent again, in seconds. A job can wait for the
@@ -61,7 +63,11 @@ class WooCommerceAPI(API):
 		self.woocommerce_server_url = url
 		self.log_all_requests = bool(log_all_requests)
 
-	def _API__request(self, method, endpoint, data, params=None, **kwargs):
+	def _API__request(self, method, endpoint, data, params=None, idempotent: bool = False, **kwargs):
+		"""
+		`idempotent` marks a POST that only sets values, such as a batch of updates, which may be sent again
+		like a PUT (see get_retry_delay)
+		"""
 		# Every try goes through the client again, which signs it anew: a shop without https refuses an
 		# OAuth signature that it has seen before
 		started = monotonic()
@@ -69,14 +75,14 @@ class WooCommerceAPI(API):
 			try:
 				response = super()._API__request(method, endpoint, data, params, **kwargs)  # type: ignore
 			except Exception as err:
-				retry_in = get_retry_delay(method, attempt, started, error=err)
+				retry_in = get_retry_delay(method, attempt, started, error=err, idempotent=idempotent)
 				self.log_request(
 					method, endpoint, params, data, error=traceback.format_exc(), retry_in=retry_in
 				)
 				if retry_in is None:
 					raise
 			else:
-				retry_in = get_retry_delay(method, attempt, started, response=response)
+				retry_in = get_retry_delay(method, attempt, started, response=response, idempotent=idempotent)
 				if self.log_all_requests or not response.ok:
 					self.log_request(method, endpoint, params, data, response=response, retry_in=retry_in)
 				if retry_in is None:
@@ -126,7 +132,9 @@ class WooCommerceAPI(API):
 		)
 
 
-def get_retry_delay(method: str, attempt: int, started: float, response=None, error=None) -> float | None:
+def get_retry_delay(
+	method: str, attempt: int, started: float, response=None, error=None, idempotent: bool = False
+) -> float | None:
 	"""
 	How many seconds to wait before sending a request again, or None to keep what it got.
 
@@ -137,18 +145,20 @@ def get_retry_delay(method: str, attempt: int, started: float, response=None, er
 	too. A shop that asks for a longer wait, as WordPress does while it is being updated, isn't waited for.
 
 	A POST is only sent again after a 429, which turns a request away before it is handled: after a 5xx
-	or a dropped connection the shop may have made the record already. A timeout isn't retried, as the
+	or a dropped connection the shop may have made the record already. An `idempotent` POST, such as a
+	batch of updates, only sets values, so it is sent again like a PUT. A timeout isn't retried, as the
 	shop has had 40 seconds to answer, and neither is an SSL error, which another try doesn't mend.
 	"""
 	if attempt >= MAX_RETRIES:
 		return None
+	may_make_records = method == "POST" and not idempotent
 	retry_after = None
 	if response is not None:
-		if response.status_code != 429 and (response.status_code < 500 or method == "POST"):
+		if response.status_code != 429 and (response.status_code < 500 or may_make_records):
 			return None
 		retry_after = parse_retry_after(response.headers.get("Retry-After"))
 	elif (
-		method == "POST"
+		may_make_records
 		or not isinstance(error, requests.exceptions.ConnectionError)
 		or isinstance(error, requests.exceptions.SSLError | requests.exceptions.Timeout)
 	):
@@ -420,6 +430,33 @@ class WooCommerceDocument(Document):
 	def after_load_from_db(self, record: dict):
 		return record
 
+	@classmethod
+	def load_records(
+		cls, server: str, ids, fields: list[str], endpoint: str | None = None
+	) -> dict[str, Self]:
+		"""
+		The records of one server with these ids, WC_PAGE_LIMIT a request (`include`), with only these
+		fields, by id as text. For the batch pushes, so without what after_load_from_db adds for the form. A
+		record WooCommerce doesn't list is missing: one that was trashed or deleted, or a variation asked
+		for at the resource rather than at its parent's `endpoint`.
+
+		Raises:
+			Exception: If the shop can't be read
+		"""
+		records = {}
+		for chunk in create_batch(list(ids), WC_PAGE_LIMIT):
+			args = {
+				"fields": fields,
+				"filters": [[cls.doctype, "woocommerce_id", "in", list(chunk)]],
+				"servers": [server],
+				"endpoint": endpoint,
+				"page_length": len(chunk),
+				"strict": True,
+			}
+			for record in cls.get_list_of_records(args):
+				records[cstr(record["woocommerce_id"])] = frappe.get_doc(record)
+		return records
+
 	def db_update(self):
 		"""
 		Write the fields that changed since the record was loaded back to WooCommerce. The subclass's
@@ -467,6 +504,40 @@ class WooCommerceDocument(Document):
 			self.woocommerce_date_modified = date_modified
 			self.modified = date_modified
 		return changes
+
+	@classmethod
+	def write_batch(cls, server: str, endpoint: str, updates: list[dict]) -> dict[str, dict]:
+		"""
+		Send updates of records of one server to a batch endpoint (get_batch_endpoint) in one request, at
+		most WC_BATCH_LIMIT of them, each with the `id` of its record and shaped by before_db_update. For the
+		batch pushes, which only send what differs, as write() does.
+
+		Returns:
+			WooCommerce's answer for each id, as text: the record as it is now, or {"id", "error"} for one it
+			refused
+
+		Raises:
+			frappe.ValidationError: If the request fails as a whole, which is logged
+		"""
+		try:
+			wc_api = next(api for api in cls._init_api() if api.woocommerce_server == server)
+		except StopIteration:
+			log_and_raise_error(error_text=f"No enabled WooCommerce server {server}")
+
+		# Without `_fields`, as WordPress would apply it to the answer's `update` key and leave out the records
+		try:
+			response = wc_api.post(endpoint, {"update": updates}, idempotent=True)
+		except Exception as err:
+			log_and_raise_error(exception=err, error_text=f"Batch update failed ({endpoint})")
+		if response.status_code != 200:
+			log_and_raise_error(error_text=f"Batch update failed ({endpoint})", response=response)
+		try:
+			answers = response.json()["update"]
+		except (ValueError, KeyError, TypeError) as err:
+			log_and_raise_error(
+				exception=err, error_text=f"Invalid answer to a batch update ({endpoint})", response=response
+			)
+		return {cstr(answer.get("id")): answer for answer in answers}
 
 	# save() runs these before db_update. The record lives in WooCommerce and isn't stored here, so there are
 	# no column lengths to respect and WooCommerce decides which values are valid. Otherwise a name over 140
@@ -516,6 +587,9 @@ class WooCommerceDocument(Document):
 
 	def get_update_endpoint(self, record_id: int) -> str:
 		return f"{self.resource}/{record_id}"
+
+	def get_batch_endpoint(self) -> str:
+		return f"{self.resource}/batch"
 
 	@classmethod
 	def get_wc_fields(

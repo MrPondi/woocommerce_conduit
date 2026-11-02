@@ -4,21 +4,6 @@ What is still to be built in woocommerce_conduit, by area. Each entry says why i
 
 woocommerce_fusion, beside this app in the bench's `apps/`, has a working version of several of these. Port the idea, not the code, as the sync classes differ.
 
-## Planned
-
-### Batch pushes
-
-The daily price and stock pushes still go one product at a time: one GET, plus a PUT when something differs. For big catalogues, read 100 products a request and send only the changes to WooCommerce's batch endpoints. Each push also loads the whole product (`load_from_db` asks for every field of the doctype), its `meta_data` included since the Item Field Map can reach it, where the pushes need only the price and stock fields.
-
-- Read: `products?include=<ids>`, 100 at a time. The API layer turns a `woocommerce_id in` filter into `include`. Read variations through `products/{parent}/variations?include=…`, finding the parent through the Item's `variant_of` (Fusion's `tasks/sync.py:get_variation_parent_woocommerce_id`).
-- Compare: with `get_changes`, as now. WooCommerce dates every save as a change and fires its product-updated hooks, so an unchanged product must not be written. Fusion's batch path writes them all; don't copy that part.
-- Write: to `products/batch` and `products/{parent}/variations/batch`, at most 100 updates a request (Fusion's `WooCommerceResource.batch_update` and `queue_manager.run_chunks`).
-- The daily jobs already hold 100 Items each (`ITEMS_PER_JOB`), the size of one batch.
-
-The server's Import Products reads each product again too, one GET each, after listing them 100 a request. It could take the products from the listing, or read them 100 a request the same way.
-
-Start at: `stock_update.update_stock_levels_of_items`, `SynchroniseItemPrice.sync_items_with_woocommerce_products`, `WooCommerceDocument.write`, `sync_items.import_products`.
-
 ## Orders and accounting
 
 ### Refunds from ERPNext
@@ -73,6 +58,18 @@ Every account in the shop becomes a Customer of its own, so a B2B shop gets one 
 Start at: `SynchroniseSalesOrder.create_or_link_customer_and_address`, Fusion's `find_customer_by_email_domain`.
 
 ## Items
+
+### Import Products reads each product again
+
+Import Products lists the shop's products 100 a request, then reads each one again with a GET of its own (`load_wc_product` in `run_item_sync`), every field of the doctype. It could read them 100 a request with `WooCommerceDocument.load_records`, as the daily pushes do, and give each to `run_item_sync(woocommerce_product=…)`. Mind that `load_records` leaves out what `after_load_from_db` adds (the dimensions, the indented JSON), and that a variation's record from `products/{parent}/variations` isn't the one `products/{id}` gives, which the import reads now (it has no `type`, for one). So read only the parent products that way, or compare the Items each way makes.
+
+Start at: `sync_items.import_products`, `get_products_to_import`, `WooCommerceDocument.load_records`.
+
+### Big stock transactions push one Item a job
+
+The stock hooks enqueue a job for each Item a transaction moves (`push_pending_stock_updates`), and each job reads its product and writes it when it differs. A Stock Reconciliation of 500 Items makes 500 jobs and up to 1000 requests. A transaction of many Items could enqueue jobs of 100 Items through the batch path instead (`update_stock_levels_of_items`), as the daily push does. The per-Item dedupe (`enqueue_unless_queued`) would then only cover the transactions of one Item.
+
+Start at: `stock_update.push_pending_stock_updates`, `enqueue_stock_updates`.
 
 ## Configuration
 

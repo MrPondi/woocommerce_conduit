@@ -130,6 +130,11 @@ class WooCommerceProduct(WooCommerceDocument):
 			return f"{self.resource}/{self.parent_id}/variations/{record_id}"
 		return super().get_update_endpoint(record_id)
 
+	def get_batch_endpoint(self) -> str:
+		if self.parent_id:
+			return f"{self.resource}/{self.parent_id}/variations/batch"
+		return super().get_batch_endpoint()
+
 	def before_db_update(self, changes: dict) -> dict:
 		"""
 		Put the changed fields in the format the WooCommerce API expects
