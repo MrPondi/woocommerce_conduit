@@ -1,8 +1,10 @@
 from collections import defaultdict
 
 import frappe
+from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 from frappe.query_builder.functions import IfNull, Min
-from frappe.utils.fixtures import sync_fixtures
+
+from woocommerce_conduit.custom_fields import get_custom_fields
 
 
 def execute():
@@ -12,9 +14,9 @@ def execute():
 	ones without a Sales Order get that shop too. The old lookup put orders of several shops on one Customer,
 	which only a person can split, so those are listed.
 	"""
-	# Fixtures are synced after the patches, and the field is one of them
+	# The custom fields are made after the patches (after_migrate), and the field is one of them
 	if not frappe.db.has_column("Customer", "woocommerce_server"):
-		sync_fixtures("woocommerce_conduit")
+		create_custom_fields({"Customer": get_custom_fields()["Customer"]})
 
 	shops = get_shops_of_customers()
 	for name, servers in shops.items():

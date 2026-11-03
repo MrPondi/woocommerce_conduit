@@ -18,6 +18,7 @@ from frappe.utils.html_utils import sanitize_html
 from jsonpath_ng.ext import parse
 from jsonpath_ng.jsonpath import Child, Fields, Root
 
+from woocommerce_conduit.custom_fields import get_custom_fields
 from woocommerce_conduit.tasks.sync import unescape_text
 
 # Fields whose value is HTML
@@ -40,7 +41,7 @@ REFUSED_ITEM_FIELDS = (
 # change what the line costs, how it is taxed or how it is delivered, which the sync and ERPNext work out.
 ORDER_ITEM_MAP_FIELDS = ("item_name", "description", "additional_notes")
 # The custom fields of Sales Order Item that the sync sets itself
-SYNC_ORDER_ITEM_FIELDS = ("woocommerce_id", "woocommerce_line_item_id")
+SYNC_ORDER_ITEM_FIELDS = tuple(df["fieldname"] for df in get_custom_fields()["Sales Order Item"])
 
 # Kept in frappe.flags, so a request or job logs each problem of a map once rather than once per record
 LOGGED_PROBLEMS_FLAG = "woocommerce_logged_map_problems"

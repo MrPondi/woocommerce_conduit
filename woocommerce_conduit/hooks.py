@@ -21,6 +21,14 @@ add_to_apps_screen = [
 
 doctype_js = {"Item": "public/js/item.js", "Sales Order": "public/js/sales_order.js"}
 
+# Installation
+# ------------
+
+# Make and update the custom fields of custom_fields.py. after_migrate runs after the patches, so a patch that
+# needs a new field makes it itself.
+after_install = "woocommerce_conduit.install.after_install"
+after_migrate = "woocommerce_conduit.install.after_migrate"
+
 # Document Events
 # ---------------
 
@@ -91,34 +99,3 @@ scheduler_events = {
 
 # Automatically update python controller files with type annotations for this app.
 export_python_type_annotations = True
-
-# Fixtures
-# --------
-
-fixtures = [
-	{
-		"dt": "Custom Field",
-		"filters": [
-			[
-				"name",
-				"in",
-				(
-					"Item-woocommerce_tab",
-					"Item-woocommerce_servers",
-					"Customer-woocommerce_identifier",
-					"Customer-woocommerce_column_break",
-					"Customer-woocommerce_server",
-					"Sales Order-woocommerce_id",
-					"Sales Order-woocommerce_server",
-					"Sales Order-woocommerce_status",
-					"Sales Order-woocommerce_payment_method",
-					"Sales Order-woocommerce_last_sync_hash",
-					"Sales Order-woocommerce_customer_note",
-					"Sales Order-woocommerce_sync_issue",
-					"Sales Order Item-woocommerce_id",
-					"Sales Order Item-woocommerce_line_item_id",
-				),
-			]
-		],
-	}
-]

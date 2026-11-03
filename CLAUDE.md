@@ -13,7 +13,7 @@ The repo root is the app dir; the Python package is the nested `woocommerce_cond
 Run from the bench root (`/workspace/development/frappe-bench`), not the app dir. The site used for development is `conduit.localhost`.
 
 ```bash
-bench --site conduit.localhost migrate                       # after doctype JSON / patch changes
+bench --site conduit.localhost migrate                       # after doctype JSON, custom field or patch changes
 bench --site conduit.localhost clear-cache
 bench --site conduit.localhost set-config allow_tests true   # once, needed for tests
 bench --site conduit.localhost run-tests --app woocommerce_conduit
@@ -86,11 +86,12 @@ Lint/format (run in the app dir): `pre-commit run --all-files`. It uses ruff (li
 
 ### Config doctypes
 
-`WooCommerce Server` holds credentials (consumer key/secret are Password fields), the webhook secret, and mapping child tables (item fields, order statuses, payment methods, shipping rules). Call the shop from the server form with `get_api()`: it adds the URL scheme and reads the stored password when the form sends it masked, so it works before the server is saved. The "Add Missing ..." buttons get `{"rows", "error"}` from `fetch_names`. `Item WooCommerce Server` is a child table on `Item` (added via `fixtures/custom_field.json`) that links an Item to its WC ID per server. `WooCommerce Settings` is a Single doctype for global sync options.
+`WooCommerce Server` holds credentials (consumer key/secret are Password fields), the webhook secret, and mapping child tables (item fields, order statuses, payment methods, shipping rules). Call the shop from the server form with `get_api()`: it adds the URL scheme and reads the stored password when the form sends it masked, so it works before the server is saved. The "Add Missing ..." buttons get `{"rows", "error"}` from `fetch_names`. `Item WooCommerce Server` is a child table on `Item` (a custom field of `custom_fields.py`) that links an Item to its WC ID per server. `WooCommerce Settings` is a Single doctype for global sync options.
 
 ## Gotchas
 
-- Patches live in `patches/v1/` and are listed in `patches.txt`. Add one there for data migrations, not an inline `migrate` hack. A fixture removed from `hooks.py` stays on existing sites until a patch deletes it.
+- Patches live in `patches/v1/` and are listed in `patches.txt`. Add one there for data migrations, not an inline `migrate` hack.
+- The custom fields on ERPNext's doctypes are defined in `custom_fields.py`, not in fixtures. `install.py` makes them on install and brings them up to date after every migrate (`create_custom_fields` saves only those that differ), so changing one needs no patch. They are system generated: Customize Form saves changes to them as Property Setters and won't delete them. A field removed from `custom_fields.py` stays on existing sites until a patch deletes it (see `remove_sales_order_link_fields`). The hook runs after the patches, so a patch that needs a new field makes it itself with `create_custom_fields`.
 - Doctype Python files have an auto-generated `DF` types block. Don't hand-edit inside it. It regenerates from the JSON on `bench migrate` in developer mode, or without it: `TypeExporter(frappe.get_doc("DocType", name)).export_types()` from `frappe.types.exporter` in `bench console`.
 - A doctype test module makes the test records of every doctype its doctype links to, which clashes with ERPNext's (duplicate "Standard Buying"). Tests that only build docs in memory set `IGNORE_TEST_RECORD_DEPENDENCIES`.
 - Whitelisted methods check argument types against their annotations in tests too, so pass ids as `str` where the signature says `str`.
