@@ -20,6 +20,9 @@ from woocommerce_conduit.woocommerce.woocommerce_api import (
 
 # The body of the ping WooCommerce sends when a webhook is saved, without a signature or source header
 PING = re.compile(rb"^webhook_id=\d+$")
+# The events of the order webhooks. A deleted order is sent as its id alone: the sync then finds it in the
+# trash, or gone for good.
+ORDER_EVENTS = ("created", "updated", "deleted", "restored")
 
 
 def validate_request() -> tuple[WooCommerceServer | None, Response | None]:
@@ -50,8 +53,9 @@ def validate_request() -> tuple[WooCommerceServer | None, Response | None]:
 @frappe.whitelist(allow_guest=True, methods=["POST"])  # nosemgrep: guest-whitelisted-method
 def order_created(*args, **kwargs):
 	"""
-	Accepts payload data from the WooCommerce "Order created" and "Order updated" webhooks. The name is
-	that of the first, and part of the delivery URL of the webhooks that are set up already.
+	Accepts payload data from the WooCommerce "Order created", "Order updated", "Order deleted" and
+	"Order restored" webhooks. The name is that of the first, and part of the delivery URL of the webhooks
+	that are set up already.
 	"""
 	data = frappe.request.data if frappe.request else None
 	if not data:
@@ -68,7 +72,7 @@ def order_created(*args, **kwargs):
 		return Response(status=HTTPStatus.OK)
 
 	event = frappe.get_request_header("x-wc-webhook-event")
-	if event not in ("created", "updated"):
+	if event not in ORDER_EVENTS:
 		return Response(response=_("Event not supported"), status=HTTPStatus.BAD_REQUEST)
 
 	try:

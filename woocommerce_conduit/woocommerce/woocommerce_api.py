@@ -402,7 +402,9 @@ class WooCommerceDocument(Document):
 				exception=err, error_text=f"load_from_db failed (WooCommerce {self.resource} #{record_id})"
 			)
 		# Not an error of the sync: the record was deleted, or never existed. The request is logged already.
-		if response.status_code == 404:
+		# Any other 404, say of a shop whose REST API is off, is an error, as an order taken for deleted
+		# cancels its Sales Order.
+		if response.status_code == 404 and is_invalid_id(response):
 			frappe.throw(_("{0} {1} not found").format(_(self.doctype), self.name), frappe.DoesNotExistError)
 		if response.status_code != 200:
 			log_and_raise_error(error_text=f"API returned {response.status_code}", response=response)
@@ -1029,6 +1031,19 @@ def generate_woocommerce_record_name_from_domain_and_id(
 		str: Combined name e.g. "site1.example.com~11"
 	"""
 	return f"{domain}{delimiter}{resource_id}"
+
+
+def is_invalid_id(response) -> bool:
+	"""
+	Whether WooCommerce answered that it has no record with the id it was asked for, as the code of its
+	error says (`woocommerce_rest_shop_order_invalid_id`, `woocommerce_rest_product_invalid_id`). The
+	message is translated, so only the code tells.
+	"""
+	try:
+		code = response.json().get("code")
+	except (ValueError, AttributeError):
+		return False
+	return isinstance(code, str) and code.endswith("_invalid_id")
 
 
 def log_and_raise_error(exception=None, error_text=None, response=None) -> NoReturn:

@@ -187,7 +187,8 @@ frappe.ui.form.on("WooCommerce Server", {
 					label: __("Topic"),
 					fieldname: "topic",
 					fieldtype: "Data",
-					default: "Order created, and a second webhook with Order updated",
+					default:
+						"Order created, Order updated, Order deleted and Order restored: a webhook each, all with this URL and secret",
 					read_only: 1,
 				},
 				{

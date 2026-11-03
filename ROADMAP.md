@@ -15,15 +15,9 @@ Once a shop is synced, a refund is made in ERPNext, as a Credit Note against the
 - Once only: a retried job must never refund twice. Put the Credit Note's name in the refund's `reason`, and look for it among the order's refunds before sending.
 - Coming back: a full refund sets the order to `refunded`, and the pull closes the Sales Order (the `refunded` row of the Order Status Map). A partial one leaves the status as it was. A refund that names no Credit Note was made in the shop, so flag it (`woocommerce_sync_issue`) rather than book it.
 
-The one place to pull refunds is an order seen for the first time. A fully refunded order is skipped, as `refunded` isn't one of the `CREATING_ACTIONS`, so it never reaches ERPNext. A partly refunded order is still processing or completed, so it gets its Sales Order, invoice and payment at the full amount. The totals check doesn't notice, as WooCommerce's `total` doesn't subtract refunds. This happens to an order from before the shop was connected, or to one refunded while Pause Order Sync was on. When the Sales Order is created, make a Credit Note for each refund in the order's `refunds` (details at `orders/{id}/refunds`), or at least flag the order.
+The one place to pull refunds is an order seen for the first time. A fully refunded order is skipped, as the `refunded` row doesn't tick submit, so it never reaches ERPNext. A partly refunded order is still processing or completed, so it gets its Sales Order, invoice and payment at the full amount. The totals check doesn't notice, as WooCommerce's `total` doesn't subtract refunds. This happens to an order from before the shop was connected, or to one refunded while Pause Order Sync was on. When the Sales Order is created, make a Credit Note for each refund in the order's `refunds` (details at `orders/{id}/refunds`), or at least flag the order.
 
 Start at: ERPNext's `make_sales_return` (Sales Invoice) and `get_payment_entry`, `order_status.enqueue_status_push_from_hook` and `SynchroniseSalesOrder.push_status_to_woocommerce` for the shape of a push, `SynchroniseSalesOrder.create_sales_order`, and `woocommerce_server_payment_method.json`.
-
-### Deleted orders by webhook
-
-`order_created` takes the "created" and "updated" events and answers any other with a 400. A trashed order is only picked up by the hourly sync, through the `trash` row of the status map. Accept "deleted" and "restored" as well. A permanently deleted order then answers 404 when it is loaded, which the sync has to treat as cancelled rather than as an error.
-
-Start at: `endpoint.order_created`, `sync_sales_orders.load_wc_order`.
 
 ### Sales Order names from the shop's order number
 
@@ -131,7 +125,7 @@ The tests mock WooCommerce, so API behaviour is only checked by hand: what a PUT
 
 ### Setup and usage documentation
 
-A guide for users rather than developers: how to connect a shop (API keys, the two webhooks and their secret), Pause Order Sync while the Items are set up, and the maps. Fusion's `docs/` (vitepress) is a model.
+A guide for users rather than developers: how to connect a shop (API keys, the four order webhooks and their secret), Pause Order Sync while the Items are set up, and the maps. Fusion's `docs/` (vitepress) is a model.
 
 ## Open questions
 

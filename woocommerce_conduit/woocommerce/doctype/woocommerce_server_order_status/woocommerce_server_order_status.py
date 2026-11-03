@@ -39,6 +39,9 @@ RESUMING_ACTIONS = frozenset({ACTION_SUBMIT, ACTION_INVOICE, ACTION_DELIVER})
 
 # The payment gateway decides on these, so ERPNext must not push them over the gateway's
 PAYMENT_OWNED_STATUSES = ("checkout-draft", "pending", "failed", "on-hold", "processing")
+# The status of an order in the trash. An order that the shop deleted for good is taken for one in the trash,
+# which it usually went through.
+TRASH_STATUS = "trash"
 
 # (slug, label, actions, the Sales Order status that is pushed as this status)
 DEFAULT_STATUSES = (

@@ -705,6 +705,7 @@ class TestPullingStatus(IntegrationTestCase):
 			woocommerce_date_modified="2026-10-30T10:00:00",
 		)
 		with (
+			patch.object(frappe, "get_cached_doc", return_value=make_server()),
 			patch.object(sync, "apply_status_actions", side_effect=lambda a: calls.append(a)),
 			patch.object(sync, "update_sales_order_items", side_effect=lambda: calls.append("lines")),
 		):
@@ -875,6 +876,8 @@ class TestPushingStatus(IntegrationTestCase):
 			self.assertIsNone(get_status_to_push(self.make_sales_order(status="To Deliver")))
 			# Not linked
 			self.assertIsNone(get_status_to_push(self.make_sales_order(woocommerce_id=None)))
+			# In the trash, or deleted: a status would take it out of the trash
+			self.assertIsNone(get_status_to_push(self.make_sales_order(woocommerce_status="trash")))
 
 	def test_pushing_can_be_switched_off(self):
 		with patch.object(frappe, "get_cached_doc", return_value=make_server(push=False)):
@@ -952,6 +955,191 @@ class TestPushingStatus(IntegrationTestCase):
 		self.assertEqual(sync.sales_order.db_set.call_args.args[0]["woocommerce_status"], "completed")
 
 
+class TestDeletedOrders(IntegrationTestCase):
+	"""Orders that the shop deleted for good, which it answers are an invalid id"""
+
+	def test_an_order_the_shop_deleted_is_noted_rather_than_an_error(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		with (
+			patch.object(sync_sales_orders, "load_wc_order", side_effect=frappe.DoesNotExistError),
+			patch.object(sync_sales_orders, "find_sales_order", return_value=None) as find_sales_order,
+		):
+			sync.load_orders()
+			sync.get_corresponding_sales_order_or_woocommerce_order()
+
+		self.assertTrue(sync.deleted_in_woocommerce)
+		self.assertIsNone(sync.woocommerce_order)
+		# Looked up by the order's name, as there is no order to read it from
+		find_sales_order.assert_called_once_with(SERVER, 12)
+
+	def test_a_sales_order_whose_order_was_deleted_notes_it_too(self):
+		sync = make_sync(sales_order_name="SAL-ORD-1")
+		sync.sales_order = _dict(name="SAL-ORD-1", woocommerce_server=SERVER, woocommerce_id="12")
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=_dict(enabled=1)),
+			patch.object(sync_sales_orders, "load_wc_order", side_effect=frappe.DoesNotExistError),
+		):
+			sync.get_corresponding_sales_order_or_woocommerce_order()
+		self.assertTrue(sync.deleted_in_woocommerce)
+
+	def deleted(self, **values):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.deleted_in_woocommerce = True
+		sync.sales_order = MagicMock(
+			**{
+				"docstatus": 1,
+				"woocommerce_server": SERVER,
+				"woocommerce_status": "processing",
+				"flags": _dict(),
+				**values,
+			}
+		)
+		return sync
+
+	def sync_deleted(self, sync, push=False):
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=make_server()),
+			patch.object(sync, "apply_status_actions") as apply_status_actions,
+			patch.object(sync, "sync_invoice_and_payment") as sync_invoice_and_payment,
+		):
+			if push:
+				sync.push_status_to_woocommerce()
+			else:
+				sync.sync_wc_order_with_erpnext_order()
+		sync_invoice_and_payment.assert_not_called()
+		return apply_status_actions
+
+	def test_its_sales_order_does_what_the_trash_row_ticks_once(self):
+		sync = self.deleted()
+		apply_status_actions = self.sync_deleted(sync)
+
+		sync.sales_order.db_set.assert_called_once_with("woocommerce_status", "trash", update_modified=False)
+		self.assertTrue(sync.sales_order.flags.created_by_sync)
+		apply_status_actions.assert_called_once_with({ACTION_CANCEL})
+
+		# Trashed before, or synced as deleted already
+		sync = self.deleted(woocommerce_status="trash")
+		self.sync_deleted(sync).assert_not_called()
+		sync.sales_order.db_set.assert_not_called()
+
+	def test_without_a_sales_order_or_with_a_cancelled_one_nothing_is_done(self):
+		sync = self.deleted()
+		sync.sales_order = None
+		self.sync_deleted(sync).assert_not_called()
+
+		sync = self.deleted(docstatus=2)
+		self.sync_deleted(sync).assert_not_called()
+		sync.sales_order.db_set.assert_not_called()
+
+	def test_a_push_takes_the_deletion_instead(self):
+		# Deleting the order is the change WooCommerce made, and there is no order to push to
+		sync = self.deleted()
+		self.sync_deleted(sync, push=True).assert_called_once_with({ACTION_CANCEL})
+
+
+class TestComebacks(IntegrationTestCase):
+	"""Orders that are back in WooCommerce after their status cancelled or closed the Sales Order"""
+
+	def pull(self, previous_status, wc_status, amendment=None, **values):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.sales_order = MagicMock(
+			**{
+				"docstatus": 1,
+				"status": "To Deliver and Bill",
+				"woocommerce_status": previous_status,
+				"woocommerce_last_sync_hash": datetime(2026, 10, 30, 9, 0, 0),
+				"woocommerce_sync_issue": None,
+				"flags": _dict(),
+				**values,
+			}
+		)
+		sync.sales_order.name = "SAL-ORD-1"
+		sync.woocommerce_order = _dict(
+			status=wc_status,
+			woocommerce_server=SERVER,
+			customer_note=None,
+			payment_method_title="Card",
+			payment_method="stripe",
+			woocommerce_date_modified="2026-10-30T10:00:00",
+		)
+		self.cancelled = sync.sales_order
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=make_server()),
+			patch.object(frappe, "copy_doc", return_value=amendment) as self.copy_doc,
+			patch.object(frappe, "log_error") as self.log_error,
+			patch.object(sync, "update_sales_order_items"),
+			patch.object(sync, "apply_status_actions") as self.apply_status_actions,
+			patch.object(sync, "sync_invoice_and_payment") as self.sync_invoice_and_payment,
+		):
+			sync.sync_wc_order_with_erpnext_order()
+		return sync
+
+	def make_amendment(self, **values):
+		amendment = MagicMock(
+			**{
+				"docstatus": 2,
+				"status": "Cancelled",
+				"woocommerce_status": "failed",
+				"flags": _dict(),
+				**values,
+			}
+		)
+		amendment.submit.side_effect = lambda: setattr(amendment, "docstatus", 1)
+		return amendment
+
+	def test_a_cancelled_sales_order_is_amended_and_synced_on(self):
+		# Failed and cancelled, then paid on a retry
+		amendment = self.make_amendment()
+		sync = self.pull("failed", "processing", amendment, docstatus=2, status="Cancelled")
+
+		self.copy_doc.assert_called_once_with(self.cancelled)
+		self.assertEqual(amendment.amended_from, "SAL-ORD-1")
+		amendment.insert.assert_called_once()
+		self.assertEqual(amendment.docstatus, 1)
+		self.assertTrue(amendment.flags.created_by_sync)
+		self.assertTrue(amendment.flags.ignore_mandatory)
+		self.assertIs(sync.sales_order, amendment)
+		# The pull carries on with the amendment: its status, lines and actions, then its invoice and payment
+		self.assertEqual(amendment.db_set.call_args.args[0]["woocommerce_status"], "processing")
+		self.apply_status_actions.assert_called_once_with(SUBMIT_INVOICE)
+		self.sync_invoice_and_payment.assert_called_once_with(SUBMIT_INVOICE)
+		self.log_error.assert_not_called()
+
+	def test_an_amendment_that_fails_is_flagged_on_the_cancelled_sales_order(self):
+		amendment = self.make_amendment()
+		amendment.insert.side_effect = frappe.ValidationError("Item MUG is disabled")
+		sync = self.pull("trash", "processing", amendment, docstatus=2, status="Cancelled")
+
+		self.assertIs(sync.sales_order, self.cancelled)
+		self.log_error.assert_called_once()
+		fieldname, issue = self.cancelled.db_set.call_args.args
+		self.assertEqual(fieldname, "woocommerce_sync_issue")
+		self.assertIn("Item MUG is disabled", issue)
+		# Flagged without its status being pushed back
+		self.assertTrue(self.cancelled.flags.created_by_sync)
+		self.apply_status_actions.assert_not_called()
+
+	def test_a_closed_sales_order_is_reopened_and_flagged(self):
+		# Paid when it was trashed, so the trash closed it rather than cancel it
+		sync = self.pull("trash", "processing", status="Closed")
+
+		sync.sales_order.update_status.assert_called_once_with("Draft")
+		self.assertEqual(
+			sync.sales_order.db_set.call_args.args,
+			("woocommerce_sync_issue", "Back in WooCommerce as processing, so it was reopened"),
+		)
+		self.apply_status_actions.assert_called_once_with(SUBMIT_INVOICE)
+
+	def test_an_order_whose_status_did_not_end_its_sales_order_is_left(self):
+		# Cancelled or closed in ERPNext by a person, while the shop went on with the order
+		sync = self.pull("processing", "completed", docstatus=2, status="Cancelled")
+		self.copy_doc.assert_not_called()
+		sync.sales_order.db_set.assert_not_called()
+
+		sync = self.pull("processing", "completed", status="Closed")
+		sync.sales_order.update_status.assert_not_called()
+
+
 class TestStatusesToSync(IntegrationTestCase):
 	def test_only_statuses_that_do_something(self):
 		with (
@@ -993,15 +1181,16 @@ class TestWebhook(IntegrationTestCase):
 		self.validate_request, self.set_user = validate_request, set_user
 		return response, enqueue
 
-	def test_created_and_updated_orders_are_synced(self):
-		for event in ("created", "updated"):
+	def test_order_events_are_synced(self):
+		# A deleted order is sent as its id alone
+		for event in ("created", "updated", "deleted", "restored"):
 			response, enqueue = self.post(event, b'{"id": 12}')
 			self.assertEqual(response.status_code, 200)
 			enqueue.assert_called_once_with(woocommerce_order_name=f"{SERVER}~12")
 			self.set_user.assert_called_once_with("Administrator")
 
 	def test_other_events_are_refused(self):
-		response, enqueue = self.post("deleted", b'{"id": 12}')
+		response, enqueue = self.post("action", b'{"id": 12}')
 		self.assertEqual(response.status_code, 400)
 		enqueue.assert_not_called()
 

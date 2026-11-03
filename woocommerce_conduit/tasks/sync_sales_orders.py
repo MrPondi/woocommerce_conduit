@@ -227,6 +227,8 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		self.woocommerce_order_name = woocommerce_order_name
 		self.sales_order: SyncedOrder | None = None
 		self.woocommerce_order: WooCommerceOrder | None = None
+		# The shop deleted the order for good, so there is no WooCommerce Order to load
+		self.deleted_in_woocommerce = False
 
 	def get_lock_name(self) -> str:
 		"""
@@ -299,9 +301,19 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 
 	def load_orders(self):
 		if self.woocommerce_order_name:
-			self.woocommerce_order = load_wc_order(self.woocommerce_order_name)
+			self.load_woocommerce_order(self.woocommerce_order_name)
 		else:
 			self.sales_order = frappe.get_doc("Sales Order", self.sales_order_name)  # type: ignore
+
+	def load_woocommerce_order(self, woocommerce_order_name: str) -> None:
+		"""
+		Load the WooCommerce Order. One that the shop deleted for good (it says the id is invalid) is no error:
+		its Sales Order is synced as that of an order in the trash.
+		"""
+		try:
+			self.woocommerce_order = load_wc_order(woocommerce_order_name)
+		except frappe.DoesNotExistError:
+			self.deleted_in_woocommerce = True
 
 	def get_corresponding_sales_order_or_woocommerce_order(self):
 		"""
@@ -324,33 +336,32 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 			if not wc_server.enabled:
 				raise SyncDisabledError(wc_server)
 
-			self.woocommerce_order = load_wc_order(
+			self.load_woocommerce_order(
 				generate_woocommerce_record_name_from_domain_and_id(
 					self.sales_order.woocommerce_server, self.sales_order.woocommerce_id
 				)
 			)
 
-		if self.woocommerce_order and not self.sales_order:
+		if not self.sales_order and (self.woocommerce_order or self.deleted_in_woocommerce):
 			self.get_erpnext_sales_order()
 
 	def get_erpnext_sales_order(self):
 		"""
-		Get erpnext sales order for a WooCommerce Order
+		Get the ERPNext Sales Order of the WooCommerce Order, found by its name, as the shop may have deleted it
 		"""
-		if not self.woocommerce_order:
-			raise ValueError("woocommerce_order required")
-		if not all([self.woocommerce_order.woocommerce_server, self.woocommerce_order.woocommerce_id]):
-			raise ValueError("Both woocommerce_server and woocommerce_id required")
-
-		if name := find_sales_order(
-			self.woocommerce_order.woocommerce_server, self.woocommerce_order.woocommerce_id
-		):
+		woocommerce_server, woocommerce_id = get_domain_and_id_from_woocommerce_record_name(
+			self.get_record_name()
+		)
+		if name := find_sales_order(woocommerce_server, woocommerce_id):
 			self.sales_order: SyncedOrder = frappe.get_doc("Sales Order", name)  # type: ignore
 
 	def sync_wc_order_with_erpnext_order(self):
 		"""
 		Synchronise Sales Order between ERPNext and WooCommerce
 		"""
+		if self.deleted_in_woocommerce:
+			self.sync_deleted_order()
+			return
 		if not self.woocommerce_order:
 			return
 
@@ -382,6 +393,10 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		WooCommerce changed the order in the meantime, say a payment came in, it wins and the order is
 		pulled instead. Otherwise that payment would be undone with a stale status.
 		"""
+		# Deleting the order is the change WooCommerce made, and there is nothing to push it to
+		if self.deleted_in_woocommerce:
+			self.sync_deleted_order()
+			return
 		if not (self.sales_order and self.woocommerce_order):
 			return
 
@@ -413,39 +428,59 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 
 	def update_sales_order(self, actions: frozenset[str] = frozenset()):
 		"""
-		Update the ERPNext Sales Order with fields from it's corresponding WooCommerce Order
+		Update the ERPNext Sales Order with fields from it's corresponding WooCommerce Order. A cancelled one
+		is left as it is, unless the order came back (came_back): then it is amended, and a closed one opened
+		again.
 		"""
 		if not self.woocommerce_order or not self.sales_order:
 			return
 
-		# Ignore cancelled Sales Orders
-		if self.sales_order.docstatus != 2:
-			wc_order_status = normalise_status(self.woocommerce_order.status)
-			status_changed = normalise_status(self.sales_order.woocommerce_status) != wc_order_status
-			values = {
-				"woocommerce_status": wc_order_status,
-				# Always note what was seen, so an unchanged WooCommerce Order isn't looked at again
-				"woocommerce_last_sync_hash": get_datetime(self.woocommerce_order.woocommerce_date_modified),
-			}
-			if self.woocommerce_order.customer_note:
-				values["woocommerce_customer_note"] = self.woocommerce_order.customer_note
-			if payment_method := get_payment_method(self.woocommerce_order):
-				values["woocommerce_payment_method"] = payment_method
-
-			# Only the sync's own fields change, so they are written without a save of the submitted Sales
-			# Order, which would validate it again and keep a Version of every pull
+		# Asked before the new status is written over the one the Sales Order last saw
+		came_back = self.came_back(actions)
+		if self.sales_order.docstatus == 2:
+			if not came_back:
+				return
+			# What is flagged on the cancelled Sales Order must not push its status back to WooCommerce
 			self.sales_order.flags.created_by_sync = True
-			self.sales_order.db_set(values, update_modified=False)
+			self.run_flagged(
+				self.amend_sales_order,
+				_("Back in WooCommerce, but the Sales Order could not be amended: {0}"),
+			)
+			if self.sales_order.docstatus == 2:
+				return
 
-			# The lines of an order that is being cancelled or closed don't matter any more
-			if self.sales_order.docstatus == 1 and not (status_changed and actions & ENDING_ACTIONS):
-				self.run_flagged(self.update_sales_order_items, _("The lines could not be updated: {0}"))
-				self.sales_order.reload()
+		wc_order_status = normalise_status(self.woocommerce_order.status)
+		status_changed = normalise_status(self.sales_order.woocommerce_status) != wc_order_status
+		values = {
+			"woocommerce_status": wc_order_status,
+			# Always note what was seen, so an unchanged WooCommerce Order isn't looked at again
+			"woocommerce_last_sync_hash": get_datetime(self.woocommerce_order.woocommerce_date_modified),
+		}
+		if self.woocommerce_order.customer_note:
+			values["woocommerce_customer_note"] = self.woocommerce_order.customer_note
+		if payment_method := get_payment_method(self.woocommerce_order):
+			values["woocommerce_payment_method"] = payment_method
 
-			# What a status means is done once, when it changes. Otherwise editing the note of an order would
-			# undo a hold that was put on its Sales Order in ERPNext.
-			if status_changed:
-				self.apply_status_actions(actions)
+		# Only the sync's own fields change, so they are written without a save of the submitted Sales
+		# Order, which would validate it again and keep a Version of every pull
+		self.sales_order.flags.created_by_sync = True
+		self.sales_order.db_set(values, update_modified=False)
+
+		if came_back and self.sales_order.status == "Closed":
+			self.run_flagged(
+				lambda: self.reopen_sales_order(wc_order_status),
+				_("Back in WooCommerce, but the Sales Order could not be reopened: {0}"),
+			)
+
+		# The lines of an order that is being cancelled or closed don't matter any more
+		if self.sales_order.docstatus == 1 and not (status_changed and actions & ENDING_ACTIONS):
+			self.run_flagged(self.update_sales_order_items, _("The lines could not be updated: {0}"))
+			self.sales_order.reload()
+
+		# What a status means is done once, when it changes. Otherwise editing the note of an order would
+		# undo a hold that was put on its Sales Order in ERPNext.
+		if status_changed:
+			self.apply_status_actions(actions)
 
 	def create_sales_order(self, actions: frozenset[str]) -> None:
 		"""

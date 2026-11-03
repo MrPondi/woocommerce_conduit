@@ -10,13 +10,17 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woo
 	ACTION_HOLD,
 	ACTION_INVOICE,
 	ACTION_SKIP,
+	ACTION_SUBMIT,
 	DEFAULT_STATUSES,
+	ENDING_ACTIONS,
 	RESUMING_ACTIONS,
+	TRASH_STATUS,
 	normalise_status,
 )
 
 if TYPE_CHECKING:
 	from woocommerce_conduit.tasks.sync_sales_orders import SyncedOrder
+	from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import WooCommerceOrder
 
 
 def get_statuses_to_sync() -> list[str]:
@@ -43,6 +47,9 @@ def get_status_to_push(sales_order) -> str | None:
 	status changes, doesn't map this status, or the WooCommerce Order has that status already.
 	"""
 	if not (sales_order.woocommerce_server and sales_order.woocommerce_id):
+		return None
+	# A status would take the order out of the trash, and one that was deleted has nothing to take it
+	if normalise_status(sales_order.woocommerce_status) == TRASH_STATUS:
 		return None
 
 	server = frappe.get_cached_doc("WooCommerce Server", sales_order.woocommerce_server)
@@ -85,6 +92,7 @@ class SalesOrderStatusMixin:
 	"""
 
 	sales_order: SyncedOrder
+	woocommerce_order: WooCommerceOrder
 
 	def apply_status_actions(self, actions: frozenset[str]) -> None:
 		# The status changes made here must not be pushed back to WooCommerce
@@ -101,6 +109,35 @@ class SalesOrderStatusMixin:
 			self.hold_sales_order()
 		elif actions & RESUMING_ACTIONS:
 			self.resume_sales_order()
+
+	def sync_deleted_order(self) -> None:
+		"""
+		The shop deleted the order for good. Its Sales Order does what the `trash` row of the status map ticks,
+		once, as the order usually went through the trash. Nothing else of an order that is gone can be synced.
+		"""
+		sales_order = self.sales_order
+		if not sales_order or sales_order.docstatus == 2:
+			return
+		if normalise_status(sales_order.woocommerce_status) == TRASH_STATUS:
+			return
+
+		wc_server = frappe.get_cached_doc("WooCommerce Server", sales_order.woocommerce_server)
+		row = wc_server.get_order_status_row(TRASH_STATUS)
+		sales_order.flags.created_by_sync = True
+		sales_order.db_set("woocommerce_status", TRASH_STATUS, update_modified=False)
+		self.apply_status_actions(row.get_actions() if row else frozenset())
+
+	def came_back(self, actions: frozenset[str]) -> bool:
+		"""
+		Whether the order is back in WooCommerce after its status cancelled or closed the Sales Order: the
+		status it has now makes Sales Orders, and the one the Sales Order last saw ended it. Say it was
+		restored from the trash, or paid on a retry after it failed.
+		"""
+		if ACTION_SUBMIT not in actions or not self.sales_order.woocommerce_status:
+			return False
+		wc_server = frappe.get_cached_doc("WooCommerce Server", self.woocommerce_order.woocommerce_server)
+		row = wc_server.get_order_status_row(self.sales_order.woocommerce_status)
+		return bool(row and row.get_actions() & ENDING_ACTIONS)
 
 	def flag_sync_issue(self, message: str) -> None:
 		# Added to the issues flagged before, so a later step doesn't hide one a person still has to look at
@@ -140,6 +177,15 @@ class SalesOrderStatusMixin:
 	def close_sales_order(self) -> None:
 		if self.sales_order.docstatus == 1 and self.sales_order.status != "Closed":
 			self.sales_order.update_status("Closed")
+
+	def reopen_sales_order(self, status: str) -> None:
+		"""
+		Reopen the closed Sales Order of an order that is back in WooCommerce, as ERPNext's Re-open does. It
+		is flagged for a person, as an order is closed when it was paid, invoiced or delivered, or refunded.
+		"""
+		if self.sales_order.docstatus == 1 and self.sales_order.status == "Closed":
+			self.sales_order.update_status("Draft")
+			self.flag_sync_issue(_("Back in WooCommerce as {0}, so it was reopened").format(status))
 
 	def cancel_sales_order(self) -> None:
 		"""
@@ -187,3 +233,21 @@ class SalesOrderStatusMixin:
 			pluck="sales_order",
 		)
 		return set(billed_orders) == {self.sales_order.name}
+
+	def amend_sales_order(self) -> None:
+		"""
+		Amend the cancelled Sales Order of an order that is back in WooCommerce, and carry on with the
+		amendment. The sync only cancels a Sales Order that nothing was paid on or delivered, so the amendment
+		is that order again. Like the form's Amend it copies every field, the WooCommerce ids of the lines and
+		what was flagged among them.
+		"""
+		cancelled = self.sales_order
+		amendment: SyncedOrder = frappe.copy_doc(cancelled)  # type: ignore
+		amendment.amended_from = cancelled.name
+		# copy_doc keeps it under tests
+		amendment.docstatus = 0
+		amendment.flags.ignore_mandatory = True
+		amendment.flags.created_by_sync = True
+		amendment.insert()
+		amendment.submit()
+		self.sales_order = amendment

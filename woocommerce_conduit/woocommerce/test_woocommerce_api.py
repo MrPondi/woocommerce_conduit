@@ -212,9 +212,27 @@ class TestLoading(IntegrationTestCase):
 				self.log_error = log_error
 
 	def test_a_missing_record_is_not_found_and_not_an_error(self):
+		response = MagicMock(status_code=404)
+		response.json.return_value = {
+			"code": "woocommerce_rest_shop_order_invalid_id",
+			"message": "Błędne id.",
+		}
 		with self.assertRaises(frappe.DoesNotExistError):
-			self.load(MagicMock(status_code=404))
+			self.load(response)
 		self.log_error.assert_not_called()
+
+	def test_a_404_that_does_not_say_the_id_is_invalid_is_an_error(self):
+		# A shop whose REST API is off, and a web server that doesn't pass the request on to WordPress. Taken
+		# for a deleted order, either would cancel its Sales Order.
+		rest_off = MagicMock(status_code=404, text="no route", request=MagicMock(url="u", body=None))
+		rest_off.json.return_value = {"code": "rest_no_route"}
+		html = MagicMock(status_code=404, text="<html>", request=MagicMock(url="u", body=None))
+		html.json.side_effect = ValueError("not JSON")
+		for response in (rest_off, html):
+			with self.assertRaises(frappe.ValidationError) as raised:
+				self.load(response)
+			self.assertNotIsInstance(raised.exception, frappe.DoesNotExistError)
+			self.log_error.assert_called_once()
 
 	def test_a_failed_request_is_logged_once(self):
 		with self.assertRaises(frappe.ValidationError):
