@@ -31,11 +31,11 @@ Sales Orders follow ERPNext's naming series, and the shop's order number goes in
 
 Start at: `SynchroniseSalesOrder.create_sales_order`.
 
-### Untaxed shipping and fees
+### VAT on shipping and fees at WooCommerce's rate
 
-With a template whose VAT is included in the rate, the sync takes VAT out of shipping and every fee at the rates of the default Item Tax Template, even when WooCommerce charged no tax on it. ERPNext then books VAT the shop didn't charge, and less income. The grand total still matches the shop's, so the totals check doesn't flag it. Shipping or a fee with no `shipping_tax` or `total_tax` should be booked as it is.
+With a template whose VAT is included in the rate, shipping and fees that WooCommerce taxed have their VAT taken out again at the rates of the default Item Tax Template, not at the rate WooCommerce charged. A shop whose shipping takes the rate of the items in the cart (WooCommerce's "Shipping tax class based on cart items") taxes it at 8% on an order of 8% goods, and ERPNext books 23%. The grand total still matches, so the totals check doesn't flag it. Without an inclusive template the VAT is WooCommerce's amount, but all of it goes on the account of the template's first VAT row. The order's `tax_lines` say what WooCommerce charged at each rate (`rate_id`, `shipping_tax_total`), which could pick the VAT rows instead.
 
-Start at: `order_lines.build_charges`.
+Start at: `order_lines.build_charges`, `taxes.get_vat_rates`.
 
 ### What counts as paid, per payment method
 

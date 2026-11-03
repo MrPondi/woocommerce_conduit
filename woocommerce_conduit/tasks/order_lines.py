@@ -120,11 +120,14 @@ def build_charges(
 	and only its VAT is booked here, as ERPNext's rule charges none.
 
 	When the template's VAT is included in the rate, so it is in shipping and fees, and it is taken out of
-	them at these rates: ERPNext can't include tax in an Actual charge. Otherwise they are net, and the VAT
-	on them is what WooCommerce charged.
+	them at these rates: ERPNext can't include tax in an Actual charge. A charge that WooCommerce put no tax
+	on, on an order it taxed, was left untaxed by the shop, and is booked whole. Otherwise they are net, and
+	the VAT on them is what WooCommerce charged.
 	"""
 	freight_account = wc_server.freight_and_forwarding_account
 	fee_account = wc_server.get("fee_account") or freight_account
+	# An order without tax lines is one WooCommerce worked out no taxes for, so its prices include the VAT
+	woocommerce_taxed = bool(get_json_lines(wc_order, "tax_lines"))
 
 	amounts = [
 		(wc_order.shipping_total, wc_order.shipping_tax, freight_account, _("Shipping"), with_shipping)
@@ -137,8 +140,10 @@ def build_charges(
 	charges = []
 	vat = {}
 	for amount, tax, account, description, charged in amounts:
-		if tax_inclusive:
+		if tax_inclusive and (flt(tax) or not woocommerce_taxed):
 			amount, tax_rows = split_vat(flt(amount) + flt(tax), vat_rates)
+		elif tax_inclusive:
+			tax_rows = []
 		else:
 			tax_rows = [(vat_rates[0][0] if vat_rates else freight_account, flt(tax))]
 		if charged and flt(amount):
@@ -282,8 +287,8 @@ class SalesOrderLinesMixin:
 		new_sales_order.taxes_and_charges = wc_server.sales_taxes_and_charges_template
 		new_sales_order.set_missing_lead_customer_details()
 
-		# Shipping and fees are taxed at the rate of the default Item Tax Template. A Shipping Rule charges the
-		# shipping itself, without VAT, so only the VAT on it is booked here.
+		# Shipping and fees are taxed at the rate of the default Item Tax Template, unless the shop left them
+		# untaxed. A Shipping Rule charges the shipping itself, without VAT, so only its VAT is booked here.
 		for charge in build_charges(
 			self.woocommerce_order,
 			wc_server,

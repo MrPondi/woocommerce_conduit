@@ -1423,10 +1423,12 @@ class TestCharges(IntegrationTestCase):
 		self.assertEqual([(c["account_head"], c["tax_amount"]) for c in charges], [("VAT", 3.74)])
 
 	def test_inclusive_charges_have_the_vat_taken_out(self):
+		# A shop that leaves taxes to ERPNext, with prices that include the VAT
 		order = self.order(
 			shipping_total=20,
 			shipping_tax=0,
 			fee_lines=json.dumps([{"name": "Gift wrap", "total": "1.23", "total_tax": "0"}]),
+			tax_lines="[]",
 		)
 		charges = build_charges(order, self.server(), True, [("VAT", 23.0)], True)
 
@@ -1435,6 +1437,29 @@ class TestCharges(IntegrationTestCase):
 			[("Freight", 16.26), ("Freight", 1.0), ("VAT", 3.97)],
 		)
 		self.assertAlmostEqual(sum(c["tax_amount"] for c in charges), 21.23)
+
+	def test_inclusive_charges_woocommerce_taxed_have_its_vat_taken_out(self):
+		order = self.order(shipping_total=16.26, shipping_tax=3.74, fee_lines="[]")
+		charges = build_charges(order, self.server(), True, [("VAT", 23.0)], True)
+		self.assertEqual(
+			[(c["account_head"], c["tax_amount"]) for c in charges], [("Freight", 16.26), ("VAT", 3.74)]
+		)
+
+	def test_inclusive_charges_the_shop_left_untaxed_are_booked_whole(self):
+		# WooCommerce taxed the order (it has tax lines), but not its shipping or the fee
+		order = self.order(
+			shipping_total=20,
+			shipping_tax=0,
+			fee_lines=json.dumps([{"name": "Gift wrap", "total": "1.23", "total_tax": "0"}]),
+		)
+		charges = build_charges(order, self.server(), True, [("VAT", 23.0)], True)
+		self.assertEqual(
+			[(c["account_head"], c["tax_amount"]) for c in charges], [("Freight", 20), ("Freight", 1.23)]
+		)
+
+	def test_shipping_rule_books_no_vat_on_shipping_the_shop_left_untaxed(self):
+		order = self.order(shipping_total=20, shipping_tax=0, fee_lines="[]")
+		self.assertEqual(build_charges(order, self.server(), False, [("VAT", 23.0)], True), [])
 
 	def test_inclusive_charges_without_vat_rows_stay_whole(self):
 		order = self.order(shipping_total=20, shipping_tax=0, fee_lines="[]")
