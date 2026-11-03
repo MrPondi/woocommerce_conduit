@@ -26,6 +26,11 @@ frappe.ui.form.on("WooCommerce Server", {
 		frm.set_query("default_item_tax_template", tax_template_query);
 		frm.set_query("item_tax_template", "tax_class_map", tax_template_query);
 
+		// The Selling rules of the server's company, as a Sales Order offers them
+		frm.set_query("shipping_rule", "shipping_rule_map", () => ({
+			filters: { company: frm.doc.company, shipping_rule_type: "Selling", disabled: 0 },
+		}));
+
 		// The progress of a product import, shown on the server's form. One form is used for every server,
 		// so the events of the others are left out. The bar stays at its end until the form refreshes.
 		frappe.realtime.on("woocommerce_product_import", (data) => {
@@ -145,6 +150,19 @@ frappe.ui.form.on("WooCommerce Server", {
 		});
 	},
 
+	// Add the methods of the shop's shipping zones that the Shipping Method Map lacks, and name the rows of
+	// methods the shop no longer has
+	load_shipping_methods: function (frm) {
+		add_missing_rows(frm, "get_missing_shipping_method_rows", "shipping_rule_map", {
+			added: __("{0} shipping methods added"),
+			none: __("No shipping methods missing"),
+			unreachable: __("Couldn't reach WooCommerce ({0}), no shipping methods were added"),
+			gone: __(
+				"These shipping methods are no longer in the shop's zones: {0}. Their rows stay, for orders shipped with them before they were removed."
+			),
+		});
+	},
+
 	load_tax_classes: function (frm) {
 		add_missing_rows(frm, "get_missing_tax_class_rows", "tax_class_map", {
 			added: __("{0} tax classes added"),
@@ -244,13 +262,14 @@ function untick_conflicting_actions(cdt, cdn, action) {
 		.forEach((other) => frappe.model.set_value(cdt, cdn, other, 0));
 }
 
-// Add the rows of a map table that the server says are missing, and say what happened
+// Add the rows of a map table that the server says are missing, and say what happened. A map whose
+// messages have `gone` also names the rows the server says the shop no longer has.
 function add_missing_rows(frm, method, table, messages) {
 	frm.call({
 		doc: frm.doc,
 		method: method,
 		callback: function (r) {
-			const { rows = [], error } = r.message || {};
+			const { rows = [], gone = [], error } = r.message || {};
 			rows.forEach((row) => frm.add_child(table, row));
 			frm.refresh_field(table);
 			if (error) {
@@ -264,6 +283,15 @@ function add_missing_rows(frm, method, table, messages) {
 				message: rows.length ? messages.added.replace("{0}", rows.length) : messages.none,
 				indicator: rows.length ? "green" : "blue",
 			});
+			if (gone.length && messages.gone) {
+				frappe.msgprint({
+					message: messages.gone.replace(
+						"{0}",
+						gone.map((row) => frappe.utils.escape_html(row)).join(", ")
+					),
+					indicator: "orange",
+				});
+			}
 		},
 	});
 }

@@ -1,4 +1,3 @@
-import json
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -17,7 +16,7 @@ from frappe.utils.data import now
 from frappe.utils.synchronization import filelock
 
 from woocommerce_conduit.exceptions import SyncDisabledError
-from woocommerce_conduit.tasks.order_lines import SalesOrderLinesMixin
+from woocommerce_conduit.tasks.order_lines import SalesOrderLinesMixin, get_json_lines
 from woocommerce_conduit.tasks.order_payment import SalesOrderPaymentMixin, get_payment_method
 from woocommerce_conduit.tasks.order_status import (
 	SalesOrderStatusMixin,
@@ -487,22 +486,12 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		new_sales_order.company = wc_server.company
 		new_sales_order.currency = self.woocommerce_order.currency
 
-		if (
-			(wc_server.enabled_shipping_methods)
-			and (shipping_lines := json.loads(self.woocommerce_order.shipping_lines))
-			and len(wc_server.shipping_rule_map) > 0
+		if wc_server.enabled_shipping_methods and (
+			shipping_lines := get_json_lines(self.woocommerce_order, "shipping_lines")
 		):
-			shipping_rule_mapping = next(
-				(
-					rule
-					for rule in wc_server.shipping_rule_map
-					if rule.wc_shipping_method_id == shipping_lines[0]["method_id"]
-				),
-				None,
-			)
 			# A method without a rule is charged as WooCommerce charged it
-			if shipping_rule_mapping:
-				new_sales_order.shipping_rule = shipping_rule_mapping.shipping_rule
+			if shipping_rule := wc_server.get_shipping_rule(shipping_lines[0]):
+				new_sales_order.shipping_rule = shipping_rule
 
 		self.set_items_in_sales_order(new_sales_order)
 		new_sales_order.woocommerce_last_sync_hash = self.woocommerce_order.woocommerce_date_modified

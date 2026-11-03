@@ -45,6 +45,7 @@
   "payment_method_map",
   "shipping_methods_sync_section",
   "enabled_shipping_methods",
+  "load_shipping_methods",
   "shipping_rule_map",
   "sales_order_status_sync_section",
   "enabled_order_status",
@@ -351,9 +352,16 @@
   },
   {
    "depends_on": "eval: doc.enabled_shipping_methods",
+   "fieldname": "load_shipping_methods",
+   "fieldtype": "Button",
+   "label": "Add Missing Shipping Methods"
+  },
+  {
+   "depends_on": "eval: doc.enabled_shipping_methods",
+   "description": "A new Sales Order gets the Shipping Rule of its order's shipping method. A method without one here is charged as WooCommerce charged it.",
    "fieldname": "shipping_rule_map",
    "fieldtype": "Table",
-   "label": "Map WooCommerce Shipping Methods to ERPNext Shipping Rules",
+   "label": "Shipping Method Map",
    "options": "WooCommerce Server Shipping Rule"
   },
   {
@@ -535,7 +543,7 @@
  "icon": "server-plus",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-03 16:17:15.000000",
+ "modified": "2026-11-03 17:20:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",

@@ -40,6 +40,42 @@ def new_server(**fields):
 	)
 
 
+def shop_api(responses: dict):
+	"""
+	A client of a shop that answers each endpoint with its status code and records
+	"""
+
+	def get(endpoint, *args, **kwargs):
+		status_code, records = responses[endpoint]
+		response = MagicMock(status_code=status_code)
+		response.json.return_value = records
+		return response
+
+	api = MagicMock()
+	api.get.side_effect = get
+	return api
+
+
+# A shop with the zone for the rest of the world, which has no methods, and one for Poland
+SHIPPING_ZONES = {
+	"shipping/zones": (200, [{"id": 0, "name": "Pozostałe lokalizacje"}, {"id": 1, "name": "Polska"}]),
+	"shipping/zones/0/methods": (200, []),
+	"shipping/zones/1/methods": (
+		200,
+		[
+			{"instance_id": 3, "method_id": "flat_rate", "title": "Kurier DPD", "enabled": True},
+			{"instance_id": 4, "method_id": "flat_rate", "title": "Kurier DPD - pobranie", "enabled": True},
+			{
+				"instance_id": 5,
+				"method_id": "local_pickup",
+				"method_title": "Odbiór osobisty",
+				"enabled": False,
+			},
+		],
+	),
+}
+
+
 class TestWooCommerceServer(IntegrationTestCase):
 	def test_url_without_scheme_gets_https(self):
 		self.assertEqual(normalise_server_url("shop.example.com"), "https://shop.example.com")
@@ -121,6 +157,139 @@ class TestWooCommerceServer(IntegrationTestCase):
 		)
 		with self.assertRaises(frappe.ValidationError):
 			server.validate_payment_method_map()
+
+	def test_missing_shipping_methods_come_from_every_zone(self):
+		server = new_server(
+			shipping_rule_map=[{"wc_shipping_method_id": "flat_rate:3", "shipping_rule": "DPD"}]
+		)
+		api = shop_api(SHIPPING_ZONES)
+		with patch.object(type(server), "get_api", return_value=api):
+			result = server.get_missing_shipping_method_rows()
+
+		self.assertEqual(
+			[call.args[0] for call in api.get.call_args_list],
+			["shipping/zones", "shipping/zones/0/methods", "shipping/zones/1/methods"],
+		)
+		self.assertIsNone(result["error"])
+		self.assertEqual(
+			result["rows"],
+			[
+				{
+					"wc_shipping_method_id": "flat_rate:4",
+					"wc_shipping_method_title": "Kurier DPD - pobranie",
+					"wc_shipping_zone": "Polska",
+				},
+				# A disabled method too, by the title of its kind when it has none of its own
+				{
+					"wc_shipping_method_id": "local_pickup:5",
+					"wc_shipping_method_title": "Odbiór osobisty",
+					"wc_shipping_zone": "Polska",
+				},
+			],
+		)
+		self.assertEqual(result["gone"], [])
+
+	def test_shipping_methods_the_shop_no_longer_has_are_named(self):
+		server = new_server(
+			shipping_rule_map=[
+				{
+					"wc_shipping_method_id": "flat_rate:7",
+					"wc_shipping_method_title": "Paczkomaty",
+					"shipping_rule": "InPost",
+				},
+				{"wc_shipping_method_id": "flat_rate:8"},
+				# For every flat rate, which no zone has to have
+				{"wc_shipping_method_id": "flat_rate", "shipping_rule": "Courier"},
+			]
+		)
+		with patch.object(type(server), "get_api", return_value=shop_api(SHIPPING_ZONES)):
+			result = server.get_missing_shipping_method_rows()
+
+		self.assertEqual(result["gone"], ["flat_rate:7 (Paczkomaty)", "flat_rate:8"])
+
+	def test_a_zone_that_cant_be_read_adds_no_shipping_methods(self):
+		server = new_server(shipping_rule_map=[{"wc_shipping_method_id": "flat_rate:7"}])
+		api = shop_api({**SHIPPING_ZONES, "shipping/zones/1/methods": (500, None)})
+		with patch.object(type(server), "get_api", return_value=api):
+			result = server.get_missing_shipping_method_rows()
+
+		# The rest of the world's methods alone would show every method of Poland as gone
+		self.assertEqual(result, {"rows": [], "gone": [], "error": "WooCommerce returned 500"})
+
+	def test_shipping_rule_of_a_shipping_line(self):
+		server = new_server(
+			shipping_rule_map=[
+				{"wc_shipping_method_id": "flat_rate:3", "shipping_rule": "DPD"},
+				{"wc_shipping_method_id": "flat_rate", "shipping_rule": "Courier"},
+				{"wc_shipping_method_id": "local_pickup:5"},
+			]
+		)
+
+		def rule(method_id, instance_id):
+			return server.get_shipping_rule({"method_id": method_id, "instance_id": instance_id})
+
+		self.assertEqual(rule("flat_rate", "3"), "DPD")
+		# Another flat rate, and one without an instance, get the rule of every flat rate
+		self.assertEqual(rule("flat_rate", "4"), "Courier")
+		self.assertEqual(rule("flat_rate", "0"), "Courier")
+		# A row without a rule doesn't count
+		self.assertIsNone(rule("local_pickup", "5"))
+		self.assertIsNone(rule("free_shipping", "6"))
+
+	def test_shipping_method_is_mapped_once(self):
+		server = new_server(
+			shipping_rule_map=[
+				{"wc_shipping_method_id": "flat_rate:3"},
+				{"wc_shipping_method_id": " flat_rate:3 "},
+			]
+		)
+		with self.assertRaises(frappe.ValidationError):
+			server.validate_shipping_rule_map()
+
+	def test_a_shipping_rule_must_fit_a_sales_order_of_the_company(self):
+		def rule(**values):
+			return frappe._dict(
+				{
+					"shipping_rule_type": "Selling",
+					"company": "Prestige Garden",
+					"disabled": 0,
+					"account": "Freight - PG",
+					**values,
+				}
+			)
+
+		rules = {
+			"DPD": rule(),
+			"Purchases": rule(shipping_rule_type="Buying"),
+			"Other company": rule(company="Other", account="Freight - OT"),
+			"Old": rule(disabled=1),
+			"On fees": rule(account="Fees - PG"),
+		}
+		servers = {
+			name: new_server(
+				company="Prestige Garden",
+				freight_and_forwarding_account="Freight - PG",
+				fee_account="Fees - PG",
+				shipping_rule_map=[{"wc_shipping_method_id": "flat_rate:3", "shipping_rule": name}],
+			)
+			for name in rules
+		}
+		# Without a Fee Account the fees are booked on the freight account, as the rule's charge is
+		without_fee_account = new_server(
+			company="Prestige Garden",
+			freight_and_forwarding_account="Freight - PG",
+			shipping_rule_map=[{"wc_shipping_method_id": "flat_rate:3", "shipping_rule": "DPD"}],
+		)
+
+		with patch.object(
+			frappe, "get_cached_value", side_effect=lambda doctype, name, *a, **kw: rules[name]
+		):
+			servers["DPD"].validate_shipping_rule_map()
+			for name in ("Purchases", "Other company", "Old", "On fees"):
+				with self.subTest(rule=name), self.assertRaises(frappe.ValidationError):
+					servers[name].validate_shipping_rule_map()
+			with self.assertRaises(frappe.ValidationError):
+				without_fee_account.validate_shipping_rule_map()
 
 	def test_missing_tax_classes_are_read_from_the_shop(self):
 		server = new_server(

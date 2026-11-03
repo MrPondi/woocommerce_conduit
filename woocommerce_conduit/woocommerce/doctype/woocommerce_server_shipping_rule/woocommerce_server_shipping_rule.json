@@ -7,31 +7,51 @@
  "engine": "InnoDB",
  "field_order": [
   "wc_shipping_method_id",
+  "wc_shipping_method_title",
+  "wc_shipping_zone",
   "shipping_rule"
  ],
  "fields": [
   {
-   "description": "The <code>method_id</code> of the shipping line in <i>WooCommerce Order</i> &gt; <i>Shipping lines</i>, for example <code>flat_rate</code>",
+   "columns": 4,
+   "description": "A method of a shipping zone as WooCommerce names it, <code>method_id:instance_id</code>, for example <code>flat_rate:3</code>. A bare <code>method_id</code>, such as <code>flat_rate</code>, is for every method of that kind that has no rule of its own.",
    "fieldname": "wc_shipping_method_id",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "WooCommerce Shipping Method ID",
+   "label": "WooCommerce Shipping Method",
    "reqd": 1
   },
   {
+   "columns": 4,
+   "fieldname": "wc_shipping_method_title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Title",
+   "read_only": 1
+  },
+  {
+   "columns": 3,
+   "fieldname": "wc_shipping_zone",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Zone",
+   "read_only": 1
+  },
+  {
+   "columns": 3,
+   "description": "Orders shipped with this method get this Shipping Rule, which works out their shipping charge. Give it the shop's shipping without VAT: the VAT the shop charged is booked beside it, and an order whose total then differs from the shop's is flagged. Leave it empty to charge shipping as WooCommerce did.",
    "fieldname": "shipping_rule",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Shipping Rule",
-   "options": "Shipping Rule",
-   "reqd": 1
+   "options": "Shipping Rule"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-11-01 14:04:57.325934",
+ "modified": "2026-11-03 17:50:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server Shipping Rule",

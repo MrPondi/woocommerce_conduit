@@ -26,6 +26,9 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woo
 	get_default_status_rows,
 	normalise_status,
 )
+from woocommerce_conduit.woocommerce.doctype.woocommerce_server_shipping_rule.woocommerce_server_shipping_rule import (
+	get_shipping_method_key,
+)
 from woocommerce_conduit.woocommerce.woocommerce_api import WooCommerceAPI, clear_api_clients
 
 
@@ -169,6 +172,8 @@ class WooCommerceServer(Document):
 			self.add_missing_payment_methods()
 		if not self.tax_class_map and not frappe.in_test:
 			self.add_missing_tax_classes()
+		if not self.shipping_rule_map and not frappe.in_test:
+			self.add_missing_shipping_methods()
 
 	def validate(self):
 		self.validate_woocommerce_url()
@@ -177,6 +182,7 @@ class WooCommerceServer(Document):
 			self.test_api_credentials()
 		self.validate_so_status_map()
 		self.validate_payment_method_map()
+		self.validate_shipping_rule_map()
 		self.validate_tax_class_map()
 		self.validate_tax_templates()
 		self.validate_item_map()
@@ -335,19 +341,29 @@ class WooCommerceServer(Document):
 			None,
 		)
 
-	def fetch_names(self, endpoint: str, id_key: str, name_key: str) -> tuple[dict[str, str], str | None]:
+	def fetch_list(self, endpoint: str) -> tuple[list[dict], str | None]:
 		"""
-		The id and name of every record of a list endpoint of the shop, and why it couldn't be read. The
-		error is returned rather than raised, as the callers can go on with what they know without it.
+		The records of a list endpoint of the shop, and why they couldn't be read. The error is returned
+		rather than raised, as the callers can go on with what they know without it.
 		"""
 		try:
 			response = self.get_api().get(endpoint)
 			if response.status_code != 200:
-				return {}, _("WooCommerce returned {0}").format(response.status_code)
-			return {cstr(row[id_key]): cstr(row[name_key]) for row in response.json()}, None
+				return [], _("WooCommerce returned {0}").format(response.status_code)
+			records = response.json()
+			if not isinstance(records, list):
+				return [], _("WooCommerce returned no list")
+			return records, None
 		except Exception as e:
 			frappe.log_error("WooCommerce Error", frappe.get_traceback())
-			return {}, cstr(e) or e.__class__.__name__
+			return [], cstr(e) or e.__class__.__name__
+
+	def fetch_names(self, endpoint: str, id_key: str, name_key: str) -> tuple[dict[str, str], str | None]:
+		"""
+		The id and name of every record of a list endpoint of the shop, and why it couldn't be read
+		"""
+		records, error = self.fetch_list(endpoint)
+		return {cstr(row.get(id_key)): cstr(row.get(name_key)) for row in records}, error
 
 	def fetch_order_statuses(self) -> tuple[dict[str, str], str | None]:
 		"""
@@ -452,6 +468,140 @@ class WooCommerceServer(Document):
 		"""
 		live_methods, error = self.fetch_payment_methods()
 		return {"rows": self.get_payment_method_rows(live_methods), "error": error}
+
+	def validate_shipping_rule_map(self):
+		"""
+		One row per shipping method, and a Shipping Rule that a Sales Order of the server's company can take:
+		ERPNext refuses a rule that isn't for selling, and books one of another company on its accounts. It
+		puts the rule's charge on the last Actual row of the rule's account, so a rule on the account the
+		order's fees are booked on would charge the shipping in place of a fee.
+		"""
+		fee_account = self.fee_account or self.freight_and_forwarding_account
+		seen = set()
+		for row in self.shipping_rule_map:
+			row.wc_shipping_method_id = cstr(row.wc_shipping_method_id).strip()
+			if row.wc_shipping_method_id in seen:
+				frappe.throw(
+					_("Row {0}: Shipping method {1} is in the Shipping Method Map more than once").format(
+						row.idx, frappe.bold(row.wc_shipping_method_id)
+					)
+				)
+			seen.add(row.wc_shipping_method_id)
+
+			rule = row.shipping_rule and frappe.get_cached_value(
+				"Shipping Rule",
+				row.shipping_rule,
+				["shipping_rule_type", "company", "disabled", "account"],
+				as_dict=True,
+			)
+			if not rule:
+				continue
+			if rule.shipping_rule_type != "Selling":
+				frappe.throw(
+					_("Row {0}: Shipping Rule {1} isn't for selling, so a Sales Order can't take it").format(
+						row.idx, frappe.bold(row.shipping_rule)
+					)
+				)
+			if self.company and rule.company != self.company:
+				frappe.throw(
+					_("Row {0}: Shipping Rule {1} is for company {2}, not {3}").format(
+						row.idx,
+						frappe.bold(row.shipping_rule),
+						frappe.bold(rule.company),
+						frappe.bold(self.company),
+					)
+				)
+			if rule.disabled:
+				frappe.throw(
+					_("Row {0}: Shipping Rule {1} is disabled").format(
+						row.idx, frappe.bold(row.shipping_rule)
+					)
+				)
+			if fee_account and rule.account == fee_account:
+				frappe.throw(
+					_(
+						"Row {0}: Shipping Rule {1} books on {2}, as the order's fees are, so ERPNext would charge the shipping in place of a fee. Set a Fee Account, or give the rule another account."
+					).format(row.idx, frappe.bold(row.shipping_rule), frappe.bold(rule.account))
+				)
+
+	def get_shipping_rule(self, shipping_line: dict) -> str | None:
+		"""
+		The Shipping Rule for an order shipped with this line's method: the rule of the method's row, else the
+		one of the row of its kind of method (a bare method id), else None. A row without a rule doesn't count.
+		"""
+		rules = {
+			row.wc_shipping_method_id: row.shipping_rule
+			for row in self.shipping_rule_map
+			if row.shipping_rule
+		}
+		method_id = cstr(shipping_line.get("method_id")).strip()
+		key = get_shipping_method_key(method_id, shipping_line.get("instance_id"))
+		return rules.get(key) or rules.get(method_id)
+
+	def fetch_shipping_methods(self) -> tuple[dict[str, tuple[str, str]], str | None]:
+		"""
+		The methods of every shipping zone of the shop by `method_id:instance_id`, each with the zone's name
+		and the title customers see. The disabled ones are included, as older orders can have been shipped
+		with them. Nothing when a zone can't be read, as the others' methods would show its own as gone.
+		"""
+		zones, error = self.fetch_names("shipping/zones", "id", "name")
+		methods = {}
+		for zone_id, zone_name in zones.items():
+			zone_methods, error = self.fetch_list(f"shipping/zones/{zone_id}/methods")
+			if error:
+				return {}, error
+			for method in zone_methods:
+				if key := get_shipping_method_key(method.get("method_id"), method.get("instance_id")):
+					methods[key] = (zone_name, cstr(method.get("title")) or cstr(method.get("method_title")))
+		return methods, error
+
+	def get_shipping_method_rows(self, live_methods: dict[str, tuple[str, str]]) -> list[dict]:
+		existing = {cstr(row.wc_shipping_method_id).strip() for row in self.shipping_rule_map}
+		return [
+			{
+				"wc_shipping_method_id": method,
+				"wc_shipping_method_title": title or method,
+				"wc_shipping_zone": zone,
+			}
+			for method, (zone, title) in live_methods.items()
+			if method not in existing
+		]
+
+	def get_gone_shipping_methods(self, live_methods: dict[str, tuple[str, str]]) -> list[str]:
+		"""
+		The rows of methods of a zone that the shop no longer has, each as its method and title. A bare
+		method id is for every method of its kind, which no zone has to have, so it is never gone.
+		"""
+		gone = []
+		for row in self.shipping_rule_map:
+			method = cstr(row.wc_shipping_method_id).strip()
+			if ":" in method and method not in live_methods:
+				gone.append(
+					f"{method} ({row.wc_shipping_method_title})" if row.wc_shipping_method_title else method
+				)
+		return gone
+
+	def add_missing_shipping_methods(self) -> list[dict]:
+		"""
+		Add a row, without a Shipping Rule, for each method of the shop's shipping zones the map lacks
+		"""
+		rows = self.get_shipping_method_rows(self.fetch_shipping_methods()[0])
+		for row in rows:
+			self.append("shipping_rule_map", row)
+		return rows
+
+	@frappe.whitelist()
+	def get_missing_shipping_method_rows(self) -> dict:
+		"""
+		The rows the Shipping Method Map lacks, for the form to add, the rows of methods the shop no longer
+		has, and why the shop couldn't be read if it couldn't
+		"""
+		live_methods, error = self.fetch_shipping_methods()
+		return {
+			"rows": self.get_shipping_method_rows(live_methods),
+			"gone": [] if error else self.get_gone_shipping_methods(live_methods),
+			"error": error,
+		}
 
 	def validate_tax_class_map(self):
 		"""

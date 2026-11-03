@@ -43,6 +43,18 @@ A mapped method is booked once `date_paid` is set, which WooCommerce does when a
 
 Start at: `SalesOrderPaymentMixin.create_payment_entry`, `woocommerce_server_payment_method.json`, `woocommerce_server_order_status.json`.
 
+### Shipping methods outside the zones
+
+Add Missing Shipping Methods reads the methods of the shop's shipping zones. Some orders are shipped with a method no zone lists: WooCommerce's block-based local pickup (`pickup_location`), plugin methods, and orders made in the admin or imported from elsewhere. They get a Shipping Rule only through a bare `method_id` row typed by hand. Reading the shipping lines of the latest orders, as Check Order Items does for their products, would find them and could add their rows.
+
+Start at: `item_parity.get_unlinked_order_products`, `WooCommerceServer.fetch_shipping_methods`.
+
+### Shipping Rules for some countries
+
+ERPNext refuses a Shipping Rule whose Valid for Countries leaves out the order's shipping country (`ShippingRule.validate_countries`), so a Sales Order with such a rule isn't made and the order's sync fails. Give the Sales Order the rule only where it applies, and charge the shipping as WooCommerce did otherwise, flagging the order.
+
+Start at: `SynchroniseSalesOrder.create_sales_order`, `WooCommerceServer.get_shipping_rule`.
+
 ## Customers
 
 ### Duplicate Customers report
