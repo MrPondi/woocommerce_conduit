@@ -39,9 +39,9 @@ Start at: `order_lines.build_charges`.
 
 ### What counts as paid, per payment method
 
-A mapped method is booked once `date_paid` is set, which WooCommerce does when a payment completes or the order reaches processing or completed. An order that a gateway or plugin marks paid with a status of its own isn't booked until it is completed. Cash on delivery goes the other way: WooCommerce puts the order in processing at checkout, so a mapped COD method is booked as paid before the courier has collected the money. Fusion can ignore the date for a whole server (`ignore_date_paid`), which books pending orders as well. Say per method, or per status of the Order Status Map, what counts as paid instead.
+A mapped method is booked once `date_paid` is set, which WooCommerce does when a payment completes or the order reaches processing or completed. An order that a gateway or plugin marks paid with a status of its own isn't booked until it is completed. Cash on delivery goes the other way: WooCommerce puts the order in processing at checkout, so a mapped COD method is booked as paid before the courier has collected the money. Fusion can ignore the date for a whole server (`ignore_date_paid`), which books pending orders as well. Say per method, or per status of the Order Status Map (a check beside its actions), what counts as paid instead.
 
-Start at: `SalesOrderPaymentMixin.create_payment_entry`, `woocommerce_server_payment_method.json`.
+Start at: `SalesOrderPaymentMixin.create_payment_entry`, `woocommerce_server_payment_method.json`, `woocommerce_server_order_status.json`.
 
 ## Customers
 

@@ -9,3 +9,4 @@ woocommerce_conduit.patches.v1.set_customer_woocommerce_server
 woocommerce_conduit.patches.v1.unescape_woocommerce_names
 woocommerce_conduit.patches.v1.set_item_default_warehouses
 woocommerce_conduit.patches.v1.mark_custom_fields_system_generated
+woocommerce_conduit.patches.v1.tick_order_status_actions

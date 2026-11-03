@@ -32,10 +32,9 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_serv
 	WooCommerceServer,
 )
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
-	ACTION_STATUS_ONLY,
-	ACTION_SUBMIT_HOLD,
-	ACTION_SUBMIT_INVOICE_HOLD,
-	CREATING_ACTIONS,
+	ACTION_HOLD,
+	ACTION_INVOICE,
+	ACTION_SUBMIT,
 	ENDING_ACTIONS,
 	normalise_status,
 )
@@ -361,22 +360,22 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		)  # type: ignore
 		status_row = wc_server.get_order_status_row(self.woocommerce_order.status)
 		# A status that the map doesn't know leaves ERPNext as it is
-		action = status_row.erpnext_action if status_row else ACTION_STATUS_ONLY
+		actions = status_row.get_actions() if status_row else frozenset()
 
 		if not self.sales_order:
 			# Only some statuses mean there is an order to keep. For the others nothing is made, and that
 			# includes the Customer, Address and Contact that a Sales Order would need.
-			if action not in CREATING_ACTIONS:
+			if ACTION_SUBMIT not in actions:
 				return
-			self.create_sales_order(action)
+			self.create_sales_order(actions)
 		# WooCommerce only wins when it changed since the last pull or push
 		elif wc_order_changed(
 			self.woocommerce_order.woocommerce_date_modified, self.sales_order.woocommerce_last_sync_hash
 		):
-			self.update_sales_order(action)
+			self.update_sales_order(actions)
 
 		# Also when nothing changed, as the Sales Order may have been submitted in the mean time
-		self.sync_invoice_and_payment(action)
+		self.sync_invoice_and_payment(actions)
 
 	def push_status_to_woocommerce(self):
 		"""
@@ -413,7 +412,7 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 			update_modified=False,
 		)
 
-	def update_sales_order(self, action: str = ACTION_STATUS_ONLY):
+	def update_sales_order(self, actions: frozenset[str] = frozenset()):
 		"""
 		Update the ERPNext Sales Order with fields from it's corresponding WooCommerce Order
 		"""
@@ -440,16 +439,16 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 			self.sales_order.db_set(values, update_modified=False)
 
 			# The lines of an order that is being cancelled or closed don't matter any more
-			if self.sales_order.docstatus == 1 and not (status_changed and action in ENDING_ACTIONS):
+			if self.sales_order.docstatus == 1 and not (status_changed and actions & ENDING_ACTIONS):
 				self.run_flagged(self.update_sales_order_items, _("The lines could not be updated: {0}"))
 				self.sales_order.reload()
 
 			# What a status means is done once, when it changes. Otherwise editing the note of an order would
 			# undo a hold that was put on its Sales Order in ERPNext.
 			if status_changed:
-				self.apply_status_action(action)
+				self.apply_status_actions(actions)
 
-	def create_sales_order(self, action: str) -> None:
+	def create_sales_order(self, actions: frozenset[str]) -> None:
 		"""
 		Create an ERPNext Sales Order from the given WooCommerce Order
 		"""
@@ -524,10 +523,10 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 
 		self.sales_order = new_sales_order
 		try:
-			if action == ACTION_SUBMIT_HOLD:
-				self.hold_sales_order()
-			elif action == ACTION_SUBMIT_INVOICE_HOLD:
+			if ACTION_HOLD in actions and ACTION_INVOICE in actions:
 				self.invoice_and_hold()
+			elif ACTION_HOLD in actions:
+				self.hold_sales_order()
 		except Exception:
 			# The Sales Order is made, so a hold that fails must not undo it
 			error_message = f"{frappe.get_traceback()}\n\nSales Order Data{new_sales_order.as_dict()!s}"

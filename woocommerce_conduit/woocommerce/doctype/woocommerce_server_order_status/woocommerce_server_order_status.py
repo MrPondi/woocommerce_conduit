@@ -3,50 +3,54 @@
 
 from frappe.model.document import Document
 
-# What a WooCommerce Order with a status means in ERPNext. The statuses are WooCommerce's, and a shop can
-# have more than the core ones, so the server keeps a table of them instead of this code knowing them all.
-ACTION_SKIP = "Skip"
-ACTION_SUBMIT = "Submit SO"
-ACTION_SUBMIT_INVOICE = "Submit SO + Invoice"
-ACTION_SUBMIT_HOLD = "Submit SO + Hold"
-ACTION_SUBMIT_INVOICE_HOLD = "Submit SO + Invoice + Hold"
-ACTION_COMPLETE = "Complete SO"
-ACTION_CANCEL = "Cancel SO"
-ACTION_CLOSE = "Close SO"
-ACTION_STATUS_ONLY = "Status only"
+# What a WooCommerce Order with a status does in ERPNext, each action a Check of the status row. The statuses
+# are WooCommerce's, and a shop can have more than the core ones, so the server keeps a table of them instead
+# of this code knowing them all. A status that ticks nothing, or that the map doesn't know, only updates the
+# Sales Order of an order.
 
-# The actions for which a Sales Order is created when there is none yet. Every other action only acts on a
-# Sales Order that exists, so an order first seen with it (say one that failed, or was cancelled or refunded
+# The one action that creates a Sales Order when there is none yet. Every other action only acts on a Sales
+# Order that exists, so an order first seen without it (say one that failed, or was cancelled or refunded
 # before it was ever synced) stays out of ERPNext, and no Customer, Address or Contact is made for it either.
-CREATING_ACTIONS = (
+ACTION_SUBMIT = "action_submit"
+ACTION_INVOICE = "action_invoice"
+ACTION_DELIVER = "action_deliver"
+# ERPNext doesn't invoice a held order, so with an invoice the hold comes after it
+ACTION_HOLD = "action_hold"
+ACTION_CANCEL = "action_cancel"
+ACTION_CLOSE = "action_close"
+# Orders with the status are left out of the hourly sync, as nothing is to be done with them
+ACTION_SKIP = "action_skip"
+ACTIONS = (
 	ACTION_SUBMIT,
-	ACTION_SUBMIT_INVOICE,
-	ACTION_SUBMIT_HOLD,
-	ACTION_SUBMIT_INVOICE_HOLD,
-	ACTION_COMPLETE,
+	ACTION_INVOICE,
+	ACTION_DELIVER,
+	ACTION_HOLD,
+	ACTION_CANCEL,
+	ACTION_CLOSE,
+	ACTION_SKIP,
 )
-# The actions for which a Sales Invoice is made
-INVOICING_ACTIONS = (ACTION_SUBMIT_INVOICE, ACTION_SUBMIT_INVOICE_HOLD, ACTION_COMPLETE)
-# The actions that put the Sales Order on hold. ERPNext doesn't invoice a held order, so with an invoice
-# the hold comes after it.
-HOLDING_ACTIONS = (ACTION_SUBMIT_HOLD, ACTION_SUBMIT_INVOICE_HOLD)
+
+# The actions that are ticked alone, as nothing else is done with an order that is cancelled, closed or skipped
+SOLE_ACTIONS = frozenset({ACTION_CANCEL, ACTION_CLOSE, ACTION_SKIP})
 # The actions after which a Sales Order is not changed any more
-ENDING_ACTIONS = (ACTION_CANCEL, ACTION_CLOSE)
+ENDING_ACTIONS = frozenset({ACTION_CANCEL, ACTION_CLOSE})
+# The actions that lift a hold, as ERPNext doesn't invoice or deliver an order on hold
+RESUMING_ACTIONS = frozenset({ACTION_SUBMIT, ACTION_INVOICE, ACTION_DELIVER})
 
 # The payment gateway decides on these, so ERPNext must not push them over the gateway's
 PAYMENT_OWNED_STATUSES = ("checkout-draft", "pending", "failed", "on-hold", "processing")
 
-# (slug, label, action, the Sales Order status that is pushed as this status)
+# (slug, label, actions, the Sales Order status that is pushed as this status)
 DEFAULT_STATUSES = (
-	("checkout-draft", "Draft", ACTION_SKIP, ""),
-	("pending", "Pending payment", ACTION_SUBMIT_INVOICE, ""),
-	("failed", "Failed", ACTION_CANCEL, ""),
-	("on-hold", "On hold", ACTION_SUBMIT_HOLD, ""),
-	("processing", "Processing", ACTION_SUBMIT_INVOICE, ""),
-	("completed", "Completed", ACTION_COMPLETE, "Completed"),
-	("cancelled", "Cancelled", ACTION_CANCEL, "Cancelled"),
-	("refunded", "Refunded", ACTION_CLOSE, ""),
-	("trash", "Trash", ACTION_CANCEL, ""),
+	("checkout-draft", "Draft", (ACTION_SKIP,), ""),
+	("pending", "Pending payment", (ACTION_SUBMIT, ACTION_INVOICE), ""),
+	("failed", "Failed", (ACTION_CANCEL,), ""),
+	("on-hold", "On hold", (ACTION_SUBMIT, ACTION_HOLD), ""),
+	("processing", "Processing", (ACTION_SUBMIT, ACTION_INVOICE), ""),
+	("completed", "Completed", (ACTION_SUBMIT, ACTION_INVOICE, ACTION_DELIVER), "Completed"),
+	("cancelled", "Cancelled", (ACTION_CANCEL,), "Cancelled"),
+	("refunded", "Refunded", (ACTION_CLOSE,), ""),
+	("trash", "Trash", (ACTION_CANCEL,), ""),
 )
 
 
@@ -69,13 +73,13 @@ def get_default_status_rows(
 	existing = {normalise_status(slug) for slug in existing}
 
 	rows = []
-	for slug, label, action, push_status in DEFAULT_STATUSES:
+	for slug, label, actions, push_status in DEFAULT_STATUSES:
 		if slug not in existing:
 			rows.append(
 				{
 					"woocommerce_status": slug,
 					"woocommerce_status_label": live.get(slug, label),
-					"erpnext_action": action,
+					**dict.fromkeys(actions, 1),
 					"push_from_erpnext_status": push_status,
 				}
 			)
@@ -83,13 +87,9 @@ def get_default_status_rows(
 	core = {slug for slug, *_ in DEFAULT_STATUSES}
 	for slug, name in live.items():
 		if slug and slug not in existing and slug not in core:
+			# Nothing ticked
 			rows.append(
-				{
-					"woocommerce_status": slug,
-					"woocommerce_status_label": name,
-					"erpnext_action": ACTION_STATUS_ONLY,
-					"push_from_erpnext_status": "",
-				}
+				{"woocommerce_status": slug, "woocommerce_status_label": name, "push_from_erpnext_status": ""}
 			)
 	return rows
 
@@ -103,17 +103,13 @@ class WooCommerceServerOrderStatus(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		erpnext_action: DF.Literal[
-			"Skip",
-			"Submit SO",
-			"Submit SO + Invoice",
-			"Submit SO + Hold",
-			"Submit SO + Invoice + Hold",
-			"Complete SO",
-			"Cancel SO",
-			"Close SO",
-			"Status only",
-		]
+		action_cancel: DF.Check
+		action_close: DF.Check
+		action_deliver: DF.Check
+		action_hold: DF.Check
+		action_invoice: DF.Check
+		action_skip: DF.Check
+		action_submit: DF.Check
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
@@ -132,4 +128,8 @@ class WooCommerceServerOrderStatus(Document):
 		woocommerce_status_label: DF.Data | None
 	# end: auto-generated types
 
-	pass
+	def get_actions(self) -> frozenset[str]:
+		"""
+		The actions that the row ticks
+		"""
+		return frozenset(action for action in ACTIONS if self.get(action))

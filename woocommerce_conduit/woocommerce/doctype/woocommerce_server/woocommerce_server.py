@@ -18,7 +18,11 @@ from woocommerce_conduit.tasks.field_map import (
 )
 from woocommerce_conduit.tasks.taxes import get_vat_rows, normalise_tax_class
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
+	ACTION_DELIVER,
+	ACTION_HOLD,
+	ACTIONS,
 	PAYMENT_OWNED_STATUSES,
+	SOLE_ACTIONS,
 	get_default_status_rows,
 	normalise_status,
 )
@@ -46,6 +50,27 @@ def get_mode_of_payment_account(mode_of_payment: str, company: str) -> str | Non
 	return frappe.db.get_value(
 		"Mode of Payment Account", {"parent": mode_of_payment, "company": company}, "default_account"
 	)
+
+
+def validate_status_actions(row) -> None:
+	"""
+	The actions that a row of the Sales Order Status Map ticks go together: Cancel, Close and Skip are ticked
+	alone, and Hold not with Deliver. The form unticks the others in the same way.
+	"""
+
+	def label(action: str) -> str:
+		return frappe.bold(_(row.meta.get_label(action)))
+
+	actions = row.get_actions()
+	sole = [action for action in ACTIONS if action in actions & SOLE_ACTIONS]
+	if sole and len(actions) > 1:
+		frappe.throw(_("Row {0}: {1} can't be ticked with other actions").format(row.idx, label(sole[0])))
+	if {ACTION_HOLD, ACTION_DELIVER} <= actions:
+		frappe.throw(
+			_(
+				"Row {0}: ERPNext doesn't deliver an order on hold, so {1} and {2} can't both be ticked"
+			).format(row.idx, label(ACTION_HOLD), label(ACTION_DELIVER))
+		)
 
 
 class WooCommerceServer(Document):
@@ -257,8 +282,8 @@ class WooCommerceServer(Document):
 
 	def validate_so_status_map(self):
 		"""
-		Validate the Sales Order Status Map: one row per WooCommerce status, one status to push per ERPNext
-		status, and nothing pushed over a status that the payment gateway sets
+		Validate the Sales Order Status Map: one row per WooCommerce status, actions that go together, one
+		status to push per ERPNext status, and nothing pushed over a status that the payment gateway sets
 		"""
 		seen_statuses, seen_pushes = set(), set()
 		for row in self.sales_order_status_map:
@@ -273,6 +298,7 @@ class WooCommerceServer(Document):
 					).format(row.idx, frappe.bold(row.woocommerce_status))
 				)
 			seen_statuses.add(row.woocommerce_status)
+			validate_status_actions(row)
 
 			if not row.push_from_erpnext_status:
 				continue

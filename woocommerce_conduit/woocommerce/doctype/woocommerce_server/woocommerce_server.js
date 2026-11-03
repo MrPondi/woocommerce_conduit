@@ -209,6 +209,41 @@ frappe.ui.form.on("WooCommerce Server", {
 	},
 });
 
+// The actions of the Order Status Map that can't be ticked together, which the server refuses as well
+// (validate_status_actions): Cancel, Close and Skip are ticked alone, and Hold not with Deliver. Ticking an
+// action unticks those it can't go with.
+const STATUS_ACTIONS = [
+	"action_submit",
+	"action_invoice",
+	"action_deliver",
+	"action_hold",
+	"action_cancel",
+	"action_close",
+	"action_skip",
+];
+const SOLE_STATUS_ACTIONS = ["action_cancel", "action_close", "action_skip"];
+
+frappe.ui.form.on(
+	"WooCommerce Server Order Status",
+	Object.fromEntries(
+		STATUS_ACTIONS.map((action) => [
+			action,
+			(frm, cdt, cdn) => untick_conflicting_actions(cdt, cdn, action),
+		])
+	)
+);
+
+function untick_conflicting_actions(cdt, cdn, action) {
+	const row = locals[cdt][cdn];
+	if (!row[action]) return;
+	let conflicting = SOLE_STATUS_ACTIONS.includes(action) ? STATUS_ACTIONS : SOLE_STATUS_ACTIONS;
+	if (action === "action_hold") conflicting = [...conflicting, "action_deliver"];
+	if (action === "action_deliver") conflicting = [...conflicting, "action_hold"];
+	conflicting
+		.filter((other) => other !== action && row[other])
+		.forEach((other) => frappe.model.set_value(cdt, cdn, other, 0));
+}
+
 // Add the rows of a map table that the server says are missing, and say what happened
 function add_missing_rows(frm, method, table, messages) {
 	frm.call({

@@ -7,13 +7,11 @@ from frappe.utils import cstr, flt
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 	ACTION_CANCEL,
 	ACTION_CLOSE,
-	ACTION_COMPLETE,
+	ACTION_HOLD,
+	ACTION_INVOICE,
 	ACTION_SKIP,
-	ACTION_SUBMIT,
-	ACTION_SUBMIT_HOLD,
-	ACTION_SUBMIT_INVOICE,
-	ACTION_SUBMIT_INVOICE_HOLD,
 	DEFAULT_STATUSES,
+	RESUMING_ACTIONS,
 	normalise_status,
 )
 
@@ -32,10 +30,10 @@ def get_statuses_to_sync() -> list[str]:
 		statuses.update(
 			row.woocommerce_status
 			for row in server.sales_order_status_map
-			if row.erpnext_action != ACTION_SKIP
+			if ACTION_SKIP not in row.get_actions()
 		)
 	return sorted(
-		statuses or {slug for slug, _label, action, _push in DEFAULT_STATUSES if action != ACTION_SKIP}
+		statuses or {slug for slug, _label, actions, _push in DEFAULT_STATUSES if ACTION_SKIP not in actions}
 	)
 
 
@@ -88,21 +86,21 @@ class SalesOrderStatusMixin:
 
 	sales_order: SyncedOrder
 
-	def apply_status_action(self, action: str) -> None:
+	def apply_status_actions(self, actions: frozenset[str]) -> None:
 		# The status changes made here must not be pushed back to WooCommerce
 		self.sales_order.flags.created_by_sync = True
 
-		if action in (ACTION_SUBMIT, ACTION_SUBMIT_INVOICE, ACTION_COMPLETE):
-			self.resume_sales_order()
-		elif action == ACTION_SUBMIT_HOLD:
-			self.hold_sales_order()
-		elif action == ACTION_SUBMIT_INVOICE_HOLD:
+		if ACTION_CANCEL in actions:
+			self.cancel_sales_order()
+		elif ACTION_CLOSE in actions:
+			self.close_sales_order()
+		elif ACTION_HOLD in actions and ACTION_INVOICE in actions:
 			self.resume_sales_order()
 			self.invoice_and_hold()
-		elif action == ACTION_CANCEL:
-			self.cancel_sales_order()
-		elif action == ACTION_CLOSE:
-			self.close_sales_order()
+		elif ACTION_HOLD in actions:
+			self.hold_sales_order()
+		elif actions & RESUMING_ACTIONS:
+			self.resume_sales_order()
 
 	def flag_sync_issue(self, message: str) -> None:
 		# Added to the issues flagged before, so a later step doesn't hide one a person still has to look at
