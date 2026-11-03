@@ -502,7 +502,8 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		new_sales_order.customer = customer_docname
 		new_sales_order.woocommerce_id = self.woocommerce_order.woocommerce_id
 		# The number the customer sees, which plugins can make differ from the id
-		new_sales_order.po_no = self.woocommerce_order.number or self.woocommerce_order.woocommerce_id
+		order_number = self.woocommerce_order.number or self.woocommerce_order.woocommerce_id
+		new_sales_order.po_no = order_number
 		if self.woocommerce_order.customer_note:
 			new_sales_order.woocommerce_customer_note = self.woocommerce_order.customer_note
 
@@ -532,7 +533,9 @@ class SynchroniseSalesOrder(SalesOrderStatusMixin, SalesOrderPaymentMixin, Sales
 		new_sales_order.woocommerce_last_sync_hash = self.woocommerce_order.woocommerce_date_modified
 		new_sales_order.flags.ignore_mandatory = True
 		new_sales_order.flags.created_by_sync = True
-		new_sales_order.insert()
+		# Named here rather than by a hook or a Sales Order class, which could clash with other apps and would
+		# name the Sales Orders made by hand too. None leaves it to the naming series.
+		new_sales_order.insert(set_name=get_sales_order_name(wc_server, order_number))
 
 		# Kept, but flagged for a person to look at
 		issues = list(self.line_issues)
@@ -836,6 +839,21 @@ def find_sales_order(woocommerce_server: str, woocommerce_id) -> str | None:
 		(row.name for row in sales_orders if row.docstatus < 2),
 		sales_orders[0].name if sales_orders else None,
 	)
+
+
+def get_sales_order_name(wc_server, order_number) -> str | None:
+	"""
+	The name of a new Sales Order, when its server names them by order number: the server's prefix and the
+	number. None for the naming series: when the server doesn't, or when the name is taken (by another shop's
+	order or a Sales Order made by hand) or isn't one Frappe takes.
+	"""
+	order_number = cstr(order_number).strip()
+	if not (wc_server.get("name_sales_orders_by_number") and order_number):
+		return None
+	name = cstr(wc_server.get("sales_order_prefix")).strip() + order_number
+	if len(name) > 140 or "<" in name or ">" in name or frappe.db.exists("Sales Order", name):
+		return None
+	return name
 
 
 def wc_order_changed(woocommerce_date_modified, last_sync_hash) -> bool:

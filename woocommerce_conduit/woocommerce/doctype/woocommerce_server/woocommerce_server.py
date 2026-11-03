@@ -129,6 +129,7 @@ class WooCommerceServer(Document):
 		last_sync_time: DF.Datetime | None
 		log_all_requests: DF.Check
 		name_by: DF.Literal["WooCommerce ID", "Product SKU"]
+		name_sales_orders_by_number: DF.Check
 		order_item_field_map: DF.Table[WooCommerceServerOrderItemField]
 		order_sync_paused_since: DF.Datetime | None
 		pause_order_sync: DF.Check
@@ -136,6 +137,7 @@ class WooCommerceServer(Document):
 		price_list: DF.Link | None
 		price_list_delay_per_item: DF.Float
 		push_zero_stock_for_disabled_items: DF.Check
+		sales_order_prefix: DF.Data | None
 		sales_order_status_map: DF.Table[WooCommerceServerOrderStatus]
 		sales_price_list: DF.Link | None
 		sales_taxes_and_charges_template: DF.Link
@@ -187,6 +189,7 @@ class WooCommerceServer(Document):
 		self.validate_tax_templates()
 		self.validate_item_map()
 		self.validate_order_item_map()
+		self.validate_sales_order_prefix()
 
 		if not self.secret:
 			self.secret = frappe.generate_hash()
@@ -468,6 +471,29 @@ class WooCommerceServer(Document):
 		"""
 		live_methods, error = self.fetch_payment_methods()
 		return {"rows": self.get_payment_method_rows(live_methods), "error": error}
+
+	def validate_sales_order_prefix(self):
+		"""
+		A prefix that names Sales Orders by order number apart from those of the other shops, whose order
+		numbers repeat, and that Frappe takes in a name
+		"""
+		if not self.name_sales_orders_by_number:
+			return
+		self.sales_order_prefix = cstr(self.sales_order_prefix).strip()
+		if "<" in self.sales_order_prefix or ">" in self.sales_order_prefix:
+			frappe.throw(_("The Sales Order Prefix can't contain < or >"))
+
+		for other in frappe.get_all(
+			"WooCommerce Server",
+			filters={"name": ["!=", self.name or ""], "name_sales_orders_by_number": 1},
+			fields=["name", "sales_order_prefix"],
+		):
+			if cstr(other.sales_order_prefix).strip() == self.sales_order_prefix:
+				frappe.throw(
+					_(
+						"WooCommerce Server {0} names its Sales Orders with the same prefix. Order numbers repeat across shops, so each needs its own."
+					).format(frappe.bold(other.name))
+				)
 
 	def validate_shipping_rule_map(self):
 		"""

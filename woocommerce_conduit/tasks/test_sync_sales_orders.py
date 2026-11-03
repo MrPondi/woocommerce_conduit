@@ -42,6 +42,7 @@ from woocommerce_conduit.tasks.sync_sales_orders import (
 	find_sales_order,
 	get_changed_order_names,
 	get_names_of_wc_orders,
+	get_sales_order_name,
 	sync_woocommerce_orders_modified_since,
 	wc_order_changed,
 )
@@ -1138,6 +1139,28 @@ class TestComebacks(IntegrationTestCase):
 
 		sync = self.pull("processing", "completed", status="Closed")
 		sync.sales_order.update_status.assert_not_called()
+
+
+class TestSalesOrderNames(IntegrationTestCase):
+	def sales_order_name(self, order_number="1234", taken=False, **server):
+		wc_server = _dict({"name_sales_orders_by_number": 1, "sales_order_prefix": "WEB-", **server})
+		with patch.object(frappe.db, "exists", return_value=taken):
+			return get_sales_order_name(wc_server, order_number)
+
+	def test_a_server_can_name_them_by_the_order_number(self):
+		self.assertEqual(self.sales_order_name(), "WEB-1234")
+		self.assertEqual(self.sales_order_name(order_number=1234, sales_order_prefix=" KL/ "), "KL/1234")
+		# The number alone
+		self.assertEqual(self.sales_order_name(sales_order_prefix=None), "1234")
+
+	def test_the_naming_series_names_them_otherwise(self):
+		self.assertIsNone(self.sales_order_name(name_sales_orders_by_number=0))
+		# By another shop's order, or a Sales Order made by hand
+		self.assertIsNone(self.sales_order_name(taken=True))
+		# Not a name Frappe takes
+		self.assertIsNone(self.sales_order_name(order_number="<1234>"))
+		self.assertIsNone(self.sales_order_name(order_number="1" * 140))
+		self.assertIsNone(self.sales_order_name(order_number=""))
 
 
 class TestStatusesToSync(IntegrationTestCase):

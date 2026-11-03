@@ -28,6 +28,8 @@
   "warehouse",
   "column_break_velv",
   "delivery_after_days",
+  "name_sales_orders_by_number",
+  "sales_order_prefix",
   "accounting_details_section",
   "sales_taxes_and_charges_template",
   "default_item_tax_template",
@@ -309,6 +311,20 @@
    "non_negative": 1
   },
   {
+   "default": "0",
+   "description": "Name the Sales Orders made from now on after the order number the customer sees, with the prefix below (WEB-1234), rather than by ERPNext's naming series. An order whose name is taken gets the naming series.",
+   "fieldname": "name_sales_orders_by_number",
+   "fieldtype": "Check",
+   "label": "Name Sales Orders by Order Number"
+  },
+  {
+   "depends_on": "eval: doc.name_sales_orders_by_number",
+   "description": "Put before the order number. Each shop needs its own, as order numbers repeat across shops. Empty for the number alone.",
+   "fieldname": "sales_order_prefix",
+   "fieldtype": "Data",
+   "label": "Sales Order Prefix"
+  },
+  {
    "fieldname": "accounting_details_section",
    "fieldtype": "Section Break",
    "label": "Accounting Details"
@@ -543,7 +559,7 @@
  "icon": "server-plus",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-03 17:20:00.000000",
+ "modified": "2026-11-03 18:40:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",

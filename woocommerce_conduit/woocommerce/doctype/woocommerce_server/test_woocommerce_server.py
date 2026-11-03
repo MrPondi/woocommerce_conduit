@@ -480,3 +480,28 @@ class TestWooCommerceServer(IntegrationTestCase):
 		):
 			with self.subTest(field=erpnext_field_name), self.assertRaises(frappe.ValidationError):
 				validate(erpnext_field_name)
+
+	def validate_prefix(self, prefix, other_prefixes=()):
+		server = new_server(name_sales_orders_by_number=1, sales_order_prefix=prefix)
+		others = [
+			frappe._dict(name="other.example.com", sales_order_prefix=other) for other in other_prefixes
+		]
+		with patch.object(frappe, "get_all", return_value=others):
+			server.validate_sales_order_prefix()
+		return server
+
+	def test_each_shop_names_its_sales_orders_with_its_own_prefix(self):
+		self.assertEqual(self.validate_prefix(" WEB- ", ["KL-"]).sales_order_prefix, "WEB-")
+		# Order numbers repeat across shops
+		for prefix, other in (("WEB-", " WEB- "), ("", None)):
+			with self.subTest(prefix=prefix), self.assertRaises(frappe.ValidationError):
+				self.validate_prefix(prefix, [other])
+
+	def test_a_sales_order_prefix_frappe_cant_name_with_is_refused(self):
+		with self.assertRaises(frappe.ValidationError):
+			self.validate_prefix("<WEB>")
+
+	def test_the_prefix_only_counts_when_sales_orders_are_named_by_number(self):
+		with patch.object(frappe, "get_all") as get_all:
+			new_server(sales_order_prefix="<WEB>").validate_sales_order_prefix()
+		get_all.assert_not_called()

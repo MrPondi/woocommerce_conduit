@@ -19,11 +19,11 @@ The one place to pull refunds is an order seen for the first time. A fully refun
 
 Start at: ERPNext's `make_sales_return` (Sales Invoice) and `get_payment_entry`, `order_status.enqueue_status_push_from_hook` and `SynchroniseSalesOrder.push_status_to_woocommerce` for the shape of a push, `SynchroniseSalesOrder.create_sales_order`, and `woocommerce_server_payment_method.json`.
 
-### Sales Order names from the shop's order number
+### Duplicated Sales Orders keep the order's link
 
-Sales Orders follow ERPNext's naming series, and the shop's order number goes in `po_no`. Fusion names them by the number through an `override_doctype_class` on Sales Order. Look for a native way first, such as a naming series with a field placeholder or a Document Naming Rule, so it can't clash with other apps that override Sales Order.
+The Sales Order's `woocommerce_server` and `woocommerce_id` aren't `no_copy`, so Duplicate on a synced Sales Order makes one linked to the same WooCommerce order. Submitting it syncs it, and `find_sales_order` then takes the duplicate as the order's Sales Order, as the newest that isn't cancelled. `no_copy` on the Sales Order's WooCommerce fields would fix Duplicate and leave Amend alone, as the form's Amend and `amend_sales_order` copy no-copy fields too.
 
-Start at: `SynchroniseSalesOrder.create_sales_order`.
+Start at: the Sales Order fields in `custom_fields.py`.
 
 ### VAT on shipping and fees at WooCommerce's rate
 
