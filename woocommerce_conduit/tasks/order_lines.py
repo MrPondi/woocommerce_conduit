@@ -114,9 +114,10 @@ def build_charges(
 	wc_order, wc_server, with_shipping: bool, vat_rates: list[tuple[str, float]], tax_inclusive: bool
 ) -> list[dict]:
 	"""
-	The rows of the Sales Taxes and Charges that WooCommerce charged on top of the lines: shipping (unless
-	a Shipping Rule works it out) and fees, and the VAT on them. The template taxes the lines, but not
-	these. `vat_rates` are the account and rate of each VAT row of the template.
+	The rows of the Sales Taxes and Charges that WooCommerce charged on top of the lines: shipping and
+	fees, and the VAT on them. The template taxes the lines, but not these. `vat_rates` are the account and
+	rate of each VAT row of the template. Without `with_shipping` a Shipping Rule works the shipping out,
+	and only its VAT is booked here, as ERPNext's rule charges none.
 
 	When the template's VAT is included in the rate, so it is in shipping and fees, and it is taken out of
 	them at these rates: ERPNext can't include tax in an Actual charge. Otherwise they are net, and the VAT
@@ -125,20 +126,22 @@ def build_charges(
 	freight_account = wc_server.freight_and_forwarding_account
 	fee_account = wc_server.get("fee_account") or freight_account
 
-	amounts = []
-	if with_shipping:
-		amounts.append((wc_order.shipping_total, wc_order.shipping_tax, freight_account, _("Shipping")))
+	amounts = [
+		(wc_order.shipping_total, wc_order.shipping_tax, freight_account, _("Shipping"), with_shipping)
+	]
 	for fee in get_json_lines(wc_order, "fee_lines"):
-		amounts.append((fee.get("total"), fee.get("total_tax"), fee_account, fee.get("name") or _("Fee")))
+		amounts.append(
+			(fee.get("total"), fee.get("total_tax"), fee_account, fee.get("name") or _("Fee"), True)
+		)
 
 	charges = []
 	vat = {}
-	for amount, tax, account, description in amounts:
+	for amount, tax, account, description, charged in amounts:
 		if tax_inclusive:
 			amount, tax_rows = split_vat(flt(amount) + flt(tax), vat_rates)
 		else:
 			tax_rows = [(vat_rates[0][0] if vat_rates else freight_account, flt(tax))]
-		if flt(amount):
+		if charged and flt(amount):
 			charges.append(actual_charge(amount, account, description))
 		for tax_account, tax_amount in tax_rows:
 			vat[tax_account] = flt(vat.get(tax_account)) + flt(tax_amount)
@@ -279,7 +282,8 @@ class SalesOrderLinesMixin:
 		new_sales_order.taxes_and_charges = wc_server.sales_taxes_and_charges_template
 		new_sales_order.set_missing_lead_customer_details()
 
-		# Shipping and fees are taxed at the rate of the default Item Tax Template
+		# Shipping and fees are taxed at the rate of the default Item Tax Template. A Shipping Rule charges the
+		# shipping itself, without VAT, so only the VAT on it is booked here.
 		for charge in build_charges(
 			self.woocommerce_order,
 			wc_server,

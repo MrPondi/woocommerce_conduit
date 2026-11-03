@@ -1408,10 +1408,19 @@ class TestCharges(IntegrationTestCase):
 		self.assertEqual(charges[1]["account_head"], "Freight")
 
 	def test_shipping_rule_charges_the_shipping(self):
-		charges = build_charges(self.order(), self.server(), False, self.VAT, False)
-		self.assertNotIn("Shipping", [c["description"] for c in charges])
-		# Only the tax on the fee is left
-		self.assertEqual(charges[-1]["tax_amount"], 0.21)
+		charges = build_charges(self.order(), self.server(fee_account="Fees"), False, self.VAT, False)
+
+		# ERPNext's rule charges the shipping without VAT, so the VAT WooCommerce charged on it is kept
+		self.assertEqual(
+			[(c["account_head"], c["tax_amount"], c["description"]) for c in charges],
+			[("Fees", 1, "Gift wrap"), ("VAT", 1.26, "VAT on shipping and fees")],
+		)
+
+	def test_shipping_rule_keeps_the_vat_of_inclusive_shipping(self):
+		# A shop that leaves taxes to ERPNext, with prices that include the VAT
+		order = self.order(shipping_total=20, shipping_tax=0, fee_lines="[]", tax_lines="[]")
+		charges = build_charges(order, self.server(), False, [("VAT", 23.0)], True)
+		self.assertEqual([(c["account_head"], c["tax_amount"]) for c in charges], [("VAT", 3.74)])
 
 	def test_inclusive_charges_have_the_vat_taken_out(self):
 		order = self.order(
