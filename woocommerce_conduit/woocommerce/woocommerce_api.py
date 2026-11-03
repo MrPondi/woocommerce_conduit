@@ -912,7 +912,7 @@ class WooCommerceDocument(Document):
 		pass
 
 	@staticmethod
-	def get_stats(args):
+	def get_stats(**kwargs):
 		pass
 
 	def to_dict(self):

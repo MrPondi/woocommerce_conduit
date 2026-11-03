@@ -46,7 +46,8 @@ def validate_request() -> tuple[WooCommerceServer | None, Response | None]:
 	return wc_server, None
 
 
-@frappe.whitelist(allow_guest=True, methods=["POST"])
+# Open to guests, as webhooks come without a login. Only a signed one gets past validate_request.
+@frappe.whitelist(allow_guest=True, methods=["POST"])  # nosemgrep: guest-whitelisted-method
 def order_created(*args, **kwargs):
 	"""
 	Accepts payload data from the WooCommerce "Order created" and "Order updated" webhooks. The name is
@@ -77,7 +78,8 @@ def order_created(*args, **kwargs):
 	if not isinstance(order, dict) or not order.get("id"):
 		return Response(response=_("Invalid payload"), status=HTTPStatus.BAD_REQUEST)
 
-	frappe.set_user(wc_server.creation_user)
+	# The signature checked out, so the order is synced as the server's user
+	frappe.set_user(wc_server.creation_user)  # nosemgrep: frappe-setuser
 	enqueue_sales_order_sync(
 		woocommerce_order_name=generate_woocommerce_record_name_from_domain_and_id(
 			wc_server.name, order["id"]

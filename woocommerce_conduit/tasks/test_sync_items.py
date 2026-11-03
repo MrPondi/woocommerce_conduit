@@ -654,8 +654,8 @@ def name(product_id):
 
 class TestProductImport(IntegrationTestCase):
 	def products_to_import(self, products, variations, linked):
-		def get_list_of_records(args):
-			return variations.get(args["endpoint"], []) if args.get("endpoint") else products
+		def get_list_of_records(list_args):
+			return variations.get(list_args["endpoint"], []) if list_args.get("endpoint") else products
 
 		with (
 			patch.object(

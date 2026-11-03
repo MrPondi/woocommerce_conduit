@@ -469,7 +469,7 @@ class WooCommerceServer(Document):
 		if not accounts:
 			return
 		templates = {self.default_item_tax_template} | {row.item_tax_template for row in self.tax_class_map}
-		for template in sorted(filter(None, templates)):
+		for template in sorted(name for name in templates if name):
 			covered = {row.tax_type for row in frappe.get_cached_doc("Item Tax Template", template).taxes}
 			if missing := accounts - covered:
 				frappe.msgprint(

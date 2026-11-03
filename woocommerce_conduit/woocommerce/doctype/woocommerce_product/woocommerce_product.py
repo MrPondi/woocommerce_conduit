@@ -163,7 +163,8 @@ class WooCommerceProduct(WooCommerceDocument):
 
 		return super().before_db_update(changes)
 
-	@staticmethod
+	# Frappe passes the arguments by name, as args (frappe.call), so the name stays
+	@staticmethod  # nosemgrep: overusing-args
 	def get_list(args) -> list[dict]:
 		"""
 		The products of all enabled servers (list and report views), followed by the variations of the
@@ -230,6 +231,7 @@ class WooCommerceProduct(WooCommerceDocument):
 			return parent_wc_name + " - " + ", ".join(attr_values)
 		return None
 
-	@staticmethod
+	# Frappe passes the arguments by name, as args (frappe.call), so the name stays
+	@staticmethod  # nosemgrep: overusing-args
 	def get_count(args) -> int:
 		return WooCommerceProduct.get_count_of_records(args)

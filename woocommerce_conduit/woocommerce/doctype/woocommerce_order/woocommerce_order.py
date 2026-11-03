@@ -167,14 +167,15 @@ class WooCommerceOrder(WooCommerceDocument):
 			{key: value for key, value in changes.items() if key in self.writable_fields}
 		)
 
-	@staticmethod
+	# Frappe passes the arguments by name, as args (frappe.call), so the name stays
+	@staticmethod  # nosemgrep: overusing-args
 	def get_list(args) -> list[dict]:
 		"""
 		The orders of all enabled servers, for the list and report views
 		"""
 		return WooCommerceOrder.get_list_of_records(args)
 
-	@staticmethod
+	@staticmethod  # nosemgrep: overusing-args
 	def get_count(args) -> int:
 		return WooCommerceOrder.get_count_of_records(args)
 
