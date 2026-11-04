@@ -7,7 +7,8 @@ from erpnext.stock.doctype.item.item import Item, set_item_default
 from frappe import ValidationError, _
 from frappe.model.naming import append_number_if_name_exists
 from frappe.query_builder import Criterion
-from frappe.utils import convert_utc_to_system_timezone, cstr, flt, get_datetime, getdate
+from frappe.utils import cint, convert_utc_to_system_timezone, cstr, flt, get_datetime, getdate
+from frappe.utils.html_utils import clean_html, sanitize_html
 
 from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.tasks.field_map import get_mapped_values
@@ -614,13 +615,7 @@ class SynchroniseItem:
 					self.update_item()
 
 	def get_wc_modified_in_system_timezone(self) -> datetime:
-		"""
-		WooCommerce's date_modified is in the shop's timezone, and Item.modified in ERPNext's, so compare
-		via date_modified_gmt when the product has it
-		"""
-		if date_modified_gmt := self.woocommerce_product.get("date_modified_gmt"):  # type: ignore
-			return convert_utc_to_system_timezone(get_datetime(date_modified_gmt)).replace(tzinfo=None)
-		return get_datetime(self.woocommerce_product.woocommerce_date_modified)  # type: ignore
+		return get_modified_in_system_timezone(self.woocommerce_product)  # type: ignore
 
 	def update_item(self):
 		"""
@@ -1017,21 +1012,11 @@ class SynchroniseItem:
 		if not wc_server.item_field_map:
 			return False, item
 
-		# The product as the doctype has it, its JSON fields decoded, for the paths to run on
-		wc_product_data = self.woocommerce_product.deserialize_attributes_of_type_dict_or_list(
-			self.woocommerce_product.to_dict()
-		)
-
-		item_modified = False
-		for fieldname, value in get_mapped_values(
-			wc_server.item_field_map, wc_product_data, item.meta, self.woocommerce_product.name
-		).items():
-			# Only touch fields that differ, so an unchanged product doesn't save (and re-date) the Item
-			if not values_match(item.get(fieldname), value):
-				item.set(fieldname, value)
-				item_modified = True
-
-		return item_modified, item
+		# Only touch fields that differ, so an unchanged product doesn't save (and re-date) the Item
+		changes = get_item_field_changes(item, self.woocommerce_product, wc_server.item_field_map, item.meta)
+		for fieldname, value in changes.items():
+			item.set(fieldname, value)
+		return bool(changes), item
 
 	def set_sync_hash(self):
 		"""
@@ -1050,6 +1035,59 @@ class SynchroniseItem:
 			self.woocommerce_product.woocommerce_date_modified,
 			update_modified=False,
 		)
+
+
+def get_modified_in_system_timezone(product: WooCommerceProduct) -> datetime:
+	"""
+	When the product last changed, in ERPNext's timezone. WooCommerce's date_modified is in the shop's
+	timezone, and Item.modified in ERPNext's, so compare via date_modified_gmt when the product has it.
+	"""
+	if date_modified_gmt := product.get("date_modified_gmt"):
+		return convert_utc_to_system_timezone(get_datetime(date_modified_gmt)).replace(tzinfo=None)
+	return get_datetime(product.woocommerce_date_modified)
+
+
+def get_item_field_changes(values, product: WooCommerceProduct, rows, meta) -> dict:
+	"""
+	The values the rows of an Item Field Map give an Item from its product, where they differ from the
+	Item's `values` (the Item, or a dict of its fields), each as the Item's save would store it (as_saved)
+	"""
+	# The product as the doctype has it, its JSON fields decoded, for the paths to run on
+	record = product.deserialize_attributes_of_type_dict_or_list(product.to_dict())
+	changes = {}
+	for fieldname, value in get_mapped_values(rows, record, meta, product.name).items():
+		value = as_saved(meta.get_field(fieldname), value, values.get("item_name"))
+		if not values_match(values.get(fieldname), value):
+			changes[fieldname] = value
+	return changes
+
+
+# The fields Frappe doesn't sanitise on save (Document._sanitize_content), besides those that ignore the XSS filter
+UNSANITISED_FIELDTYPES = ("Attach", "Attach Image", "Barcode", "Code", "JSON")
+
+
+def as_saved(df, value, item_name: str | None = None):
+	"""
+	A mapped value as an Item's save stores it, so it is compared with what the Item keeps rather than taken for
+	a change on every sync. The save first has ERPNext clean the description of the markup it doesn't keep when
+	Stock Settings says so (Item.validate_description), then Frappe sanitise any text with markup, as
+	Document._sanitize_content calls it.
+	"""
+	if not (df and isinstance(value, str)) or ("<" not in value and ">" not in value):
+		return value
+	if (
+		df.fieldname == "description"
+		and value != item_name
+		and cint(frappe.db.get_single_value("Stock Settings", "clean_description_html"))
+	):
+		value = clean_html(value)
+	if (
+		df.get("ignore_xss_filter")
+		or df.fieldtype in UNSANITISED_FIELDTYPES
+		or (df.fieldtype in ("Data", "Small Text", "Text") and df.get("options") == "Email")
+	):
+		return value
+	return sanitize_html(value, linkify=df.fieldtype == "Text Editor")
 
 
 def to_item_name(wc_name: str | None) -> str | None:

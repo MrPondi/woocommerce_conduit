@@ -13,6 +13,7 @@ from woocommerce_conduit.tasks.sync_items import (
 	ERPNextItemToSync,
 	SynchroniseItem,
 	find_item_by_sku,
+	get_item_field_changes,
 	get_primary_connection,
 	set_default_warehouse,
 	to_item_name,
@@ -451,6 +452,33 @@ class TestItemFields(IntegrationTestCase):
 		self.assertEqual(item.item_name, "Sleeves & Toploader")
 		# The description is HTML, where the escaped text reads right
 		self.assertEqual(item.description, "Sleeves &amp; Toploader")
+
+	def test_a_description_is_compared_as_the_save_stores_it(self):
+		# Markup ERPNext cleans away (when Stock Settings says so), and a script Frappe takes out
+		html = "<h2>Mower</h2><p>See https://example.com</p><script>alert(1)</script>"
+		item = frappe.new_doc("Item")
+		item.update({"item_name": "Mower", "description": html})
+		# What a save keeps of it, by ERPNext's and Frappe's own steps
+		item.validate_description()
+		item._sanitize_content()
+		rows = [_dict(erpnext_field_name="description | Description", woocommerce_field_name="$.description")]
+		meta = frappe.get_meta("Item")
+
+		unchanged = get_item_field_changes(
+			_dict(item_name="Mower", description=item.description), make_product(description=html), rows, meta
+		)
+		changed = get_item_field_changes(
+			_dict(item_name="Mower", description=item.description),
+			make_product(description=f"{html}<p>New</p>"),
+			rows,
+			meta,
+		)
+
+		self.assertNotEqual(item.description, html)
+		self.assertEqual(unchanged, {})
+		# The new value as the save would store it
+		self.assertNotIn("<script>", changed["description"])
+		self.assertIn("New", changed["description"])
 
 	def test_values_the_field_can_not_take_are_left_out_and_logged_once(self):
 		product = make_product(categories='[{"name": "Gone"}]', tags='[{"name": "Garden"}]', weight="12,5")

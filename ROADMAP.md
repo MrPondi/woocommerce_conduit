@@ -67,15 +67,15 @@ Start at: `SalesOrderCustomerMixin.set_order_addresses`, ERPNext's `make_shipmen
 
 ### Variations 100 a request
 
-Import Products reads a shop's products 100 a request, but each variation with a GET of its own (`products/{id}`, as `load_wc_product` reads it), so a shop of many variable products still takes a request a variation. The record of `products/{parent}/variations` isn't the one `products/{id}` gives: it has no `type` (`during_get_list_of_records` sets it), and its name and other fields may differ, which would make the Items or their mapped values differ. Compare the two records of a few variations of the shop, and read the variations 100 a request through their parent once the two agree on what the sync and the Item Field Map use.
+Import Products and Update Linked Items read a shop's products 100 a request, but each variation with a GET of its own (`products/{id}`, as `load_wc_product` reads it), so a shop of many variable products still takes a request a variation. The record of `products/{parent}/variations` isn't the one `products/{id}` gives: it has no `type` (`during_get_list_of_records` sets it), and its name and other fields may differ, which would make the Items or their mapped values differ. Compare the two records of a few variations of the shop, and read the variations 100 a request through their parent once the two agree on what the sync and the Item Field Map use.
 
 Start at: `sync_items.read_products`, `WooCommerceProduct.during_get_list_of_records`, `product_push.load_products`.
 
-### Apply the Item Field Map to linked Items
+### Update Item from WooCommerce shows what changes
 
-The Item Field Map runs when the sync creates an Item, and when a manual sync finds the product changed since the last pull and newer than the Item. A row added later never reaches the Items linked already: mapping the products' weight and size to Weight Per Unit and erpnext_shipping's package fields (`$.weight`, `$.length`, `$.width`, `$.height`) fills new Items only, and the others are left to a Data Import. A server button could apply the map to the server's linked Items in a job: read their products 100 a request with only the fields the map's paths start at (`load_products`, which reads the push's `writable_fields` now), run `SynchroniseItem.set_item_fields` on each primary-linked Item, and save those that differ. Mind that `load_records` leaves out what `after_load_from_db` adds, the dimensions among it (their flattening could move to `pre_init_document`), and that saving a template copies its weight to its variants while Item Variant Settings lists the weight fields, so save templates first.
+The Item form's Update Item from WooCommerce button, and Sync on the WooCommerce Product form, overwrite the Item's name, image, tax template and mapped fields with its primary product's after a confirm that doesn't say what changes, and on a template ERPNext then copies the Item Variant Settings fields to all its variants. Update Linked Items shows each value before it is written, and keeps a template in step with its variants. The buttons could open that review for their one Item.
 
-Start at: `SynchroniseItem.set_item_fields`, `product_push.load_products`, `get_first_field_names` in `field_map.py`.
+Start at: `public/js/item.js`, `sync_item_from_woocommerce`, `SynchroniseItem.update_item`, `tasks/linked_item_update.py`.
 
 ## Configuration
 

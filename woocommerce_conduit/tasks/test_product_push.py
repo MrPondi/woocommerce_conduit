@@ -233,6 +233,34 @@ class TestPushToProducts(IntegrationTestCase):
 		self.assertEqual(written, 0)
 		self.assertEqual(shop.sent("POST"), [])
 
+	def test_variations_can_be_read_on_their_own_with_the_fields_asked_for(self):
+		# As the Item sync reads a variation: its record at its parent's endpoint isn't the same
+		variation = product(71, "variation", parent_id=7, weight="2.5")
+		shop = Shop([product(12, weight="1.5")], variations={7: [variation]})
+
+		with (
+			patch.object(WooCommerceProduct, "_init_api", return_value=[shop]),
+			patch.object(product_push, "get_variation_parents", return_value={"71": "7"}),
+			patch.object(
+				product_push,
+				"load_wc_product",
+				side_effect=lambda name: frappe.get_doc(
+					WooCommerceProduct.pre_init_document(dict(variation), shop.woocommerce_server_url)
+				),
+			) as load_wc_product,
+		):
+			products = product_push.load_products(
+				SERVER, ["12", "71"], ERROR_TITLE, fields=["weight"], variations_alone=True
+			)
+
+		self.assertEqual(shop.sent("GET"), [("products", "12")])
+		self.assertIn("weight", shop.requests[0][2]["_fields"].split(","))
+		self.assertNotIn("stock_quantity", shop.requests[0][2]["_fields"].split(","))
+		load_wc_product.assert_called_once_with("one.example.com~71")
+		self.assertEqual(
+			{key: product.weight for key, product in products.items()}, {"12": "1.5", "71": "2.5"}
+		)
+
 	def test_the_delay_is_for_each_product_written(self):
 		shop = Shop([product(12), product(13), product(14)], refused={14})
 
