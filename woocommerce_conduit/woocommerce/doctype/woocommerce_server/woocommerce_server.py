@@ -10,7 +10,9 @@ from frappe.utils import cstr, now
 
 from woocommerce_conduit.tasks.field_map import (
 	REFUSED_ITEM_FIELDS,
+	get_customer_map_fields,
 	get_item_map_fields,
+	get_order_fields,
 	get_order_item_map_fields,
 	get_product_fields,
 	get_transforms,
@@ -85,6 +87,9 @@ class WooCommerceServer(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_customer_field.woocommerce_server_customer_field import (
+			WooCommerceServerCustomerField,
+		)
 		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_item_field.woocommerce_server_item_field import (
 			WooCommerceServerItemField,
 		)
@@ -112,6 +117,7 @@ class WooCommerceServer(Document):
 		company: DF.Link
 		create_sales_invoice: DF.Check
 		creation_user: DF.Link
+		customer_field_map: DF.Table[WooCommerceServerCustomerField]
 		default_item_tax_template: DF.Link | None
 		delivery_after_days: DF.Int
 		enable_image_sync: DF.Check
@@ -189,6 +195,7 @@ class WooCommerceServer(Document):
 		self.validate_tax_templates()
 		self.validate_item_map()
 		self.validate_order_item_map()
+		self.validate_customer_map()
 		self.validate_sales_order_prefix()
 
 		if not self.secret:
@@ -196,9 +203,11 @@ class WooCommerceServer(Document):
 
 	def onload(self):
 		# The Item fields the Item Field Map may not write, which the form leaves out of its choices, the Sales
-		# Order Item fields the Order Line Fields map may write, and the transforms the installed apps register
+		# Order Item and Customer fields the Order Line Fields and Customer Field maps may write, and the
+		# transforms the installed apps register
 		self.set_onload("refused_item_fields", REFUSED_ITEM_FIELDS)
 		self.set_onload("order_item_fields", sorted(get_order_item_map_fields()))
+		self.set_onload("customer_fields", sorted(get_customer_map_fields()))
 		self.set_onload("field_transforms", sorted(get_transforms()))
 
 	def on_update(self):
@@ -746,3 +755,19 @@ class WooCommerceServer(Document):
 		target_fields = get_order_item_map_fields()
 		for row in self.order_item_field_map:
 			validate_map_row(row, _("Order Line Fields"), "Sales Order Item", target_fields)
+
+	def validate_customer_map(self):
+		"""
+		Each row of the Customer Field Map needs a Customer field it may write, and a JSONPath that starts at a
+		field of WooCommerce Order: it runs on the order as the doctype has it, its meta data included.
+		"""
+		target_fields, source_fields = get_customer_map_fields(), get_order_fields()
+		for row in self.customer_field_map:
+			validate_map_row(
+				row,
+				_("Customer Field Map"),
+				"Customer",
+				target_fields,
+				source_doctype="WooCommerce Order",
+				source_fields=source_fields,
+			)

@@ -109,3 +109,9 @@ class TestWooCommerceOrderForm(IntegrationTestCase):
 		record = order.after_load_from_db({"line_items": '[{"id": 1}]', "tax_lines": '[{"id": 2}]'})
 		self.assertIn("\n", record["line_items"])
 		self.assertIn("\n", record["tax_lines"])
+
+	def test_the_meta_data_is_read_for_the_customer_field_map(self):
+		# A plugin's checkout field, which the map can copy into the Customer
+		self.assertIn("meta_data", WooCommerceOrder.get_wc_fields().split(","))
+		record = make_order().after_load_from_db({"meta_data": '[{"key": "_billing_nip", "value": "PL1"}]'})
+		self.assertIn("\n", record["meta_data"])

@@ -78,7 +78,9 @@
   "parent_id",
   "woocommerce_date_created",
   "woocommerce_date_modified",
-  "currency"
+  "currency",
+  "meta_data_section",
+  "meta_data"
  ],
  "fields": [
   {
@@ -543,13 +545,25 @@
    "fieldtype": "Data",
    "label": "Parent ID",
    "read_only": 1
+  },
+  {
+   "fieldname": "meta_data_section",
+   "fieldtype": "Section Break"
+  },
+  {
+   "depends_on": "eval: doc.meta_data && doc.meta_data != \"[]\"",
+   "description": "What WooCommerce and its plugins keep with the order, as <code>key</code> and <code>value</code>. The Customer Field Map of its server reads it as <code>$.meta_data[?key=='_billing_nip'].value</code>.",
+   "fieldname": "meta_data",
+   "fieldtype": "JSON",
+   "label": "Meta Data",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_virtual": 1,
  "links": [],
- "modified": "2026-11-01 13:51:25.645646",
+ "modified": "2026-11-03 22:30:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Order",

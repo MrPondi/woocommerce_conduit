@@ -53,15 +53,21 @@ Start at: `SynchroniseSalesOrder.create_sales_order`, `WooCommerceServer.get_shi
 
 ### Duplicate Customers report
 
-Fusion's WooCommerce Duplicate Customers report groups the Customers that look like the same buyer, by email, by name or by company email domain (the big free mail providers left out), with each one's Sales Orders and their total, oldest first, so they can be merged by hand. It changes nothing. Conduit makes a Customer for every guest order, so the report is of use whichever way Guest customers (Open questions) is decided.
+Fusion's WooCommerce Duplicate Customers report groups the Customers that look like the same buyer, by email, by name or by company email domain (the big free mail providers left out), with each one's Sales Orders and their total, oldest first, so they can be merged by hand. It changes nothing. Conduit made a Customer for every guest order until guests were found by email, so those repeat.
 
 Start at: Fusion's `report/woocommerce_duplicate_customers/`. Conduit has no `woocommerce_is_guest` field, but a guest's identifier starts with `Guest-`, and as the identifier of an account is its username, the email is the Customer's `email_id`, from its primary Contact.
 
-### Company customers by email domain
+### Moving an order to another Customer
 
-Every account in the shop becomes a Customer of its own, so a B2B shop gets one for each employee who orders. Fusion attaches an order from an email domain listed on the server (`customer_matching_email_domains`) to the oldest Customer of that domain, and leaves that Customer's name and details alone. Only listed domains are matched, as matching every domain would put all users of a free mail provider on one Customer. Conduit would match the domain on the Customer's `email_id`.
+A Sales Order is flagged when the Customer its account or email found bears another name than the order (`order_customer.py`), as the buyer may be someone else on that email or account. The Customer of a submitted Sales Order can't be changed: it is cancelled and amended with the right one. A cancel made by hand pushes the WooCommerce status the Order Status Map gives Cancelled when the server pushes status changes (`get_status_to_push`), which cancels the order in the shop. A server button, or a flag that keeps the push off while a person amends the Sales Order, would let them move it.
 
-Start at: `SynchroniseSalesOrder.create_or_link_customer_and_address`, Fusion's `find_customer_by_email_domain`.
+Start at: `order_status.enqueue_status_push_from_hook`, `SalesOrderStatusMixin.amend_sales_order`.
+
+### A parcel for someone other than the buyer
+
+An order shipped to someone else, a gift say, keeps the recipient's name only as the title of its shipping Address, and their phone on it, or the buyer's when the order gave none. The Sales Order's Contact is the buyer, and DHL24 names the receiver after the Customer (`polish_shipping` `get_delivery_name`) and calls the Delivery Note's Contact, so the parcel is addressed to the buyer. A Contact for the recipient, which the Delivery Note could carry, or a receiver's name taken from the shipping Address, would address it to them.
+
+Start at: `SalesOrderCustomerMixin.set_order_addresses`, ERPNext's `make_shipment` (Delivery Note), `polish_shipping/dhl24/provider.py`.
 
 ## Items
 
@@ -132,6 +138,5 @@ A guide for users rather than developers: how to connect a shop (API keys, the f
 These need a decision before anything is built.
 
 - **A deleted regular price.** Deleting the server's Price List price for an Item leaves the shop's old price in place, while deleting a sale price ends the sale. Clearing the regular price would make the product unpurchasable, so leaving it may be right.
-- **Guest customers.** Each guest order gets its own Customer (`Guest-{order id}`). Fusion merges guests by email and has a Duplicate Customers report. Merging would change how existing guests are found.
-- **One customer in several shops.** A Customer is looked up within its shop (`Customer.woocommerce_server`), so a person who buys in two shops gets a Customer in each. Matching across shops by email, as Fusion does, makes them one, but then the Customer's name and addresses follow whichever shop it last ordered in, and one shop field can't say which shops it is in.
+- **One customer in several shops.** A Customer is looked up within its shop (`Customer.woocommerce_server`), so a person who buys in two shops gets a Customer in each. Matching across shops by email, as Fusion does, would make them one, and as an order no longer renames the Customer it finds, it would keep its name and addresses. But one shop field can't say which shops it is in. A tax ID names one company everywhere, so its lookup (`find_customer_by_tax_id`) could take other shops' Customers first, and those made by hand, say for offline sales.
 - **The Sales Order's price list.** A synced Sales Order has Selling Settings' default price list, which `new_doc` puts on it, so the discount a line shows (a free line's 100% too) is against that list. Fusion uses the customer's default price list when it is in the order's currency (`get_customer_selling_price_list`). The server's Price List, which the shop's prices come from, would show each line's discount against the shop's regular price. Either changes every new Sales Order, and a list in another currency or not enabled for selling would have to be passed over.

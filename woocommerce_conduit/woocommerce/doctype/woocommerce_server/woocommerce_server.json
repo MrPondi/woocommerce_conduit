@@ -55,6 +55,8 @@
   "sales_order_status_map",
   "order_item_fields_section",
   "order_item_field_map",
+  "customers_section",
+  "customer_field_map",
   "items_tab",
   "import_products",
   "name_by",
@@ -419,6 +421,19 @@
    "options": "WooCommerce Server Order Item Field"
   },
   {
+   "collapsible": 1,
+   "fieldname": "customers_section",
+   "fieldtype": "Section Break",
+   "label": "Customers"
+  },
+  {
+   "description": "Copies a value of the order into a field of its Customer: a tax ID that a plugin keeps in the order's meta data into Tax ID, say. A new Customer gets every value, one the order finds only those it has none of. Only custom fields and Tax ID can be written. An order with a Tax ID goes to the Customer with that Tax ID.",
+   "fieldname": "customer_field_map",
+   "fieldtype": "Table",
+   "label": "Customer Fields Mapping",
+   "options": "WooCommerce Server Customer Field"
+  },
+  {
    "fieldname": "column_break_velv",
    "fieldtype": "Column Break"
   },
@@ -559,7 +574,7 @@
  "icon": "server-plus",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-03 18:40:00.000000",
+ "modified": "2026-11-03 22:30:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",

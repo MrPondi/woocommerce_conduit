@@ -1,9 +1,9 @@
 """
 The field maps of a WooCommerce Server. A row copies a value of a WooCommerce record, found with a JSONPath,
 into a field of an ERPNext document: the Item Field Map from a product into its Item, the Order Line Fields
-map from an order line into its Sales Order Item. A row can have the
-value changed first by a transform, a method another app registers under the `woocommerce_field_transforms`
-hook (see hooks.py).
+map from an order line into its Sales Order Item, and the Customer Field Map from an order into its Customer.
+A row can have the value changed first by a transform, a method another app registers under the
+`woocommerce_field_transforms` hook (see hooks.py).
 """
 
 import json
@@ -42,6 +42,12 @@ REFUSED_ITEM_FIELDS = (
 ORDER_ITEM_MAP_FIELDS = ("item_name", "description", "additional_notes")
 # The custom fields of Sales Order Item that the sync sets itself
 SYNC_ORDER_ITEM_FIELDS = tuple(df["fieldname"] for df in get_custom_fields()["Sales Order Item"])
+
+# The standard Customer fields the Customer Field Map may write, besides the custom ones. The others say who the
+# Customer is, which the sync decides when it makes one, or how it is billed.
+CUSTOMER_MAP_FIELDS = ("tax_id",)
+# The custom fields of Customer that the sync sets itself
+SYNC_CUSTOMER_FIELDS = tuple(df["fieldname"] for df in get_custom_fields()["Customer"])
 
 # Kept in frappe.flags, so a request or job logs each problem of a map once rather than once per record
 LOGGED_PROBLEMS_FLAG = "woocommerce_logged_map_problems"
@@ -101,17 +107,29 @@ def get_item_map_fields() -> set[str]:
 	return get_value_fields("Item") - set(REFUSED_ITEM_FIELDS)
 
 
+def get_custom_value_fields(doctype: str) -> set[str]:
+	return {
+		df.fieldname
+		for df in frappe.get_meta(doctype).get_custom_fields()
+		if df.fieldtype not in no_value_fields
+	}
+
+
 def get_order_item_map_fields() -> set[str]:
 	"""
 	The Sales Order Item fields the Order Line Fields map may write: the custom ones but the sync's own, and
 	the line's name, description and notes
 	"""
-	custom_fields = {
-		df.fieldname
-		for df in frappe.get_meta("Sales Order Item").get_custom_fields()
-		if df.fieldtype not in no_value_fields
-	}
+	custom_fields = get_custom_value_fields("Sales Order Item")
 	return (custom_fields - set(SYNC_ORDER_ITEM_FIELDS)) | set(ORDER_ITEM_MAP_FIELDS)
+
+
+def get_customer_map_fields() -> set[str]:
+	"""
+	The Customer fields the Customer Field Map may write: the custom ones but the sync's own, and the tax ID
+	"""
+	custom_fields = get_custom_value_fields("Customer")
+	return (custom_fields - set(SYNC_CUSTOMER_FIELDS)) | set(CUSTOMER_MAP_FIELDS)
 
 
 def get_product_fields() -> set[str]:
@@ -120,6 +138,14 @@ def get_product_fields() -> set[str]:
 	the path, which are the doctype's own and its name (`<server>~<id>`)
 	"""
 	return get_value_fields("WooCommerce Product") | {"name"}
+
+
+def get_order_fields() -> set[str]:
+	"""
+	The fields of a WooCommerce Order that a path of the Customer Field Map can start at: the doctype's own,
+	`meta_data` among them, and its name (`<server>~<id>`)
+	"""
+	return get_value_fields("WooCommerce Order") | {"name"}
 
 
 def validate_map_row(

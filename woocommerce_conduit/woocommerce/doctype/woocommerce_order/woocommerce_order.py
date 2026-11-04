@@ -14,7 +14,15 @@ ADDRESS_PREFIXES = ("billing", "shipping")
 # Prefixed fields that are not part of the nested address
 NON_ADDRESS_FIELDS = {"shipping_total", "shipping_tax", "shipping_lines"}
 # Indented in the form, so they can be read
-JSON_FIELDS = ("line_items", "shipping_lines", "fee_lines", "tax_lines", "coupon_lines", "refunds")
+JSON_FIELDS = (
+	"line_items",
+	"shipping_lines",
+	"fee_lines",
+	"tax_lines",
+	"coupon_lines",
+	"refunds",
+	"meta_data",
+)
 
 
 def get_address_data(order, prefix: str) -> dict:
@@ -61,6 +69,7 @@ class WooCommerceOrder(WooCommerceDocument):
 		discount_total: DF.Currency
 		fee_lines: DF.JSON | None
 		line_items: DF.JSON
+		meta_data: DF.JSON | None
 		number: DF.Data
 		order_key: DF.Data
 		parent_id: DF.Data | None

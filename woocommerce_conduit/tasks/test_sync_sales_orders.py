@@ -19,6 +19,7 @@ from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.patches.v1 import set_customer_woocommerce_server
 from woocommerce_conduit.tasks import order_lines, order_payment, sync_sales_orders
 from woocommerce_conduit.tasks.field_map import LOGGED_PROBLEMS_FLAG
+from woocommerce_conduit.tasks.order_customer import get_addresses_linking_to, normalise_tax_id
 from woocommerce_conduit.tasks.order_lines import (
 	build_charges,
 	get_line_rate,
@@ -2116,80 +2117,441 @@ class TestInvoiceAndHold(InvoiceAndPaymentCase):
 		create_sales_order.assert_called_once_with(SUBMIT_INVOICE_HOLD)
 
 
+# The tax ID a plugin keeps in the order's meta data, mapped into the Customer
+TAX_ID_ROW = {
+	"erpnext_field_name": "tax_id | Tax ID",
+	"woocommerce_field_name": "$.meta_data[?key=='_billing_nip'].value",
+}
+
+
+def nip(tax_id: str) -> str:
+	"""
+	The meta data of an order with a tax ID, as a plugin's checkout field keeps it
+	"""
+	return json.dumps([{"id": 1, "key": "_billing_nip", "value": tax_id}])
+
+
 class TestCustomer(IntegrationTestCase):
-	def run_step(self, customer_id=0, account=None, account_status=200):
+	"""
+	The Customer, Address and Contact of a new order, made for real in the test's transaction
+	"""
+
+	def setUp(self):
+		super().setUp()
+		# Frappe rolls back once a class is done, and each test finds Customers by what the others left
+		frappe.db.savepoint("test_customer")
+		self.addCleanup(frappe.db.rollback, save_point="test_customer")
+		# What the Customers link to
+		make_server().db_insert()
+
+	def make_customer(self, name, customer_name=None, identifier=None, **values) -> str:
+		customer = frappe.get_doc(
+			{
+				"doctype": "Customer",
+				"name": f"_Test WC {name}",
+				"customer_name": customer_name or name,
+				"customer_type": "Individual",
+				"woocommerce_server": SERVER,
+				"woocommerce_identifier": identifier,
+				"creation": "2026-01-01 10:00:00",
+				**values,
+			}
+		)
+		customer.db_insert()
+		return customer.name
+
+	def make_contact(self, customer, first_name, last_name, email) -> str:
+		return (
+			frappe.get_doc(
+				{
+					"doctype": "Contact",
+					"first_name": first_name,
+					"last_name": last_name,
+					"email_ids": [{"email_id": email, "is_primary": 1}],
+					"links": [{"link_doctype": "Customer", "link_name": customer}],
+				}
+			)
+			.insert()
+			.name
+		)
+
+	def make_address(self, customer, address_line1, **values) -> str:
+		return (
+			frappe.get_doc(
+				{
+					"doctype": "Address",
+					"address_title": "Ann Smith",
+					"address_type": "Billing",
+					"address_line1": address_line1,
+					"city": "Kraków",
+					"pincode": "30-001",
+					"country": "Poland",
+					"phone": "555-0100",
+					"links": [{"link_doctype": "Customer", "link_name": customer}],
+					**values,
+				}
+			)
+			.insert()
+			.name
+		)
+
+	def run_step(self, customer_id=0, account=None, field_map=(), **values):
+		"""
+		The customer step of an order Ann Smith placed as a guest, unless `customer_id` names an account, which
+		`account` is (the shop no longer has it when None). `values` change the order's fields.
+		"""
 		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
 		order = _dict(
-			woocommerce_server=SERVER,
-			woocommerce_id="12",
-			customer_id=customer_id,
-			billing_first_name="Ann",
-			billing_last_name="Smith",
-			billing_company="",
-			billing_email="ann@order.example.com",
-			billing_phone="555-0100",
-			billing_address_1="Order Street 1",
-			billing_city="Kraków",
-			shipping_first_name="Ann",
-			shipping_last_name="Smith",
-			shipping_address_1="Order Street 1",
-			shipping_city="Kraków",
+			{
+				"name": f"{SERVER}~12",
+				"woocommerce_server": SERVER,
+				"woocommerce_id": "12",
+				"customer_id": customer_id,
+				"billing_first_name": "Ann",
+				"billing_last_name": "Smith",
+				"billing_company": "",
+				"billing_email": "ann@example.com",
+				"billing_phone": "555-0100",
+				"billing_address_1": "Order Street 1",
+				"billing_city": "Kraków",
+				"billing_postcode": "30-001",
+				"billing_country": "PL",
+				"shipping_first_name": "Ann",
+				"shipping_last_name": "Smith",
+				"shipping_address_1": "Order Street 1",
+				"shipping_city": "Kraków",
+				"shipping_postcode": "30-001",
+				"shipping_country": "PL",
+				"meta_data": "[]",
+				**values,
+			}
 		)
 		order.current_wc_api = MagicMock()
-		order.current_wc_api.get.return_value = MagicMock(status_code=account_status, json=lambda: account)
+		order.current_wc_api.get.return_value = MagicMock(
+			status_code=200 if account else 404, json=lambda: account
+		)
 		sync.woocommerce_order = order
-		customer = MagicMock(flags=_dict())
-		with (
-			patch.object(frappe, "get_value", return_value=None) as self.lookup,
-			patch.object(frappe, "new_doc", return_value=customer),
-			patch.object(sync, "create_or_update_address") as create_or_update_address,
-			patch.object(sync_sales_orders, "create_contact") as create_contact,
+		server = make_server(customer_field_map=list(field_map))
+		get_cached_doc = frappe.get_cached_doc
+		with patch.object(
+			frappe,
+			"get_cached_doc",
+			side_effect=lambda *args, **kwargs: (
+				server if args and args[0] == "WooCommerce Server" else get_cached_doc(*args, **kwargs)
+			),
 		):
-			sync.create_or_link_customer_and_address()
-		return order, customer, create_or_update_address, create_contact
+			name = sync.create_or_link_customer_and_address()
+		return sync, name
 
-	def test_a_customer_is_of_the_shop_of_the_order(self):
-		# A guest's order id and a username repeat across shops
-		_order, customer, *_ = self.run_step()
+	def test_a_guest_gets_a_customer_of_the_order(self):
+		sync, name = self.run_step()
+
+		sync.woocommerce_order.current_wc_api.get.assert_not_called()
+		customer = frappe.get_doc("Customer", name)
+		self.assertEqual(
+			(customer.woocommerce_identifier, customer.customer_name, customer.customer_type),
+			("Guest-12", "Ann Smith", "Individual"),
+		)
+		# One Address for billing and shipping, and a Contact: its first, so its primary ones
+		self.assertEqual(sync.shipping_address, sync.billing_address)
+		address = frappe.get_doc("Address", sync.billing_address)
+		self.assertEqual(
+			(address.address_line1, address.country, address.phone, address.address_title),
+			("Order Street 1", "Poland", "555-0100", "Ann Smith"),
+		)
+		self.assertEqual((address.is_primary_address, address.is_shipping_address), (1, 1))
+		contact = frappe.get_doc("Contact", sync.contact)
+		self.assertEqual(
+			(contact.email_id, contact.phone, contact.is_primary_contact), ("ann@example.com", "555-0100", 1)
+		)
+		self.assertEqual(
+			(customer.customer_primary_address, customer.customer_primary_contact),
+			(sync.billing_address, sync.contact),
+		)
+		self.assertEqual(sync.customer_issues, [])
+
+	def test_a_guest_goes_to_the_customer_of_its_email_which_keeps_what_it_had(self):
+		ann = self.make_customer("Ann", "Ann Smith", "Guest-5")
+		contact = self.make_contact(ann, "Ann", "Smith", "ann@example.com")
+		address = self.make_address(ann, "Old Street 9")
+		modified = frappe.db.get_value("Address", address, "modified")
+
+		sync, name = self.run_step()
+
+		self.assertEqual(name, ann)
+		self.assertEqual(sync.customer_issues, [])
+		self.assertEqual(sync.contact, contact)
+		self.assertEqual(frappe.db.get_value("Customer", ann, "woocommerce_identifier"), "Guest-5")
+		# The order's address is added, and the Address of the earlier order is left as it was
+		self.assertNotEqual(sync.billing_address, address)
+		self.assertEqual(
+			frappe.db.get_value("Address", address, ["address_line1", "modified"]), ("Old Street 9", modified)
+		)
+
+	def test_an_order_of_another_name_on_the_customer_of_its_email_is_flagged(self):
+		bob = self.make_customer("Bob", "Bob Smith", "Guest-5")
+		bobs_contact = self.make_contact(bob, "Bob", "Smith", "ann@example.com")
+
+		sync, name = self.run_step()
+
+		self.assertEqual(name, bob)
+		self.assertEqual(frappe.db.get_value("Customer", bob, "customer_name"), "Bob Smith")
+		self.assertEqual(len(sync.customer_issues), 1)
+		self.assertIn("Ann Smith", sync.customer_issues[0])
+		# The email is Bob's too, but the order's Contact is Ann
+		self.assertNotEqual(sync.contact, bobs_contact)
+		self.assertEqual(frappe.db.get_value("Contact", sync.contact, "first_name"), "Ann")
+
+	def test_an_order_with_a_tax_id_is_not_put_on_another_buyers_customer_of_its_email(self):
+		bob = self.make_customer("Bob", "Bob Smith", "Guest-5")
+		self.make_contact(bob, "Bob", "Smith", "ann@example.com")
+
+		sync, name = self.run_step(field_map=[TAX_ID_ROW], meta_data=nip("PL6791003801"))
+
+		self.assertNotEqual(name, bob)
+		self.assertEqual(frappe.db.get_value("Customer", name, "tax_id"), "PL6791003801")
+		self.assertIsNone(frappe.db.get_value("Customer", bob, "tax_id"))
+		self.assertEqual(sync.customer_issues, [])
+
+	def test_customers_of_other_shops_and_disabled_ones_are_not_found_by_email(self):
+		others = [
+			self.make_customer("Ann", "Ann Smith", "Guest-5", woocommerce_server="two.example.com"),
+			self.make_customer("Ann Disabled", "Ann Smith", "Guest-6", disabled=1),
+		]
+		for customer in others:
+			self.make_contact(customer, "Ann", "Smith", "ann@example.com")
+
+		_sync, name = self.run_step()
+
+		self.assertNotIn(name, others)
+		self.assertEqual(frappe.db.get_value("Customer", name, "woocommerce_identifier"), "Guest-12")
+
+	def test_a_registered_customer_is_their_account_which_the_order_does_not_rename(self):
+		ann = self.make_customer("Ann", "Ann Old", "ann")
+		account = {"email": "ann@account.example.com", "username": "ann", "role": "customer"}
+
+		sync, name = self.run_step(customer_id=7, account=account)
+
+		request = sync.woocommerce_order.current_wc_api.get.call_args
+		self.assertEqual(request.args[0], "customers/7")
+		self.assertIn("role", request.kwargs["params"]["_fields"].split(","))
+		self.assertEqual(name, ann)
+		self.assertEqual(frappe.db.get_value("Customer", ann, "customer_name"), "Ann Old")
+		self.assertIn("Ann Smith", sync.customer_issues[0])
+		# The order's Contact has the email the order gives
+		self.assertEqual(frappe.db.get_value("Contact", sync.contact, "email_id"), "ann@example.com")
+
+	def test_a_registered_customer_of_the_orders_name_is_not_flagged(self):
+		ann = self.make_customer("Ann", "Ann Smith", "ann")
+
+		sync, name = self.run_step(customer_id=7, account={"username": "ann", "role": "customer"})
+
+		self.assertEqual(name, ann)
+		self.assertEqual(sync.customer_issues, [])
+
+	def test_a_new_registered_customer_is_known_by_their_username(self):
+		account = {"username": "ann", "avatar_url": "https://a.example.com/ann", "role": "customer"}
+
+		_sync, name = self.run_step(customer_id=7, account=account)
 
 		self.assertEqual(
-			self.lookup.call_args.args[1],
-			{"woocommerce_server": SERVER, "woocommerce_identifier": "Guest-12"},
+			frappe.db.get_value("Customer", name, ["woocommerce_identifier", "image"]),
+			("ann", "https://a.example.com/ann"),
 		)
-		self.assertEqual(customer.woocommerce_server, SERVER)
-
-	def test_a_guest_is_a_customer_of_the_order(self):
-		order, customer, create_or_update_address, create_contact = self.run_step()
-
-		order.current_wc_api.get.assert_not_called()
-		self.assertEqual(customer.woocommerce_identifier, "Guest-12")
-		billing, _shipping = create_or_update_address.call_args.args
-		self.assertEqual(billing["address_1"], "Order Street 1")
-		self.assertEqual(create_contact.call_args.args[0]["phone"], "555-0100")
-
-	def test_a_registered_customer_is_their_account_with_the_addresses_of_the_order(self):
-		account = {
-			"email": "ann@account.example.com",
-			"username": "ann",
-			"avatar_url": "https://a.example.com/ann",
-		}
-
-		order, customer, create_or_update_address, create_contact = self.run_step(
-			customer_id=7, account=account
-		)
-
-		self.assertEqual(order.current_wc_api.get.call_args.args[0], "customers/7")
-		self.assertEqual(customer.woocommerce_identifier, "ann")
-		self.assertEqual(customer.image, "https://a.example.com/ann")
-		billing, _shipping = create_or_update_address.call_args.args
-		self.assertEqual(billing["address_1"], "Order Street 1")
-		contact = create_contact.call_args.args[0]
-		self.assertEqual((contact["email"], contact["phone"]), ("ann@account.example.com", "555-0100"))
 
 	def test_a_customer_whose_account_is_gone_is_known_by_email(self):
-		_order, customer, *_ = self.run_step(customer_id=7, account_status=404)
+		_sync, name = self.run_step(customer_id=7)
 
-		self.assertEqual(customer.woocommerce_identifier, "ann@order.example.com")
+		self.assertEqual(frappe.db.get_value("Customer", name, "woocommerce_identifier"), "ann@example.com")
+
+	def test_an_order_the_shops_staff_placed_is_the_buyers(self):
+		admin = self.make_customer("Admin", "Shop Admin", "admin")
+		account = {"username": "admin", "avatar_url": "https://a.example.com/admin", "role": "administrator"}
+
+		sync, name = self.run_step(customer_id=1, account=account)
+
+		self.assertNotEqual(name, admin)
+		self.assertEqual(
+			frappe.db.get_value("Customer", name, ["woocommerce_identifier", "customer_name", "image"]),
+			("Guest-12", "Ann Smith", None),
+		)
+		self.assertEqual(frappe.db.get_value("Customer", admin, "customer_name"), "Shop Admin")
+		self.assertEqual(sync.customer_issues, [])
+
+	def test_an_order_the_staff_placed_for_a_customer_finds_them_by_email(self):
+		ann = self.make_customer("Ann", "Ann Smith", "ann")
+		self.make_contact(ann, "Ann", "Smith", "ann@example.com")
+
+		_sync, name = self.run_step(customer_id=1, account={"username": "manager", "role": "shop_manager"})
+
+		self.assertEqual(name, ann)
+
+	def test_an_order_with_a_tax_id_goes_to_the_customer_with_it(self):
+		firm = self.make_customer(
+			"Firm", "Firma X sp. z o.o.", "firma", customer_type="Company", tax_id="6791003801"
+		)
+
+		sync, name = self.run_step(
+			field_map=[TAX_ID_ROW], billing_company="FIRMA X", meta_data=nip("PL 679-100-38-01")
+		)
+
+		self.assertEqual(name, firm)
+		# The tax ID says which company it is, however the order spells its name
+		self.assertEqual(sync.customer_issues, [])
+		self.assertEqual(frappe.db.get_value("Customer", firm, "tax_id"), "6791003801")
+
+	def test_the_customer_of_an_account_that_is_the_company_takes_its_tax_id(self):
+		firm = self.make_customer("Firm", "Firma X", "ann", customer_type="Company")
+
+		_sync, name = self.run_step(
+			customer_id=7,
+			account={"username": "ann", "role": "customer"},
+			field_map=[TAX_ID_ROW],
+			billing_company="Firma X",
+			meta_data=nip("PL6791003801"),
+		)
+
+		self.assertEqual(name, firm)
+		self.assertEqual(frappe.db.get_value("Customer", firm, "tax_id"), "PL6791003801")
+
+	def test_a_person_buying_for_their_company_gets_a_customer_of_the_company(self):
+		ann = self.make_customer("Ann", "Ann Smith", "ann")
+
+		sync, name = self.run_step(
+			customer_id=7,
+			account={"username": "ann", "role": "customer"},
+			field_map=[TAX_ID_ROW],
+			billing_company="Firma X",
+			meta_data=nip("PL6791003801"),
+		)
+
+		self.assertNotEqual(name, ann)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Customer", name, ["woocommerce_identifier", "customer_name", "customer_type", "tax_id"]
+			),
+			("TaxID-6791003801", "Firma X", "Company", "PL6791003801"),
+		)
+		self.assertIsNone(frappe.db.get_value("Customer", ann, "tax_id"))
+		self.assertEqual(sync.customer_issues, [])
+
+	def test_a_guests_company_order_gets_a_customer_with_its_tax_id(self):
+		_sync, name = self.run_step(
+			field_map=[TAX_ID_ROW], billing_company="Firma X", meta_data=nip("PL6791003801")
+		)
+
+		self.assertEqual(
+			frappe.db.get_value("Customer", name, ["woocommerce_identifier", "customer_type", "tax_id"]),
+			("Guest-12", "Company", "PL6791003801"),
+		)
+
+	def test_an_address_the_customer_has_is_used_again_as_it_is(self):
+		ann = self.make_customer("Ann", "Ann Smith", "Guest-5")
+		self.make_contact(ann, "Ann", "Smith", "ann@example.com")
+		# The order's address, written with other capitals and spaces
+		address = self.make_address(ann, " order  street 1", city="KRAKÓW")
+		fields = ["address_line1", "city", "phone", "address_title"]
+		written = frappe.db.get_value("Address", address, fields)
+
+		sync, _name = self.run_step()
+
+		self.assertEqual((sync.billing_address, sync.shipping_address), (address, address))
+		# Only made the Customer's primary one, which ERPNext marks it as when it saves the Customer
+		self.assertEqual(frappe.db.get_value("Address", address, fields), written)
+		self.assertEqual(len(get_addresses_linking_to("Customer", ann)), 1)
+
+	def test_a_shipping_address_of_its_own_gets_an_address_of_its_own(self):
+		sync, _name = self.run_step(
+			shipping_first_name="Bob", shipping_last_name="Smith", shipping_address_1="Gift Street 2"
+		)
+
+		self.assertNotEqual(sync.shipping_address, sync.billing_address)
+		shipping = frappe.get_doc("Address", sync.shipping_address)
+		# Titled for whom it is, and reached at the billing phone, as it has none of its own
+		self.assertEqual(
+			(shipping.address_title, shipping.address_type, shipping.phone),
+			("Bob Smith", "Shipping", "555-0100"),
+		)
+		self.assertEqual((shipping.is_primary_address, shipping.is_shipping_address), (0, 1))
+		self.assertEqual(
+			frappe.db.get_value(
+				"Address", sync.billing_address, ["is_primary_address", "is_shipping_address"]
+			),
+			(1, 0),
+		)
+
+	def test_an_empty_shipping_address_is_the_billing_one(self):
+		sync, _name = self.run_step(
+			**{
+				f"shipping_{key}": ""
+				for key in ("first_name", "last_name", "address_1", "city", "postcode", "country")
+			}
+		)
+
+		self.assertEqual(sync.shipping_address, sync.billing_address)
+
+	def test_the_sales_order_links_the_address_and_contact_of_its_order(self):
+		sync, name = self.run_step(
+			shipping_first_name="Bob", shipping_last_name="Smith", shipping_address_1="Gift Street 2"
+		)
+		sales_order = frappe.new_doc("Sales Order")
+
+		sync.set_customer_in_sales_order(sales_order)
+
+		self.assertEqual(
+			(
+				sales_order.customer,
+				sales_order.customer_address,
+				sales_order.shipping_address_name,
+				sales_order.contact_person,
+			),
+			(name, sync.billing_address, sync.shipping_address, sync.contact),
+		)
+		self.assertEqual(
+			(sales_order.contact_display, sales_order.contact_email, sales_order.contact_mobile),
+			("Ann Smith", "ann@example.com", "555-0100"),
+		)
+
+	def test_what_to_check_about_the_customer_is_flagged_before_the_submit(self):
+		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+		sync.woocommerce_order = _dict(
+			woocommerce_server=SERVER,
+			woocommerce_id="12",
+			number="12",
+			woocommerce_date_created="2026-11-03T10:00:00",
+			woocommerce_date_modified="2026-11-03T10:00:00",
+			currency="PLN",
+		)
+		sync.line_issues = ["Line 1 has no Item"]
+		sales_order = MagicMock(flags=_dict())
+		flagged_at_submit = []
+		sales_order.submit.side_effect = lambda: flagged_at_submit.append(sales_order.woocommerce_sync_issue)
+
+		def customer_step():
+			sync.customer_issues = ["Placed as Ann Smith, but its Customer is Bob Smith"]
+			return "_Test WC Bob"
+
+		with (
+			patch.object(sync, "create_or_link_customer_and_address", side_effect=customer_step),
+			patch.object(sync, "create_missing_items"),
+			patch.object(sync, "set_customer_in_sales_order"),
+			patch.object(sync, "set_items_in_sales_order"),
+			patch.object(sync, "check_totals", return_value=None),
+			patch.object(frappe, "new_doc", return_value=sales_order),
+			patch.object(frappe, "get_cached_doc", return_value=make_server()),
+		):
+			sync.create_sales_order(SUBMIT_INVOICE)
+
+		# Flagged, the Sales Order isn't invoiced until a person has looked at it
+		self.assertEqual(
+			flagged_at_submit, ["Placed as Ann Smith, but its Customer is Bob Smith; Line 1 has no Item"]
+		)
+
+	def test_tax_ids_are_compared_however_they_are_written(self):
+		for tax_id in ("PL 679-100-38-01", "pl6791003801", "679 100 38 01"):
+			with self.subTest(tax_id=tax_id):
+				self.assertEqual(normalise_tax_id(tax_id), "6791003801")
+		self.assertEqual(normalise_tax_id(None), "")
 
 
 class TestCustomerShopPatch(IntegrationTestCase):

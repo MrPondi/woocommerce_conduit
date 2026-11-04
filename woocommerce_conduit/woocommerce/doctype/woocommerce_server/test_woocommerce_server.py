@@ -481,6 +481,29 @@ class TestWooCommerceServer(IntegrationTestCase):
 			with self.subTest(field=erpnext_field_name), self.assertRaises(frappe.ValidationError):
 				validate(erpnext_field_name)
 
+	def test_the_customer_field_map_writes_only_what_it_may_from_the_order(self):
+		def validate(erpnext_field_name, path="$.meta_data[?key=='_billing_nip'].value"):
+			new_server(
+				customer_field_map=[
+					{"erpnext_field_name": erpnext_field_name, "woocommerce_field_name": path}
+				]
+			).validate_customer_map()
+
+		validate("tax_id | Tax ID")
+		validate("tax_id | Tax ID", "$.billing_company")
+		# Who the Customer is, which the sync decides, and how it is billed
+		for erpnext_field_name in (
+			"customer_name | Customer Name",
+			"woocommerce_identifier | Woocommerce Identifier",
+			"default_price_list | Default Price List",
+		):
+			with self.subTest(field=erpnext_field_name), self.assertRaises(frappe.ValidationError):
+				validate(erpnext_field_name)
+		# The order has its addresses as billing_… fields, and a path must start at one of its fields
+		for path in ("$.billing.company", "$..value"):
+			with self.subTest(path=path), self.assertRaises(frappe.ValidationError):
+				validate("tax_id | Tax ID", path)
+
 	def validate_prefix(self, prefix, other_prefixes=()):
 		server = new_server(name_sales_orders_by_number=1, sales_order_prefix=prefix)
 		others = [
