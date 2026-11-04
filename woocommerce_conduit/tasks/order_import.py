@@ -7,21 +7,25 @@ the app books them, for orders that were done before ERPNext saw them: the shop'
 completed while the sync wasn't watching.
 """
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import quote
 
 import frappe
 from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 from erpnext.accounts.party import get_due_date
 from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note, make_sales_invoice
 from frappe import _
+from frappe.desk.doctype.notification_log.notification_log import enqueue_create_notification
 from frappe.query_builder.functions import Count
-from frappe.utils import add_days, cstr, flt, get_datetime, getdate, strip_html
+from frappe.utils import add_days, cstr, escape_html, flt, get_datetime, getdate, strip_html
+from frappe.utils.user import get_users_with_role
 from rq.timeouts import JobTimeoutException
 
 from woocommerce_conduit.tasks.order_import_serials import assign_serial_numbers, check_serial_numbers
 from woocommerce_conduit.tasks.order_lines import get_json_lines
-from woocommerce_conduit.tasks.sync_sales_orders import SynchroniseSalesOrder
+from woocommerce_conduit.tasks.sync_sales_orders import SynchroniseSalesOrder, is_order_sync_paused
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import WooCommerceOrder
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order_import.woocommerce_order_import import (
 	get_import_job_id,
@@ -38,6 +42,7 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_order_import_payment_me
 	PAYMENT_DATE_COMPLETED,
 )
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
+	ACTION_SUBMIT,
 	normalise_status,
 )
 from woocommerce_conduit.woocommerce.woocommerce_api import get_domain_and_id_from_woocommerce_record_name
@@ -53,6 +58,10 @@ MAX_ORDERS_TO_IMPORT = 100_000
 LOOKUP_BATCH_SIZE = 1000
 # The longest reference a Payment Entry takes
 REFERENCE_NO_LENGTH = 140
+# The order numbers a notification of orders waiting for an import names, the rest are counted
+MAX_ORDERS_NAMED = 20
+# Shown in the desk's bell and sent by no email (Frappe's notification_skip_email_types), also to its own actor
+NOTIFICATION_TYPE = "Alert"
 
 STATUS_IN_PROGRESS = "In Progress"
 STATUS_SUCCESS = "Success"
@@ -302,7 +311,15 @@ def publish_import_progress(order_import: str, **progress) -> None:
 
 def get_orders_to_import(order_import) -> list[str]:
 	"""
-	The names of the completed orders of the import's shop in its date range that have no Sales Order. Raises
+	The names of the orders the import takes, and nothing else of them: a full order of every one of them would
+	fill the memory of the worker
+	"""
+	return [record["name"] for record in list_orders_to_import(order_import, ["name"])]
+
+
+def list_orders_to_import(order_import, fields: list[str]) -> list[dict]:
+	"""
+	The completed orders of the import's shop in its date range that have no Sales Order, with `fields`. Raises
 	when the shop can't be read, so it isn't taken for one without orders.
 	"""
 	records = WooCommerceOrder.get_list_of_records(
@@ -312,7 +329,7 @@ def get_orders_to_import(order_import) -> list[str]:
 				["WooCommerce Order", "status", "=", IMPORTED_STATUS],
 				*get_date_filters(order_import.created_from, order_import.created_to),
 			],
-			"fields": ["name"],
+			"fields": fields,
 			# By id, so an order placed while the pages are read doesn't move the next page on
 			"order_by": "name asc",
 			"page_length": MAX_ORDERS_TO_IMPORT,
@@ -328,7 +345,115 @@ def get_orders_to_import(order_import) -> list[str]:
 			indicator="orange",
 			realtime=True,
 		)
-	return leave_out_imported(order_import.woocommerce_server, [record["name"] for record in records])
+	waiting = set(leave_out_imported(order_import.woocommerce_server, [record["name"] for record in records]))
+	return [record for record in records if record["name"] in waiting]
+
+
+@frappe.whitelist()
+def count_orders_to_import(order_import: str) -> dict:
+	"""
+	How many orders an import would take now, and those of them it would skip, as their payment method has no
+	Mode of Payment, by method: for the form to say before it starts. It reads the shop as the import does, with
+	only what the count needs. Why the shop couldn't be read is returned rather than raised, as an import can
+	start without a count.
+	"""
+	doc = frappe.get_doc("WooCommerce Order Import", order_import)
+	doc.check_permission("read")
+	try:
+		records = list_orders_to_import(doc, ["name", "payment_method", "payment_method_title", "total"])
+	except Exception as error:
+		frappe.log_error("WooCommerce Error", f"{frappe.get_traceback()}\n\nOrder Import: {doc.name}")
+		return {"total": None, "skipped": [], "error": strip_html(cstr(error)) or error.__class__.__name__}
+
+	skipped: dict[str, dict] = {}
+	for record in records:
+		if flt(record.get("total")) <= 0 or get_booking_row(doc, record):
+			continue
+		method = cstr(record.get("payment_method"))
+		row = skipped.setdefault(method, {"payment_method": method, "title": None, "orders": 0})
+		row["orders"] += 1
+		# A method's title changes over time, and the orders come by id, so the last one is the newest
+		row["title"] = cstr(record.get("payment_method_title")) or row["title"]
+	return {
+		"total": len(records),
+		"skipped": sorted(skipped.values(), key=lambda row: -row["orders"]),
+		"error": None,
+	}
+
+
+def get_booking_row(order_import, order):
+	"""
+	The row of the import's Payment Method Map that books an order's payment: that of its payment method, when it
+	has a Mode of Payment. Without one an order with something to pay is skipped.
+	"""
+	row = order_import.get_payment_method_row(order.get("payment_method"))
+	return row if row and row.mode_of_payment else None
+
+
+def notify_orders_to_import(records: list[dict]) -> None:
+	"""
+	Tell the System Managers about the orders the order sync listed completed that have no Sales Order. The sync
+	makes none for them, as an order it first sees completed is the import's, so they wait for one, and nothing
+	else says so: an order completed while the sync was paused, entered in wp-admin as completed, or completed
+	within the hour after its webhook failed. One notification per shop and run, naming the orders.
+	"""
+	completed = defaultdict(list)
+	for record in records:
+		if normalise_status(record.get("status")) == IMPORTED_STATUS:
+			completed[get_domain_and_id_from_woocommerce_record_name(record["name"])[0]].append(record)
+
+	for woocommerce_server, server_records in completed.items():
+		# Listed again when the sync is unpaused (sync_paused_orders), and brought up then
+		if is_order_sync_paused(woocommerce_server):
+			continue
+		# The sync makes their Sales Orders itself
+		row = frappe.get_cached_doc("WooCommerce Server", woocommerce_server).get_order_status_row(
+			IMPORTED_STATUS
+		)
+		if row and ACTION_SUBMIT in row.get_actions():
+			continue
+		waiting = set(leave_out_imported(woocommerce_server, [record["name"] for record in server_records]))
+		numbers = [
+			cstr(record.get("number") or get_domain_and_id_from_woocommerce_record_name(record["name"])[1])
+			for record in server_records
+			if record["name"] in waiting
+		]
+		if numbers:
+			send_orders_to_import_notification(woocommerce_server, numbers)
+
+
+def send_orders_to_import_notification(woocommerce_server: str, numbers: list[str]) -> None:
+	"""
+	A notification in the desk's bell, without an email, that leads to the shop's imports
+	"""
+	named = ", ".join(f"#{escape_html(number)}" for number in numbers[:MAX_ORDERS_NAMED])
+	if len(numbers) > MAX_ORDERS_NAMED:
+		named += " " + _("and {0} more").format(len(numbers) - MAX_ORDERS_NAMED)
+	enqueue_create_notification(
+		get_notified_users(),
+		{
+			"type": NOTIFICATION_TYPE,
+			"document_type": "WooCommerce Server",
+			"document_name": woocommerce_server,
+			"link": f"/app/woocommerce-order-import?woocommerce_server={quote(woocommerce_server)}",
+			"subject": _("Completed orders of {0} without a Sales Order: {1}").format(
+				escape_html(woocommerce_server), named
+			),
+			"email_content": _(
+				"The shop completed them before ERPNext saw them, so the order sync made no Sales Order for them."
+				" A WooCommerce Order Import books them with their payment."
+			),
+		},
+	)
+
+
+def get_notified_users() -> list[str]:
+	"""
+	The emails of the enabled System Managers, who may import orders, Administrator among them: on a site one
+	person set up it is the only one. Frappe finds the users of a notification by their email.
+	"""
+	users = ["Administrator", *get_users_with_role("System Manager")]
+	return frappe.get_all("User", filters={"name": ["in", users], "enabled": 1}, pluck="email")
 
 
 def get_date_filters(created_from, created_to) -> list[list]:
@@ -413,8 +538,8 @@ class OrderImport(SynchroniseSalesOrder):
 		# An order nothing was paid for has no method to look for, and is imported without an invoice
 		method = account = None
 		if flt(wc_order.total) > 0:
-			method = self.order_import.get_payment_method_row(wc_order.payment_method)
-			if not (method and method.mode_of_payment):
+			method = get_booking_row(self.order_import, wc_order)
+			if not method:
 				return self.skip(
 					_("It was paid with {0}, which has no Mode of Payment in the Payment Method Map").format(
 						wc_order.payment_method_title or wc_order.payment_method or _("no payment method")

@@ -28,12 +28,6 @@ With a template whose VAT is included in the rate, shipping and fees that WooCom
 
 Start at: `order_lines.build_charges`, `taxes.get_vat_rates`.
 
-### Orders waiting for an import
-
-The sync makes Sales Orders only for orders it first sees active, so an order completed before it saw it waits for a WooCommerce Order Import, and nothing says so: one completed while Pause Order Sync was on, entered in wp-admin as completed, or completed within the hour after its webhook failed. A count on the server form of the shop's completed orders without a Sales Order, or an import that says how many it would take before it starts, would bring them up.
-
-Start at: `order_import.get_orders_to_import`, `WooCommerceOrder.get_count_of_records`, `item_parity.get_unlinked_order_products` (Check Order Items).
-
 ### Shipping methods outside the zones
 
 Add Missing Shipping Methods reads the methods of the shop's shipping zones. Some orders are shipped with a method no zone lists: WooCommerce's block-based local pickup (`pickup_location`), plugin methods, and orders made in the admin or imported from elsewhere. They get a Shipping Rule only through a bare `method_id` row typed by hand. Reading the shipping lines of the latest orders, as Check Order Items does for their products, would find them and could add their rows.

@@ -651,7 +651,8 @@ def get_names_of_wc_orders(
 	"""
 	The names of the WooCommerce Orders on all enabled servers, or on `servers`, that were modified after
 	`date_time_from` and created after the minimum creation date of the settings, with one of the statuses.
-	Orders whose Sales Order has seen that change already are left out.
+	Orders whose Sales Order has seen that change already are left out. The completed ones among them that have
+	no Sales Order wait for a WooCommerce Order Import, as the sync makes none for them, and are brought up.
 
 	Raises when WooCommerce can't be reached, so an unreachable shop isn't taken for one without orders.
 	"""
@@ -677,13 +678,28 @@ def get_names_of_wc_orders(
 		{
 			"doctype": "WooCommerce Order",
 			"filters": filters,
-			"fields": ["name"],
+			# The status and number tell the orders that wait for an import
+			"fields": ["name", "status", "number"],
 			"page_length": MAX_ORDERS_PER_SYNC,
 			"servers": servers,
 			"strict": True,
 		}
 	)
+	bring_up_orders_to_import(records)
 	return get_changed_order_names(records)
+
+
+def bring_up_orders_to_import(records: list[dict]) -> None:
+	"""
+	Tell of the listed orders that wait for an import. A failure is logged, as it mustn't hold up the sync.
+	"""
+	# Imported here, as the import imports this module
+	from woocommerce_conduit.tasks.order_import import notify_orders_to_import
+
+	try:
+		notify_orders_to_import(records)
+	except Exception:
+		frappe.log_error("WooCommerce Error", frappe.get_traceback())
 
 
 def get_changed_order_names(records: list[dict]) -> list[str]:

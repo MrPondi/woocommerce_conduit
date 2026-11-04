@@ -13,10 +13,15 @@ from woocommerce_conduit.tasks import order_import
 from woocommerce_conduit.tasks.order_import import (
 	ImportResult,
 	OrderImport,
+	count_orders_to_import,
 	count_results,
 	get_date_filters,
+	get_notified_users,
 	get_orders_to_import,
 	import_orders,
+	list_orders_to_import,
+	notify_orders_to_import,
+	send_orders_to_import_notification,
 	start_order_import,
 	write_log,
 )
@@ -30,6 +35,9 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_order_import_log.woocom
 )
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order_import_payment_method.woocommerce_order_import_payment_method import (
 	PAYMENT_DATE_COMPLETED,
+)
+from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
+	ACTION_SUBMIT,
 )
 
 SERVER = "import.example.com"
@@ -156,6 +164,15 @@ class TestOrderListing(IntegrationTestCase):
 			get_all.call_args.kwargs["filters"],
 			{"woocommerce_server": SERVER, "woocommerce_id": ["in", ["1", "2", "3"]]},
 		)
+
+	def test_orders_are_listed_with_the_fields_asked_for(self):
+		records = [{"name": order_name(1), "total": 5.0}, {"name": order_name(2), "total": 7.0}]
+		with (
+			patch.object(WooCommerceOrder, "get_list_of_records", return_value=records) as get_list,
+			patch.object(frappe, "get_all", return_value=["2"]),
+		):
+			self.assertEqual(list_orders_to_import(make_import(), ["name", "total"]), [records[0]])
+		self.assertEqual(get_list.call_args.args[0]["fields"], ["name", "total"])
 
 	def test_a_list_that_reaches_the_limit_says_so(self):
 		with (
@@ -792,3 +809,135 @@ class TestOrderImportForm(IntegrationTestCase):
 		)
 		self.assertEqual(doc.get_payment_method_row("stripe").mode_of_payment, "Credit Card")
 		self.assertIsNone(doc.get_payment_method_row("paypal"))
+
+
+class TestCountingOrdersToImport(IntegrationTestCase):
+	def count(self, records=None, error=None):
+		with (
+			patch.object(frappe, "get_doc", return_value=make_import()),
+			patch.object(
+				order_import, "list_orders_to_import", return_value=records, side_effect=error
+			) as list_orders,
+		):
+			return count_orders_to_import("WC-ORD-IMP-00009"), list_orders
+
+	def test_the_orders_it_would_skip_are_counted_by_payment_method(self):
+		def order(order_id, method, title, total):
+			return {
+				"name": order_name(order_id),
+				"payment_method": method,
+				"payment_method_title": title,
+				"total": total,
+			}
+
+		result, list_orders = self.count(
+			[
+				order(1, "stripe", "Card", 100.0),
+				# A row without a Mode of Payment
+				order(2, "cod", "Cash on delivery", 50.0),
+				# Not in the map, under the title it had then and the one it has now
+				order(3, "reserve", "Reserve a mower", 10.0),
+				order(4, "reserve", "Reserve a robot", 10.0),
+				# Made in wp-admin without one
+				order(5, "", "", 20.0),
+				# Nothing to pay, so no method is needed
+				order(6, "", "", 0.0),
+			]
+		)
+
+		self.assertEqual(
+			result,
+			{
+				"total": 6,
+				"skipped": [
+					{"payment_method": "reserve", "title": "Reserve a robot", "orders": 2},
+					{"payment_method": "cod", "title": "Cash on delivery", "orders": 1},
+					{"payment_method": "", "title": None, "orders": 1},
+				],
+				"error": None,
+			},
+		)
+		# Only what the count needs, as the import lists them
+		self.assertEqual(
+			list_orders.call_args.args[1], ["name", "payment_method", "payment_method_title", "total"]
+		)
+
+	def test_a_shop_that_can_not_be_read_is_said_rather_than_raised(self):
+		with patch.object(frappe, "log_error") as log_error:
+			result, _list_orders = self.count(error=ConnectionError("The shop is down"))
+
+		self.assertEqual(result, {"total": None, "skipped": [], "error": "The shop is down"})
+		log_error.assert_called_once()
+
+
+class TestOrdersWaitingForAnImport(IntegrationTestCase):
+	def test_completed_orders_without_a_sales_order_are_told_of_once_per_shop(self):
+		records = [
+			{"name": "a.example.com~1", "status": "completed", "number": "1001"},
+			# It has a Sales Order
+			{"name": "a.example.com~2", "status": "completed", "number": "1002"},
+			# The sync makes it one
+			{"name": "a.example.com~3", "status": "processing", "number": "1003"},
+			# Named by its id without a number
+			{"name": "a.example.com~4", "status": "wc-completed", "number": None},
+			# Its shop is paused, and listed again when it is unpaused
+			{"name": "b.example.com~5", "status": "completed", "number": "5"},
+			# Its shop submits completed orders itself
+			{"name": "c.example.com~6", "status": "completed", "number": "6"},
+			# All its completed orders have a Sales Order
+			{"name": "d.example.com~7", "status": "completed", "number": "7"},
+		]
+		rows = {"c.example.com": _dict(get_actions=lambda: frozenset({ACTION_SUBMIT}))}
+		with (
+			patch.object(
+				order_import, "is_order_sync_paused", side_effect=lambda server: server == "b.example.com"
+			),
+			patch.object(
+				frappe,
+				"get_cached_doc",
+				side_effect=lambda doctype, name: _dict(get_order_status_row=lambda status: rows.get(name)),
+			),
+			patch.object(
+				order_import,
+				"leave_out_imported",
+				side_effect=lambda server, names: [
+					name for name in names if name not in ("a.example.com~2", "d.example.com~7")
+				],
+			),
+			patch.object(order_import, "send_orders_to_import_notification") as send,
+		):
+			notify_orders_to_import(records)
+
+		self.assertEqual([call.args for call in send.call_args_list], [("a.example.com", ["1001", "4"])])
+
+	def test_nothing_is_said_when_nothing_waits(self):
+		with patch.object(order_import, "send_orders_to_import_notification") as send:
+			notify_orders_to_import([{"name": "a.example.com~1", "status": "processing"}])
+		send.assert_not_called()
+
+	def test_the_notification_leads_to_the_shops_imports_and_sends_no_email(self):
+		with (
+			patch.object(order_import, "get_notified_users", return_value=["admin@example.com"]),
+			patch.object(order_import, "enqueue_create_notification") as enqueue,
+		):
+			send_orders_to_import_notification("a.example.com", [str(number) for number in range(1, 23)])
+
+		users, notification = enqueue.call_args.args
+		self.assertEqual(users, ["admin@example.com"])
+		# Frappe sends an Alert by no email, also to the user it comes from, Administrator in a job
+		self.assertEqual(notification["type"], "Alert")
+		self.assertEqual(
+			notification["link"], "/app/woocommerce-order-import?woocommerce_server=a.example.com"
+		)
+		self.assertEqual(
+			(notification["document_type"], notification["document_name"]),
+			("WooCommerce Server", "a.example.com"),
+		)
+		# The first 20 are named, the rest counted
+		self.assertIn("#1, #2", notification["subject"])
+		self.assertIn("#20 and 2 more", notification["subject"])
+		self.assertNotIn("#21", notification["subject"])
+
+	def test_the_system_managers_are_told_administrator_among_them(self):
+		# Administrator is left out of Frappe's lookup by role, but is the only one on a site one person set up
+		self.assertIn(frappe.db.get_value("User", "Administrator", "email"), get_notified_users())

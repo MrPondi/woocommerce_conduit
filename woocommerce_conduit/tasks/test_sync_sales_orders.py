@@ -17,7 +17,7 @@ from frappe.tests import IntegrationTestCase
 from woocommerce_conduit import endpoint
 from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.patches.v1 import set_customer_woocommerce_server
-from woocommerce_conduit.tasks import order_lines, sync_sales_orders
+from woocommerce_conduit.tasks import order_import, order_lines, sync_sales_orders
 from woocommerce_conduit.tasks.field_map import LOGGED_PROBLEMS_FLAG
 from woocommerce_conduit.tasks.order_customer import get_addresses_linking_to, normalise_tax_id
 from woocommerce_conduit.tasks.order_lines import (
@@ -180,6 +180,32 @@ class TestGetNamesOfOrders(IntegrationTestCase):
 			get_names_of_wc_orders(servers=[SERVER])
 
 		self.assertEqual(get_list_of_records.call_args.args[0]["servers"], [SERVER])
+
+	def test_the_listed_orders_are_looked_through_for_those_waiting_for_an_import(self):
+		records = [{"name": "a~1", "status": "completed", "number": "1001"}]
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=_dict(minimum_creation_date=None)),
+			patch.object(
+				WooCommerceOrder, "get_list_of_records", return_value=records
+			) as get_list_of_records,
+			patch.object(order_import, "notify_orders_to_import") as notify_orders_to_import,
+		):
+			self.assertEqual(get_names_of_wc_orders(), ["a~1"])
+
+		notify_orders_to_import.assert_called_once_with(records)
+		# The status and number tell them, in the same requests
+		self.assertEqual(get_list_of_records.call_args.args[0]["fields"], ["name", "status", "number"])
+
+	def test_a_notice_that_fails_does_not_hold_up_the_sync(self):
+		with (
+			patch.object(frappe, "get_cached_doc", return_value=_dict(minimum_creation_date=None)),
+			patch.object(WooCommerceOrder, "get_list_of_records", return_value=[{"name": "a~1"}]),
+			patch.object(order_import, "notify_orders_to_import", side_effect=ValueError("broken")),
+			patch.object(frappe, "log_error") as log_error,
+		):
+			self.assertEqual(get_names_of_wc_orders(), ["a~1"])
+
+		log_error.assert_called_once()
 
 
 class TestSyncHash(IntegrationTestCase):
