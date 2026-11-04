@@ -22,12 +22,6 @@ Refunds the shop made before ERPNext saw the order are only found when its Sales
 
 Start at: ERPNext's `make_sales_return` (Sales Invoice), `order_status.enqueue_status_push_from_hook` and `SynchroniseSalesOrder.push_status_to_woocommerce` for the shape of a push, `OrderImport.book_invoice_and_payment`, and `SynchroniseSalesOrder.create_sales_order`.
 
-### Duplicated Sales Orders keep the order's link
-
-The Sales Order's `woocommerce_server` and `woocommerce_id` aren't `no_copy`, so Duplicate on a synced Sales Order makes one linked to the same WooCommerce order. Submitting it syncs it, and `find_sales_order` then takes the duplicate as the order's Sales Order, as the newest that isn't cancelled. `no_copy` on the Sales Order's WooCommerce fields would fix Duplicate and leave Amend alone, as the form's Amend and `amend_sales_order` copy no-copy fields too.
-
-Start at: the Sales Order fields in `custom_fields.py`.
-
 ### VAT on shipping and fees at WooCommerce's rate
 
 With a template whose VAT is included in the rate, shipping and fees that WooCommerce taxed have their VAT taken out again at the rates of the default Item Tax Template, not at the rate WooCommerce charged. A shop whose shipping takes the rate of the items in the cart (WooCommerce's "Shipping tax class based on cart items") taxes it at 8% on an order of 8% goods, and ERPNext books 23%. The grand total still matches, so the totals check doesn't flag it. Without an inclusive template the VAT is WooCommerce's amount, but all of it goes on the account of the template's first VAT row. The order's `tax_lines` say what WooCommerce charged at each rate (`rate_id`, `shipping_tax_total`), which could pick the VAT rows instead.

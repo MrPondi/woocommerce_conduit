@@ -94,7 +94,10 @@ def get_custom_fields() -> dict[str, list[dict]]:
 				"module": MODULE,
 			},
 		],
-		# The WooCommerce order a Sales Order was made from, and what the sync saw of it
+		# The WooCommerce order a Sales Order was made from, and what the sync saw of it. All of them are no-copy:
+		# a Duplicate (and Auto Repeat) leaves them out, as the copy is a new order, not the shop's, which would
+		# otherwise be synced and found as the order's Sales Order. An amendment is the order's still, and Amend
+		# copies them, the form's (`from_amend`) and `amend_sales_order` (`frappe.copy_doc`) alike.
 		"Sales Order": [
 			{
 				"fieldname": "woocommerce_customer_note",
@@ -102,6 +105,7 @@ def get_custom_fields() -> dict[str, list[dict]]:
 				"fieldtype": "Small Text",
 				"read_only": 1,
 				"allow_on_submit": 1,
+				"no_copy": 1,
 				"width": "100",
 				"insert_after": "amended_from",
 				"module": MODULE,
@@ -124,6 +128,7 @@ def get_custom_fields() -> dict[str, list[dict]]:
 				"options": "WooCommerce Server",
 				"hidden": 1,
 				"read_only": 1,
+				"no_copy": 1,
 				"print_hide": 1,
 				"insert_after": "woocommerce_sync_issue",
 				"module": MODULE,
@@ -135,6 +140,7 @@ def get_custom_fields() -> dict[str, list[dict]]:
 				"hidden": 1,
 				"read_only": 1,
 				"search_index": 1,
+				"no_copy": 1,
 				"print_hide": 1,
 				"insert_after": "woocommerce_server",
 				"module": MODULE,
@@ -146,6 +152,7 @@ def get_custom_fields() -> dict[str, list[dict]]:
 				"hidden": 1,
 				"read_only": 1,
 				"allow_on_submit": 1,
+				"no_copy": 1,
 				"print_hide": 1,
 				"insert_after": "woocommerce_id",
 				"module": MODULE,
@@ -156,6 +163,7 @@ def get_custom_fields() -> dict[str, list[dict]]:
 				"fieldtype": "Data",
 				"read_only": 1,
 				"allow_on_submit": 1,
+				"no_copy": 1,
 				"print_hide": 1,
 				"insert_after": "woocommerce_status",
 				"module": MODULE,
@@ -167,7 +175,6 @@ def get_custom_fields() -> dict[str, list[dict]]:
 				"hidden": 1,
 				"read_only": 1,
 				"allow_on_submit": 1,
-				# A duplicated order hasn't been synced
 				"no_copy": 1,
 				"print_hide": 1,
 				"insert_after": "woocommerce_payment_method",

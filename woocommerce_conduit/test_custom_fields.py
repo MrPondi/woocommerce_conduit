@@ -36,6 +36,26 @@ class TestCustomFields(IntegrationTestCase):
 			],
 		)
 
+	def test_a_duplicate_sales_order_is_not_the_shops_order_and_an_amendment_is(self):
+		# In memory. The copy the form's Duplicate and Auto Repeat make leaves out the no-copy fields, Amend's
+		# keeps them (`from_amend`, and `frappe.copy_doc` in amend_sales_order).
+		values = {
+			"woocommerce_server": "shop.example.com",
+			"woocommerce_id": "7",
+			"woocommerce_status": "processing",
+			"woocommerce_payment_method": "Card",
+			"woocommerce_customer_note": "Leave it at the door",
+			"woocommerce_sync_issue": "Totals differ",
+			"woocommerce_last_sync_hash": "2026-11-04 10:00:00",
+		}
+		sales_order = frappe.new_doc("Sales Order")
+		sales_order.update(values)
+
+		duplicate = frappe.copy_doc(sales_order, ignore_no_copy=False)
+		self.assertEqual({field: duplicate.get(field) for field in values}, dict.fromkeys(values))
+		amendment = frappe.copy_doc(sales_order)
+		self.assertEqual({field: amendment.get(field) for field in values}, values)
+
 	def test_each_field_follows_a_field_of_its_doctype(self):
 		# Frappe puts a field whose insert_after it doesn't find at the end of the form, such as after a rename
 		for doctype, fields in get_custom_fields().items():
