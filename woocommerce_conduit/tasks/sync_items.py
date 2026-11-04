@@ -23,7 +23,9 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_serv
 	WooCommerceServer,
 )
 from woocommerce_conduit.woocommerce.woocommerce_api import (
+	WC_PAGE_LIMIT,
 	generate_woocommerce_record_name_from_domain_and_id,
+	get_domain_and_id_from_woocommerce_record_name,
 )
 
 # Item.item_name is a Data field without a length set, so it has the default length
@@ -209,7 +211,8 @@ def import_products(woocommerce_server: str):
 	Background job: make an Item for each published product of the server that has none, one after the
 	other, so a variation never makes its parent's Item while the parent's own sync does. Each product is
 	committed when it is made: a long transaction would hold the Item Attributes that order syncs add values
-	to, and an import that stops would keep nothing. The server's form shows the progress.
+	to, and an import that stops would keep nothing. The products are read WC_PAGE_LIMIT a request
+	(read_products), the variations one by one. The server's form shows the progress.
 	"""
 	try:
 		products = get_products_to_import(woocommerce_server)
@@ -228,14 +231,25 @@ def import_products(woocommerce_server: str):
 		return
 
 	total, imported, skipped, failed = len(products), 0, 0, set()
+	# The products read with the ones after them, and every name asked for, so a product the read left out
+	# is read on its own rather than with the next ones again
+	read, asked = {}, set()
 	for done, (name, parent_name) in enumerate(products, start=1):
 		# Its variations would fail on it again
 		if parent_name in failed:
 			skipped += 1
 			continue
+		if not parent_name and name not in asked:
+			names = get_next_products(products, done - 1)
+			asked.update(names)
+			read = read_products(woocommerce_server, names)
 		frappe.clear_messages()
 		try:
-			run_item_sync(woocommerce_product_name=name)
+			if product := read.pop(name, None):
+				run_item_sync(woocommerce_product=product)
+			else:
+				# A variation, or a product the shop no longer lists
+				run_item_sync(woocommerce_product_name=name)
 		except frappe.DoesNotExistError:
 			# Deleted in the shop since the list was read
 			frappe.db.rollback()
@@ -271,6 +285,38 @@ def import_products(woocommerce_server: str):
 	frappe.msgprint(
 		message, title=_("Product Import"), indicator="orange" if failed else "green", realtime=True
 	)
+
+
+def get_next_products(products: list[tuple[str, str | None]], start: int) -> list[str]:
+	"""
+	The names of the next WC_PAGE_LIMIT products of an import from `start` on, without the variations
+	"""
+	names = []
+	for index in range(start, len(products)):
+		name, parent_name = products[index]
+		if not parent_name:
+			names.append(name)
+			if len(names) == WC_PAGE_LIMIT:
+				break
+	return names
+
+
+def read_products(woocommerce_server: str, names: list[str]) -> dict[str, WooCommerceProduct]:
+	"""
+	These products of a server with every field, by name, read WC_PAGE_LIMIT a request (load_records). Only
+	products: a variation's record at its parent's endpoint isn't the one `products/{id}` gives, which the sync
+	reads (it has no `type`, for one). A product the shop no longer lists is left out, and all of them when
+	the shop can't be read, which is logged. The import reads those on their own.
+	"""
+	ids = [get_domain_and_id_from_woocommerce_record_name(name)[1] for name in names]
+	try:
+		products = WooCommerceProduct.load_records(woocommerce_server, ids, ["*"])
+	except Exception:
+		frappe.log_error(
+			"WooCommerce Product Import Error", f"{frappe.get_traceback()}\n\nProducts: {', '.join(names)}"
+		)
+		return {}
+	return {product.name: product for product in products.values()}
 
 
 def publish_import_progress(woocommerce_server: str, done: int, total: int, **result):

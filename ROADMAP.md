@@ -65,11 +65,11 @@ Start at: `SalesOrderCustomerMixin.set_order_addresses`, ERPNext's `make_shipmen
 
 ## Items
 
-### Import Products reads each product again
+### Variations 100 a request
 
-Import Products lists the shop's products 100 a request, then reads each one again with a GET of its own (`load_wc_product` in `run_item_sync`), every field of the doctype. It could read them 100 a request with `WooCommerceDocument.load_records`, as the daily pushes do, and give each to `run_item_sync(woocommerce_product=…)`. Mind that `load_records` leaves out what `after_load_from_db` adds (the dimensions, the indented JSON), and that a variation's record from `products/{parent}/variations` isn't the one `products/{id}` gives, which the import reads now (it has no `type`, for one). So read only the parent products that way, or compare the Items each way makes.
+Import Products reads a shop's products 100 a request, but each variation with a GET of its own (`products/{id}`, as `load_wc_product` reads it), so a shop of many variable products still takes a request a variation. The record of `products/{parent}/variations` isn't the one `products/{id}` gives: it has no `type` (`during_get_list_of_records` sets it), and its name and other fields may differ, which would make the Items or their mapped values differ. Compare the two records of a few variations of the shop, and read the variations 100 a request through their parent once the two agree on what the sync and the Item Field Map use.
 
-Start at: `sync_items.import_products`, `get_products_to_import`, `WooCommerceDocument.load_records`.
+Start at: `sync_items.read_products`, `WooCommerceProduct.during_get_list_of_records`, `product_push.load_products`.
 
 ### Big stock transactions push one Item a job
 

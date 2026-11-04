@@ -112,6 +112,12 @@ class WooCommerceProduct(WooCommerceDocument):
 		# The first image is the picture of the product, also in the list view
 		if images := record.get("images"):
 			record["image"] = images[0].get("src")
+		# WooCommerce has the size as one dict, the doctype as three fields. Here rather than in
+		# after_load_from_db, so the records of a list (load_records, the list view) have them too, and the
+		# Item Field Map finds them on those.
+		if isinstance(dimensions := record.get("dimensions"), dict):
+			for fieldname in ("length", "width", "height"):
+				record[fieldname] = dimensions.get(fieldname)
 		return super().pre_init_document(record, woocommerce_server_url)
 
 	def after_load_from_db(self, record: dict):
@@ -119,9 +125,6 @@ class WooCommerceProduct(WooCommerceDocument):
 		for fieldname in ("images", "attributes", "categories", "tags", "brands", "meta_data"):
 			if isinstance(record.get(fieldname), str):
 				record[fieldname] = json.dumps(json.loads(record[fieldname]), indent=2, ensure_ascii=False)
-		record["length"] = record["dimensions"]["length"]
-		record["width"] = record["dimensions"]["width"]
-		record["height"] = record["dimensions"]["height"]
 		return record
 
 	def get_update_endpoint(self, record_id: int) -> str:

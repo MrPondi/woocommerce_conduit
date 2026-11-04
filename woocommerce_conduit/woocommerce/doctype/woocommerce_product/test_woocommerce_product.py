@@ -65,10 +65,7 @@ class TestWooCommerceProductFields(IntegrationTestCase):
 	def test_json_fields_are_indented_for_the_form(self):
 		with patch.object(WooCommerceProduct, "_init_api", return_value=[]):
 			product = frappe.new_doc("WooCommerce Product")
-		dimensions = {"length": "", "width": "", "height": ""}
-		record = product.after_load_from_db(
-			{"dimensions": dimensions, "meta_data": '[{"key": "_gtin", "value": "590"}]', "tags": "[]"}
-		)
+		record = product.after_load_from_db({"meta_data": '[{"key": "_gtin", "value": "590"}]', "tags": "[]"})
 
 		self.assertEqual(record["meta_data"], '[\n  {\n    "key": "_gtin",\n    "value": "590"\n  }\n]')
 		self.assertEqual(record["tags"], "[]")
@@ -217,6 +214,14 @@ class TestListRequests(IntegrationTestCase):
 		self.assertEqual(
 			{product["woocommerce_server"] for product in products}, {"one.example.com", "two.example.com"}
 		)
+
+	def test_a_listed_product_has_its_size_as_the_form_has_it(self):
+		# The Item Field Map runs on the records of a list too (load_records), so a path to the length finds it
+		product = {**self.product(1, "A"), "dimensions": {"length": "10", "width": "5", "height": ""}}
+
+		(listed,) = self.get_list([FakeWooCommerceAPI("one.example.com", [product])])
+
+		self.assertEqual((listed["length"], listed["width"], listed["height"]), ("10", "5", ""))
 
 
 class FakeWritableWooCommerceAPI(FakeWooCommerceAPI):

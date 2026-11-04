@@ -692,13 +692,24 @@ class TestProductImport(IntegrationTestCase):
 			(args["order_by"], args["servers"], args["strict"]), ("name asc", [IMPORT_SERVER], True)
 		)
 
-	def run_import(self, products, errors=None):
-		def sync(woocommerce_product_name):
-			if error := (errors or {}).get(woocommerce_product_name):
+	def run_import(self, products, errors=None, unlisted=(), readable=True):
+		"""
+		Run an import of these products, and return what it did. A batch read gives every product asked for
+		but the `unlisted` ones, or fails when the shop isn't `readable`.
+		"""
+
+		def load_records(server, ids, fields, endpoint=None):
+			if not readable:
+				raise ConnectionError("down")
+			return {str(i): _dict(name=name(i)) for i in ids if name(i) not in unlisted}
+
+		def sync(woocommerce_product_name=None, woocommerce_product=None):
+			if error := (errors or {}).get(woocommerce_product_name or woocommerce_product.name):
 				raise error
 
 		with (
 			patch.object(sync_items, "get_products_to_import", return_value=products),
+			patch.object(WooCommerceProduct, "load_records", side_effect=load_records) as read,
 			patch.object(sync_items, "run_item_sync", side_effect=sync) as run_item_sync,
 			# A real commit or rollback would end the test case's own transaction
 			patch.object(frappe.db, "commit") as commit,
@@ -708,14 +719,45 @@ class TestProductImport(IntegrationTestCase):
 			patch.object(frappe, "log_error") as log_error,
 		):
 			sync_items.import_products(IMPORT_SERVER)
+		syncs = [call.kwargs for call in run_item_sync.call_args_list]
 		return _dict(
-			synced=[call.kwargs["woocommerce_product_name"] for call in run_item_sync.call_args_list],
+			synced=[
+				sync.get("woocommerce_product_name") or sync["woocommerce_product"].name for sync in syncs
+			],
+			read_alone=[
+				sync["woocommerce_product_name"] for sync in syncs if "woocommerce_product_name" in sync
+			],
+			read=read,
 			commit=commit,
 			rollback=rollback,
 			publish_realtime=publish_realtime,
 			msgprint=msgprint,
 			log_error=log_error,
 		)
+
+	def test_products_are_read_a_hundred_a_request_and_variations_on_their_own(self):
+		products = [(name(i), None) for i in range(1, 102)]
+		products.insert(2, (name(1001), name(2)))
+
+		# The shop no longer lists product 5, deleted since the import listed it
+		calls = self.run_import(products, unlisted={name(5)})
+
+		self.assertEqual([len(call.args[1]) for call in calls.read.call_args_list], [100, 1])
+		self.assertEqual(calls.read.call_args_list[0].args[1][:3], [1, 2, 3])
+		# Every field, as the sync reads a product on its own
+		self.assertEqual(calls.read.call_args_list[0].args[2], ["*"])
+		# A variation's record at its parent's endpoint differs from the one the sync reads
+		self.assertEqual(calls.read_alone, [name(1001), name(5)])
+		self.assertEqual(len(calls.synced), 102)
+
+	def test_a_shop_that_can_not_be_listed_has_its_products_read_one_by_one(self):
+		calls = self.run_import([(name(1), None), (name(2), None)], readable=False)
+
+		self.assertEqual(calls.read_alone, [name(1), name(2)])
+		# Asked for once: the products it couldn't read aren't asked for with the next ones again
+		self.assertEqual(calls.read.call_count, 1)
+		calls.log_error.assert_called_once()
+		self.assertEqual(calls.commit.call_count, 2)
 
 	def test_each_product_is_imported_and_kept_in_turn(self):
 		calls = self.run_import([(name(1), None), (name(2), None)])
