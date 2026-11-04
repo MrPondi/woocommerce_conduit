@@ -251,6 +251,7 @@ class TestStockHook(IntegrationTestCase):
 				side_effect=lambda codes: sorted(set(codes or ()) & set(linked)),
 			),
 			patch.object(stock_update, "enqueue_unless_queued") as enqueue,
+			patch("frappe.enqueue") as batch_enqueue,
 		):
 			for doc in docs:
 				if doc.doctype == "Stock Ledger Entry":
@@ -258,7 +259,7 @@ class TestStockHook(IntegrationTestCase):
 				else:
 					update_stock_levels_for_woocommerce_item(doc)
 			push_pending_stock_updates()
-		self.after_commit = after_commit
+		self.after_commit, self.batch_enqueue = after_commit, batch_enqueue
 		return enqueue
 
 	@staticmethod
@@ -276,6 +277,27 @@ class TestStockHook(IntegrationTestCase):
 		self.assertEqual(self.pushed(enqueue), ["CUP-1", "MUG-1"])
 		self.after_commit.add.assert_called_once_with(push_pending_stock_updates)
 		self.assertEqual(enqueue.call_args.kwargs["job_id"], "woocommerce_stock_update::MUG-1")
+
+	def test_a_transaction_of_many_items_pushes_them_a_hundred_a_job(self):
+		# A Stock Reconciliation of 250 linked Items, and one that isn't linked
+		item_codes = [f"ITEM-{i:03}" for i in range(250)]
+
+		enqueue = self.run_hook(*(self.ledger(code) for code in [*item_codes, "BOLT-1"]), linked=item_codes)
+
+		enqueue.assert_not_called()
+		jobs = [call.kwargs for call in self.batch_enqueue.call_args_list]
+		self.assertEqual([len(job["item_codes"]) for job in jobs], [100, 100, 50])
+		self.assertEqual(sorted(code for job in jobs for code in job["item_codes"]), item_codes)
+		# On the queue of the single pushes, not behind the order syncs of the long one
+		self.assertEqual({job["queue"] for job in jobs}, {"default"})
+
+	def test_a_transaction_of_a_few_items_pushes_each_in_a_job_of_its_own(self):
+		item_codes = [f"ITEM-{i:03}" for i in range(stock_update.MAX_ITEMS_PUSHED_ALONE)]
+
+		enqueue = self.run_hook(*(self.ledger(code) for code in item_codes), linked=item_codes)
+
+		self.assertEqual(self.pushed(enqueue), item_codes)
+		self.batch_enqueue.assert_not_called()
 
 	def test_an_item_that_is_not_linked_to_woocommerce_is_not_pushed(self):
 		self.run_hook(self.ledger("BOLT-1")).assert_not_called()

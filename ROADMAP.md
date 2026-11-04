@@ -71,12 +71,6 @@ Import Products reads a shop's products 100 a request, but each variation with a
 
 Start at: `sync_items.read_products`, `WooCommerceProduct.during_get_list_of_records`, `product_push.load_products`.
 
-### Big stock transactions push one Item a job
-
-The stock hooks enqueue a job for each Item a transaction moves (`push_pending_stock_updates`), and each job reads its product and writes it when it differs. A Stock Reconciliation of 500 Items makes 500 jobs and up to 1000 requests. A transaction of many Items could enqueue jobs of 100 Items through the batch path instead (`update_stock_levels_of_items`), as the daily push does. The per-Item dedupe (`enqueue_unless_queued`) would then only cover the transactions of one Item.
-
-Start at: `stock_update.push_pending_stock_updates`, `enqueue_stock_updates`.
-
 ### Apply the Item Field Map to linked Items
 
 The Item Field Map runs when the sync creates an Item, and when a manual sync finds the product changed since the last pull and newer than the Item. A row added later never reaches the Items linked already: mapping the products' weight and size to Weight Per Unit and erpnext_shipping's package fields (`$.weight`, `$.length`, `$.width`, `$.height`) fills new Items only, and the others are left to a Data Import. A server button could apply the map to the server's linked Items in a job: read their products 100 a request with only the fields the map's paths start at (`load_products`, which reads the push's `writable_fields` now), run `SynchroniseItem.set_item_fields` on each primary-linked Item, and save those that differ. Mind that `load_records` leaves out what `after_load_from_db` adds, the dimensions among it (their flattening could move to `pre_init_document`), and that saving a template copies its weight to its variants while Item Variant Settings lists the weight fields, so save templates first.

@@ -18,6 +18,9 @@ from woocommerce_conduit.woocommerce.woocommerce_api import (
 
 # The Items one job of the daily push takes: as many as one WooCommerce batch request takes
 ITEMS_PER_JOB = 100
+# A transaction that moves more linked Items than this pushes them ITEMS_PER_JOB a job, as the daily push does,
+# rather than in a job each. Up to this many, each Item's job is skipped while one for it still waits.
+MAX_ITEMS_PUSHED_ALONE = 10
 # The Items whose stock the current transaction changed, kept in frappe.flags until it is committed
 PENDING_ITEMS_FLAG = "woocommerce_stock_items"
 
@@ -88,11 +91,21 @@ def enqueue_stock_updates(item_codes: set[str]):
 
 
 def push_pending_stock_updates():
+	"""
+	Push the Items of the committed transaction: each in a job of its own, which reads and writes its product,
+	or, for a transaction of many (a Stock Reconciliation of 500 Items would make 500 jobs and up to 1000
+	requests), ITEMS_PER_JOB a job, whose products are read and written in batches
+	"""
 	item_codes = frappe.flags.pop(PENDING_ITEMS_FLAG, None)
 	# Checked once a transaction, not for each of its Stock Ledger Entries
 	if not item_codes or not stock_sync_is_enabled():
 		return
-	for item_code in get_linked_items(item_codes):
+	linked = get_linked_items(item_codes)
+	if len(linked) > MAX_ITEMS_PUSHED_ALONE:
+		# On the queue of the single pushes it stands for, not behind the order syncs of the long one
+		enqueue_batch_pushes(linked, queue="default")
+		return
+	for item_code in linked:
 		enqueue_unless_queued(
 			"woocommerce_conduit.tasks.stock_update.update_stock_levels_on_woocommerce_site",
 			job_id=f"woocommerce_stock_update::{item_code}",
@@ -136,10 +149,17 @@ def update_stock_levels_for_all_enabled_items_in_background():
 			)
 		)
 	)
+	enqueue_batch_pushes(item_codes, queue="long")
+
+
+def enqueue_batch_pushes(item_codes: list[str], queue: str):
+	"""
+	Push the stock of these Items in jobs of ITEMS_PER_JOB Items each (update_stock_levels_of_items)
+	"""
 	for item_codes_of_job in create_batch(item_codes, ITEMS_PER_JOB):
 		frappe.enqueue(
 			"woocommerce_conduit.tasks.stock_update.update_stock_levels_of_items",
-			queue="long",
+			queue=queue,
 			timeout=1800,
 			item_codes=list(item_codes_of_job),
 		)
@@ -147,8 +167,9 @@ def update_stock_levels_for_all_enabled_items_in_background():
 
 def update_stock_levels_of_items(item_codes: list[str]):
 	"""
-	Background job of the daily push: push the stock of these Items, their products read and written in
-	batches (push_to_products). An Item or product that fails is logged, and the others go on.
+	Background job of the daily push, and of a transaction that moves many Items: push the stock of these
+	Items, their products read and written in batches (push_to_products). An Item or product that fails is
+	logged, and the others go on.
 	"""
 	pushes = defaultdict(dict)
 	for item_code in item_codes:
