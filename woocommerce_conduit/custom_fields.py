@@ -146,7 +146,6 @@ def get_custom_fields() -> dict[str, list[dict]]:
 				"hidden": 1,
 				"read_only": 1,
 				"allow_on_submit": 1,
-				"in_list_view": 1,
 				"print_hide": 1,
 				"insert_after": "woocommerce_id",
 				"module": MODULE,
