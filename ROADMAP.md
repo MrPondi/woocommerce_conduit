@@ -28,6 +28,12 @@ With a template whose VAT is included in the rate, shipping and fees that WooCom
 
 Start at: `order_lines.build_charges`, `taxes.get_vat_rates`.
 
+### Imported orders without a payment method
+
+The Order Import skips an order whose payment method has no Mode of Payment in its Payment Method Map, and an order made in wp-admin with no payment method (N/A, an empty `payment_method`) can't have a row, as the map's method is mandatory. They are skipped by every run, and a shop that takes phone orders has many. A row for orders without a method, with its Mode of Payment and Payment Date, would import them. wp-admin's Other (`other`) can be mapped, though Add Missing Payment Methods doesn't add it, as it isn't a gateway: Start Import's count names it with its id.
+
+Start at: `OrderImport.import_wc_order`, `order_import.get_booking_row`, `WooCommerceOrderImport.get_payment_method_row` and `validate_payment_method_map`.
+
 ### Shipping methods outside the zones
 
 Add Missing Shipping Methods reads the methods of the shop's shipping zones. Some orders are shipped with a method no zone lists: WooCommerce's block-based local pickup (`pickup_location`), plugin methods, and orders made in the admin or imported from elsewhere. They get a Shipping Rule only through a bare `method_id` row typed by hand. Reading the shipping lines of the latest orders, as Check Order Items does for their products, would find them and could add their rows.
@@ -41,6 +47,12 @@ ERPNext refuses a Shipping Rule whose Valid for Countries leaves out the order's
 Start at: `SynchroniseSalesOrder.create_sales_order`, `WooCommerceServer.get_shipping_rule`.
 
 ## Customers
+
+### A phone number ERPNext refuses fails the order
+
+Frappe checks a phone field against `PHONE_NUMBER_PATTERN` (`frappe/utils/__init__.py`: digits, spaces and `+-_,.*#()`, at most 20 characters). The Address or Contact of an order whose phone has anything else fails, and the whole order with it, in the order sync and the Order Import alike, as a first import showed: a number such as `+48 – 500-100-200`, typed with an en dash, fails it. Clean the number (a hyphen for a dash, the other characters dropped), and leave out one that still doesn't fit, flagging the Sales Order, so the order gets its Sales Order and the person the number.
+
+Start at: `SalesOrderCustomerMixin` in `order_customer.py`: where the billing phone is read, `add_phone` on the Contact, and the Address values (`phone`).
 
 ### Moving an order to another Customer
 
