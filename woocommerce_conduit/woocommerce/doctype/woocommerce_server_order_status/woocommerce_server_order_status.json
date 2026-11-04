@@ -10,8 +10,6 @@
   "woocommerce_status_label",
   "actions_section",
   "action_submit",
-  "action_invoice",
-  "action_deliver",
   "column_break_actions",
   "action_hold",
   "action_cancel",
@@ -40,7 +38,7 @@
    "read_only": 1
   },
   {
-   "description": "What an order that has this status does in ERPNext. With nothing ticked, its Sales Order only takes the status, lines and payment of the order. Hold, Cancel and Close are done once, when the order gets the status, and so is lifting a hold put on the Sales Order, which Submit, Invoice and Deliver do. Invoice and Deliver make what the Sales Order lacks on every sync.",
+   "description": "What an order that has this status does in ERPNext. With nothing ticked, its Sales Order only takes the status and lines of the order, and a hold put on it is lifted. Hold, Cancel and Close are done once, when the order gets the status, and so is lifting a hold. The sync makes no Sales Invoices, Payment Entries or Delivery Notes: people make them in ERPNext, and a WooCommerce Order Import for orders first seen completed.",
    "fieldname": "actions_section",
    "fieldtype": "Section Break",
    "label": "When WooCommerce has this status"
@@ -48,31 +46,11 @@
   {
    "columns": 1,
    "default": "0",
-   "description": "Make the Sales Order of an order first seen with this status, with its Customer, Address and Contact, and submit it. No other action makes one, so without Submit such an order stays out of ERPNext.",
+   "description": "Make the Sales Order of an order first seen with this status, with its Customer, Address and Contact, and submit it. No other action makes one, so without Submit such an order stays out of ERPNext. An order first seen completed is for a WooCommerce Order Import, which also books its payment.",
    "fieldname": "action_submit",
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Submit",
-   "width": "63px"
-  },
-  {
-   "columns": 1,
-   "default": "0",
-   "description": "Make the Sales Invoice of the Sales Order when it has none, if the server creates Sales Invoices",
-   "fieldname": "action_invoice",
-   "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Invoice",
-   "width": "63px"
-  },
-  {
-   "columns": 1,
-   "default": "0",
-   "description": "Make the Delivery Note of the Sales Order when nothing of it is delivered, dated when WooCommerce completed the order",
-   "fieldname": "action_deliver",
-   "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Deliver",
    "width": "63px"
   },
   {
@@ -82,7 +60,7 @@
   {
    "columns": 1,
    "default": "0",
-   "description": "Put the Sales Order on hold. With Invoice it is invoiced first, as ERPNext doesn't invoice an order on hold. Not with Deliver, as ERPNext doesn't deliver one either.",
+   "description": "Put the Sales Order on hold, once, when the order gets this status. A later status that ticks none of Hold, Cancel, Close and Skip lifts it.",
    "fieldname": "action_hold",
    "fieldtype": "Check",
    "in_list_view": 1,
@@ -92,7 +70,7 @@
   {
    "columns": 1,
    "default": "0",
-   "description": "Cancel the Sales Order and its unpaid Sales Invoices. One that was paid, delivered or billed with other orders is closed and flagged instead. Ticked alone.",
+   "description": "Cancel the Sales Order. One that has an invoice, a payment or a delivery, or that is closed, is closed and flagged instead, as the sync never cancels or deletes an invoice. Ticked alone.",
    "fieldname": "action_cancel",
    "fieldtype": "Check",
    "in_list_view": 1,
@@ -137,7 +115,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-11-03 19:00:00.000000",
+ "modified": "2026-11-04 21:00:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server Order Status",

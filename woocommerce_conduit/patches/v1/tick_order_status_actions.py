@@ -25,6 +25,14 @@ def execute():
 
 	table = frappe.qb.DocType("WooCommerce Server Order Status")
 	for choice, ticks in TICKS_OF_CHOICES.items():
+		# Invoice and Deliver left the map later, and a site that migrates over both changes never gets them
+		ticks = [
+			fieldname
+			for fieldname in ticks
+			if frappe.db.has_column("WooCommerce Server Order Status", fieldname)
+		]
+		if not ticks:
+			continue
 		query = frappe.qb.update(table).where(table.erpnext_action == choice)
 		for fieldname in ticks:
 			query = query.set(table[fieldname], 1)

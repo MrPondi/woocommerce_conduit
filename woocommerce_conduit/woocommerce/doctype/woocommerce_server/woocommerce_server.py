@@ -20,8 +20,6 @@ from woocommerce_conduit.tasks.field_map import (
 )
 from woocommerce_conduit.tasks.taxes import get_vat_rows, normalise_tax_class
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
-	ACTION_DELIVER,
-	ACTION_HOLD,
 	ACTIONS,
 	PAYMENT_OWNED_STATUSES,
 	SOLE_ACTIONS,
@@ -48,19 +46,10 @@ def normalise_server_url(url: str | None) -> str | None:
 	return urlunparse((url_scheme, parsed_url.netloc, "", "", "", ""))
 
 
-def get_mode_of_payment_account(mode_of_payment: str, company: str) -> str | None:
-	"""
-	The account a payment with this Mode of Payment is booked on for the company
-	"""
-	return frappe.db.get_value(
-		"Mode of Payment Account", {"parent": mode_of_payment, "company": company}, "default_account"
-	)
-
-
 def validate_status_actions(row) -> None:
 	"""
 	The actions that a row of the Sales Order Status Map ticks go together: Cancel, Close and Skip are ticked
-	alone, and Hold not with Deliver. The form unticks the others in the same way.
+	alone. The form unticks the others in the same way.
 	"""
 
 	def label(action: str) -> str:
@@ -70,12 +59,6 @@ def validate_status_actions(row) -> None:
 	sole = [action for action in ACTIONS if action in actions & SOLE_ACTIONS]
 	if sole and len(actions) > 1:
 		frappe.throw(_("Row {0}: {1} can't be ticked with other actions").format(row.idx, label(sole[0])))
-	if {ACTION_HOLD, ACTION_DELIVER} <= actions:
-		frappe.throw(
-			_(
-				"Row {0}: ERPNext doesn't deliver an order on hold, so {1} and {2} can't both be ticked"
-			).format(row.idx, label(ACTION_HOLD), label(ACTION_DELIVER))
-		)
 
 
 class WooCommerceServer(Document):
@@ -99,9 +82,6 @@ class WooCommerceServer(Document):
 		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 			WooCommerceServerOrderStatus,
 		)
-		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_payment_method.woocommerce_server_payment_method import (
-			WooCommerceServerPaymentMethod,
-		)
 		from woocommerce_conduit.woocommerce.doctype.woocommerce_server_shipping_rule.woocommerce_server_shipping_rule import (
 			WooCommerceServerShippingRule,
 		)
@@ -115,7 +95,6 @@ class WooCommerceServer(Document):
 		api_consumer_key: DF.Password
 		api_consumer_secret: DF.Password
 		company: DF.Link
-		create_sales_invoice: DF.Check
 		creation_user: DF.Link
 		customer_field_map: DF.Table[WooCommerceServerCustomerField]
 		default_item_tax_template: DF.Link | None
@@ -126,7 +105,6 @@ class WooCommerceServer(Document):
 		enable_stock_level_synchronisation: DF.Check
 		enabled: DF.Check
 		enabled_order_status: DF.Check
-		enabled_payments_sync: DF.Check
 		enabled_shipping_methods: DF.Check
 		fee_account: DF.Link | None
 		freight_and_forwarding_account: DF.Link
@@ -139,7 +117,6 @@ class WooCommerceServer(Document):
 		order_item_field_map: DF.Table[WooCommerceServerOrderItemField]
 		order_sync_paused_since: DF.Datetime | None
 		pause_order_sync: DF.Check
-		payment_method_map: DF.Table[WooCommerceServerPaymentMethod]
 		price_list: DF.Link | None
 		price_list_delay_per_item: DF.Float
 		push_zero_stock_for_disabled_items: DF.Check
@@ -149,7 +126,6 @@ class WooCommerceServer(Document):
 		sales_taxes_and_charges_template: DF.Link
 		secret: DF.SmallText | None
 		shipping_rule_map: DF.Table[WooCommerceServerShippingRule]
-		submit_sales_invoice: DF.Check
 		subtract_reserved_stock: DF.Check
 		sync_in_sales_uom: DF.Check
 		sync_prices_for_disabled_items: DF.Check
@@ -176,8 +152,6 @@ class WooCommerceServer(Document):
 		# A new server starts with what the core statuses mean, which the user can then change
 		if not self.sales_order_status_map:
 			self.add_default_order_statuses()
-		if not self.payment_method_map and not frappe.in_test:
-			self.add_missing_payment_methods()
 		if not self.tax_class_map and not frappe.in_test:
 			self.add_missing_tax_classes()
 		if not self.shipping_rule_map and not frappe.in_test:
@@ -189,7 +163,6 @@ class WooCommerceServer(Document):
 		if self.enabled and self.credentials_need_testing():
 			self.test_api_credentials()
 		self.validate_so_status_map()
-		self.validate_payment_method_map()
 		self.validate_shipping_rule_map()
 		self.validate_tax_class_map()
 		self.validate_tax_templates()
@@ -247,6 +220,14 @@ class WooCommerceServer(Document):
 			enqueue_after_commit=True,
 			woocommerce_server=self.name,
 			since=self.order_sync_paused_since,
+		)
+		# The sync makes no Sales Order for an order it first sees completed
+		frappe.msgprint(
+			_(
+				"The orders changed while the order sync was paused are synced now. Those completed meanwhile get"
+				" no Sales Order from it: import them with a WooCommerce Order Import."
+			),
+			indicator="blue",
 		)
 
 	def credentials_need_testing(self) -> bool:
@@ -410,76 +391,12 @@ class WooCommerceServer(Document):
 			"error": error,
 		}
 
-	def validate_payment_method_map(self):
-		"""
-		One row per payment method, and a Mode of Payment that a Payment Entry of the server's company can
-		be booked on
-		"""
-		seen = set()
-		for row in self.payment_method_map:
-			row.woocommerce_payment_method = cstr(row.woocommerce_payment_method).strip()
-			if row.woocommerce_payment_method in seen:
-				frappe.throw(
-					_("Row {0}: Payment method {1} is in the Payment Method Map more than once").format(
-						row.idx, frappe.bold(row.woocommerce_payment_method)
-					)
-				)
-			seen.add(row.woocommerce_payment_method)
-
-			if (
-				row.mode_of_payment
-				and self.company
-				and not get_mode_of_payment_account(row.mode_of_payment, self.company)
-			):
-				frappe.throw(
-					_("Row {0}: Mode of Payment {1} has no default account for company {2}").format(
-						row.idx, frappe.bold(row.mode_of_payment), frappe.bold(self.company)
-					)
-				)
-
-	def get_payment_method_row(self, payment_method: str | None):
-		"""
-		The row of the Payment Method Map for a WooCommerce payment method, or None
-		"""
-		if not payment_method:
-			return None
-		return next(
-			(row for row in self.payment_method_map if row.woocommerce_payment_method == payment_method),
-			None,
-		)
-
 	def fetch_payment_methods(self) -> tuple[dict[str, str], str | None]:
 		"""
 		The id and title of every payment gateway of the shop, the disabled ones included, as older orders
-		can have been paid with them
+		can have been paid with them. A WooCommerce Order Import maps them.
 		"""
 		return self.fetch_names("payment_gateways", "id", "title")
-
-	def get_payment_method_rows(self, live_methods: dict[str, str]) -> list[dict]:
-		existing = {row.woocommerce_payment_method for row in self.payment_method_map}
-		return [
-			{"woocommerce_payment_method": method, "woocommerce_payment_method_title": title or method}
-			for method, title in live_methods.items()
-			if method and method not in existing
-		]
-
-	def add_missing_payment_methods(self) -> list[dict]:
-		"""
-		Add a row, without a Mode of Payment, for each payment method of the shop the map lacks
-		"""
-		rows = self.get_payment_method_rows(self.fetch_payment_methods()[0])
-		for row in rows:
-			self.append("payment_method_map", row)
-		return rows
-
-	@frappe.whitelist()
-	def get_missing_payment_method_rows(self) -> dict:
-		"""
-		The rows the Payment Method Map lacks, for the form to add, and why the shop couldn't be read if
-		it couldn't
-		"""
-		live_methods, error = self.fetch_payment_methods()
-		return {"rows": self.get_payment_method_rows(live_methods), "error": error}
 
 	def validate_sales_order_prefix(self):
 		"""

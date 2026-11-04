@@ -5,16 +5,16 @@ from frappe.model.document import Document
 
 # What a WooCommerce Order with a status does in ERPNext, each action a Check of the status row. The statuses
 # are WooCommerce's, and a shop can have more than the core ones, so the server keeps a table of them instead
-# of this code knowing them all. A status that ticks nothing, or that the map doesn't know, only updates the
-# Sales Order of an order.
+# of this code knowing them all. A status that ticks nothing only updates the Sales Order of an order, and
+# lifts a hold put on it. One the map doesn't know leaves ERPNext as it is.
+#
+# The sync makes no Sales Invoices, Payment Entries or Delivery Notes: an invoice is only made when its payment
+# is processed, by a person or by a WooCommerce Order Import, and the warehouse delivers in ERPNext.
 
 # The one action that creates a Sales Order when there is none yet. Every other action only acts on a Sales
 # Order that exists, so an order first seen without it (say one that failed, or was cancelled or refunded
 # before it was ever synced) stays out of ERPNext, and no Customer, Address or Contact is made for it either.
 ACTION_SUBMIT = "action_submit"
-ACTION_INVOICE = "action_invoice"
-ACTION_DELIVER = "action_deliver"
-# ERPNext doesn't invoice a held order, so with an invoice the hold comes after it
 ACTION_HOLD = "action_hold"
 ACTION_CANCEL = "action_cancel"
 ACTION_CLOSE = "action_close"
@@ -22,8 +22,6 @@ ACTION_CLOSE = "action_close"
 ACTION_SKIP = "action_skip"
 ACTIONS = (
 	ACTION_SUBMIT,
-	ACTION_INVOICE,
-	ACTION_DELIVER,
 	ACTION_HOLD,
 	ACTION_CANCEL,
 	ACTION_CLOSE,
@@ -34,8 +32,8 @@ ACTIONS = (
 SOLE_ACTIONS = frozenset({ACTION_CANCEL, ACTION_CLOSE, ACTION_SKIP})
 # The actions after which a Sales Order is not changed any more
 ENDING_ACTIONS = frozenset({ACTION_CANCEL, ACTION_CLOSE})
-# The actions that lift a hold, as ERPNext doesn't invoice or deliver an order on hold
-RESUMING_ACTIONS = frozenset({ACTION_SUBMIT, ACTION_INVOICE, ACTION_DELIVER})
+# The actions of statuses whose orders are over in ERPNext, or left alone by it
+INACTIVE_ACTIONS = frozenset({ACTION_CANCEL, ACTION_CLOSE, ACTION_SKIP})
 
 # The payment gateway decides on these, so ERPNext must not push them over the gateway's
 PAYMENT_OWNED_STATUSES = ("checkout-draft", "pending", "failed", "on-hold", "processing")
@@ -46,15 +44,26 @@ TRASH_STATUS = "trash"
 # (slug, label, actions, the Sales Order status that is pushed as this status)
 DEFAULT_STATUSES = (
 	("checkout-draft", "Draft", (ACTION_SKIP,), ""),
-	("pending", "Pending payment", (ACTION_SUBMIT, ACTION_INVOICE), ""),
+	("pending", "Pending payment", (ACTION_SUBMIT,), ""),
 	("failed", "Failed", (ACTION_CANCEL,), ""),
 	("on-hold", "On hold", (ACTION_SUBMIT, ACTION_HOLD), ""),
-	("processing", "Processing", (ACTION_SUBMIT, ACTION_INVOICE), ""),
-	("completed", "Completed", (ACTION_SUBMIT, ACTION_INVOICE, ACTION_DELIVER), "Completed"),
+	("processing", "Processing", (ACTION_SUBMIT,), ""),
+	# An order ERPNext first meets completed is for a WooCommerce Order Import, which books its payment
+	("completed", "Completed", (), "Completed"),
 	("cancelled", "Cancelled", (ACTION_CANCEL,), "Cancelled"),
 	("refunded", "Refunded", (ACTION_CLOSE,), ""),
 	("trash", "Trash", (ACTION_CANCEL,), ""),
 )
+
+
+def is_active_status(row) -> bool:
+	"""
+	Whether a row of the status map is for an order that is going on: it ticks none of Cancel, Close and Skip.
+	An active status lifts a hold put on the order's Sales Order, unless it ticks Hold itself, and brings back
+	an order that a status before it cancelled or closed. A status without a row is none: it leaves ERPNext as
+	it is.
+	"""
+	return row is not None and not (row.get_actions() & INACTIVE_ACTIONS)
 
 
 def normalise_status(status: str | None) -> str:
@@ -108,9 +117,7 @@ class WooCommerceServerOrderStatus(Document):
 
 		action_cancel: DF.Check
 		action_close: DF.Check
-		action_deliver: DF.Check
 		action_hold: DF.Check
-		action_invoice: DF.Check
 		action_skip: DF.Check
 		action_submit: DF.Check
 		parent: DF.Data

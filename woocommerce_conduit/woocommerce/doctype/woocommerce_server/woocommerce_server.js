@@ -157,14 +157,6 @@ frappe.ui.form.on("WooCommerce Server", {
 		new LinkedItemUpdate(frm).show();
 	},
 
-	load_payment_methods: function (frm) {
-		add_missing_rows(frm, "get_missing_payment_method_rows", "payment_method_map", {
-			added: __("{0} payment methods added"),
-			none: __("No payment methods missing"),
-			unreachable: __("Couldn't reach WooCommerce ({0}), no payment methods were added"),
-		});
-	},
-
 	// Add the methods of the shop's shipping zones that the Shipping Method Map lacks, and name the rows of
 	// methods the shop no longer has
 	load_shipping_methods: function (frm) {
@@ -244,12 +236,10 @@ frappe.ui.form.on("WooCommerce Server", {
 });
 
 // The actions of the Order Status Map that can't be ticked together, which the server refuses as well
-// (validate_status_actions): Cancel, Close and Skip are ticked alone, and Hold not with Deliver. Ticking an
-// action unticks those it can't go with.
+// (validate_status_actions): Cancel, Close and Skip are ticked alone. Ticking an action unticks those it
+// can't go with.
 const STATUS_ACTIONS = [
 	"action_submit",
-	"action_invoice",
-	"action_deliver",
 	"action_hold",
 	"action_cancel",
 	"action_close",
@@ -270,9 +260,9 @@ frappe.ui.form.on(
 function untick_conflicting_actions(cdt, cdn, action) {
 	const row = locals[cdt][cdn];
 	if (!row[action]) return;
-	let conflicting = SOLE_STATUS_ACTIONS.includes(action) ? STATUS_ACTIONS : SOLE_STATUS_ACTIONS;
-	if (action === "action_hold") conflicting = [...conflicting, "action_deliver"];
-	if (action === "action_deliver") conflicting = [...conflicting, "action_hold"];
+	const conflicting = SOLE_STATUS_ACTIONS.includes(action)
+		? STATUS_ACTIONS
+		: SOLE_STATUS_ACTIONS;
 	conflicting
 		.filter((other) => other !== action && row[other])
 		.forEach((other) => frappe.model.set_value(cdt, cdn, other, 0));

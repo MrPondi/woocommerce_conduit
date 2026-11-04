@@ -8,12 +8,9 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woo
 	ACTION_CANCEL,
 	ACTION_CLOSE,
 	ACTION_HOLD,
-	ACTION_INVOICE,
 	ACTION_SKIP,
-	ACTION_SUBMIT,
 	DEFAULT_STATUSES,
 	ENDING_ACTIONS,
-	RESUMING_ACTIONS,
 	TRASH_STATUS,
 	normalise_status,
 )
@@ -21,6 +18,45 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woo
 if TYPE_CHECKING:
 	from woocommerce_conduit.tasks.sync_sales_orders import SyncedOrder
 	from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import WooCommerceOrder
+
+
+def get_order_invoices(sales_order: str) -> list:
+	"""
+	The Sales Invoices that bill a Sales Order, as ERPNext links their items to it: drafts included and
+	cancelled ones not, the newest first. People make them, and an Order Import, never the sync.
+	"""
+	return frappe.get_all(
+		"Sales Invoice",
+		filters=[["Sales Invoice Item", "sales_order", "=", sales_order], ["docstatus", "<", 2]],
+		fields=["name", "docstatus", "is_return", "outstanding_amount", "grand_total", "rounded_total"],
+		order_by="creation desc",
+		distinct=True,
+	)
+
+
+def get_order_payment_entries(sales_order: str, invoices: list[str]) -> list[str]:
+	"""
+	The Payment Entries that pay a Sales Order or one of its invoices: drafts included and cancelled ones not
+	"""
+	references = [("Sales Order", [sales_order])]
+	if invoices:
+		references.append(("Sales Invoice", invoices))
+
+	payment_entries = set()
+	for reference_doctype, reference_names in references:
+		payment_entries.update(
+			frappe.get_all(
+				"Payment Entry Reference",
+				filters={
+					"parenttype": "Payment Entry",
+					"reference_doctype": reference_doctype,
+					"reference_name": ["in", reference_names],
+					"docstatus": ["<", 2],
+				},
+				pluck="parent",
+			)
+		)
+	return sorted(payment_entries)
 
 
 def get_statuses_to_sync() -> list[str]:
@@ -98,7 +134,11 @@ class SalesOrderStatusMixin:
 	sales_order: SyncedOrder
 	woocommerce_order: WooCommerceOrder
 
-	def apply_status_actions(self, actions: frozenset[str]) -> None:
+	def apply_status_actions(self, actions: frozenset[str], active: bool = False) -> None:
+		"""
+		Do what the new status of the order ticks. An `active` status (is_active_status) that doesn't hold the
+		order lifts a hold put on its Sales Order.
+		"""
 		# The status changes made here must not be pushed back to WooCommerce
 		self.sales_order.flags.created_by_sync = True
 
@@ -106,12 +146,9 @@ class SalesOrderStatusMixin:
 			self.cancel_sales_order()
 		elif ACTION_CLOSE in actions:
 			self.close_sales_order()
-		elif ACTION_HOLD in actions and ACTION_INVOICE in actions:
-			self.resume_sales_order()
-			self.invoice_and_hold()
 		elif ACTION_HOLD in actions:
 			self.hold_sales_order()
-		elif actions & RESUMING_ACTIONS:
+		elif active:
 			self.resume_sales_order()
 
 	def sync_deleted_order(self) -> None:
@@ -131,13 +168,14 @@ class SalesOrderStatusMixin:
 		sales_order.db_set("woocommerce_status", TRASH_STATUS, update_modified=False)
 		self.apply_status_actions(row.get_actions() if row else frozenset())
 
-	def came_back(self, actions: frozenset[str]) -> bool:
+	def came_back(self, active: bool) -> bool:
 		"""
 		Whether the order is back in WooCommerce after its status cancelled or closed the Sales Order: the
-		status it has now makes Sales Orders, and the one the Sales Order last saw ended it. Say it was
-		restored from the trash, or paid on a retry after it failed.
+		status it has now is active (is_active_status), and the one the Sales Order last saw ended it. Say it
+		was restored from the trash, or paid on a retry after it failed, also when it went on to completed,
+		which makes no Sales Orders: the Order Import leaves out orders that have one.
 		"""
-		if ACTION_SUBMIT not in actions or not self.sales_order.woocommerce_status:
+		if not active or not self.sales_order.woocommerce_status:
 			return False
 		wc_server = frappe.get_cached_doc("WooCommerce Server", self.woocommerce_order.woocommerce_server)
 		row = wc_server.get_order_status_row(self.sales_order.woocommerce_status)
@@ -193,50 +231,41 @@ class SalesOrderStatusMixin:
 
 	def cancel_sales_order(self) -> None:
 		"""
-		Cancel the Sales Order, and its Sales Invoices, as long as nothing was paid or delivered and the
-		invoices bill nothing but this order. Otherwise close it and flag it, as what to do about money and
-		goods is for a person to decide.
+		Cancel the Sales Order of an order cancelled in the shop, when nothing of it was invoiced, paid or
+		delivered. An invoice is a person's, made when its payment was processed, so the sync neither cancels
+		nor deletes one: a Sales Order with any invoice, a draft included, a payment or a delivery is closed and
+		flagged instead, for a person to decide about the money and the goods. ERPNext won't cancel a closed one,
+		nor one that a draft invoice bills.
 		"""
 		sales_order = self.sales_order
 		if sales_order.docstatus != 1:
 			return
-
-		invoices = [invoice for invoice in self.get_invoices() if invoice.docstatus == 1]
-		if (
-			flt(sales_order.per_delivered) > 0
-			or flt(sales_order.advance_paid) > 0
-			or self.get_payment_entries()
-			or not all(self.can_be_cancelled_with_the_order(invoice) for invoice in invoices)
-		):
-			self.close_sales_order()
+		if sales_order.status == "Closed":
 			self.flag_sync_issue(
-				_("Cancelled in WooCommerce, but it was already paid, invoiced or delivered. It is closed.")
+				_("Cancelled in WooCommerce, but the Sales Order is closed. It stays closed.")
 			)
 			return
 
-		for invoice in invoices:
-			invoice_doc = frappe.get_doc("Sales Invoice", invoice.name)
-			invoice_doc.flags.created_by_sync = True
-			invoice_doc.cancel()
-		if invoices:
-			sales_order.reload()
+		if (
+			flt(sales_order.per_delivered) > 0
+			or flt(sales_order.advance_paid) > 0
+			or self.get_invoices()
+			or self.get_payment_entries()
+		):
+			self.close_sales_order()
+			self.flag_sync_issue(
+				_("Cancelled in WooCommerce, but it was already invoiced, paid or delivered. It is closed.")
+			)
+			return
 		sales_order.cancel()
 
-	def can_be_cancelled_with_the_order(self, invoice) -> bool:
-		"""
-		Whether a submitted Sales Invoice of the order can be cancelled with it: it isn't a return, nothing was
-		paid on it, and it bills nothing but this Sales Order
-		"""
-		if invoice.is_return or flt(invoice.outstanding_amount) < flt(
-			invoice.rounded_total or invoice.grand_total
-		):
-			return False
-		billed_orders = frappe.get_all(
-			"Sales Invoice Item",
-			filters={"parent": invoice.name, "parenttype": "Sales Invoice"},
-			pluck="sales_order",
+	def get_invoices(self) -> list:
+		return get_order_invoices(self.sales_order.name)
+
+	def get_payment_entries(self) -> list[str]:
+		return get_order_payment_entries(
+			self.sales_order.name, [invoice.name for invoice in self.get_invoices()]
 		)
-		return set(billed_orders) == {self.sales_order.name}
 
 	def amend_sales_order(self) -> None:
 		"""

@@ -14,7 +14,6 @@ from frappe.utils.synchronization import filelock
 from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.tasks.order_customer import SalesOrderCustomerMixin
 from woocommerce_conduit.tasks.order_lines import SalesOrderLinesMixin, get_json_lines
-from woocommerce_conduit.tasks.order_payment import SalesOrderPaymentMixin, get_payment_method
 from woocommerce_conduit.tasks.order_status import (
 	SalesOrderStatusMixin,
 	get_status_to_push,
@@ -26,9 +25,9 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_server.woocommerce_serv
 )
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 	ACTION_HOLD,
-	ACTION_INVOICE,
 	ACTION_SUBMIT,
 	ENDING_ACTIONS,
+	is_active_status,
 	normalise_status,
 )
 from woocommerce_conduit.woocommerce.doctype.woocommerce_settings.woocommerce_settings import (
@@ -41,6 +40,8 @@ from woocommerce_conduit.woocommerce.woocommerce_api import (
 
 # The most orders one sync looks at, fetched 100 per request
 MAX_ORDERS_PER_SYNC = 10_000
+# The field the title of the payment method is stored in is this long
+PAYMENT_METHOD_LENGTH = 140
 
 
 class SyncedOrderItem(SalesOrderItem):
@@ -201,11 +202,12 @@ def run_sales_order_sync(
 	return sync.sales_order, sync.woocommerce_order
 
 
-class SynchroniseSalesOrder(
-	SalesOrderCustomerMixin, SalesOrderStatusMixin, SalesOrderPaymentMixin, SalesOrderLinesMixin
-):
+class SynchroniseSalesOrder(SalesOrderCustomerMixin, SalesOrderStatusMixin, SalesOrderLinesMixin):
 	"""
-	Class for managing synchronisation of a WooCommerce Order with an ERPNext Sales Order
+	Class for managing synchronisation of a WooCommerce Order with an ERPNext Sales Order. It makes and keeps
+	Sales Orders, and nothing else: invoices, payments and deliveries are made in ERPNext by people, as an
+	invoice is only made when its payment is processed, and by a WooCommerce Order Import for orders first seen
+	completed.
 	"""
 
 	def __init__(
@@ -366,7 +368,8 @@ class SynchroniseSalesOrder(
 
 		if not self.sales_order:
 			# Only some statuses mean there is an order to keep. For the others nothing is made, and that
-			# includes the Customer, Address and Contact that a Sales Order would need.
+			# includes the Customer, Address and Contact that a Sales Order would need. An order first seen
+			# completed is for a WooCommerce Order Import.
 			if ACTION_SUBMIT not in actions:
 				return
 			self.create_sales_order(actions)
@@ -374,10 +377,7 @@ class SynchroniseSalesOrder(
 		elif wc_order_changed(
 			self.woocommerce_order.woocommerce_date_modified, self.sales_order.woocommerce_last_sync_hash
 		):
-			self.update_sales_order(actions)
-
-		# Also when nothing changed, as the Sales Order may have been submitted in the mean time
-		self.sync_invoice_and_payment(actions)
+			self.update_sales_order(actions, active=is_active_status(status_row))
 
 	def push_status_to_woocommerce(self):
 		"""
@@ -418,17 +418,17 @@ class SynchroniseSalesOrder(
 			update_modified=False,
 		)
 
-	def update_sales_order(self, actions: frozenset[str] = frozenset()):
+	def update_sales_order(self, actions: frozenset[str] = frozenset(), active: bool = False):
 		"""
 		Update the ERPNext Sales Order with fields from it's corresponding WooCommerce Order. A cancelled one
 		is left as it is, unless the order came back (came_back): then it is amended, and a closed one opened
-		again.
+		again. `active` says the status is one of an order that is going on (is_active_status).
 		"""
 		if not self.woocommerce_order or not self.sales_order:
 			return
 
 		# Asked before the new status is written over the one the Sales Order last saw
-		came_back = self.came_back(actions)
+		came_back = self.came_back(active)
 		if self.sales_order.docstatus == 2:
 			if not came_back:
 				return
@@ -472,7 +472,7 @@ class SynchroniseSalesOrder(
 		# What a status means is done once, when it changes. Otherwise editing the note of an order would
 		# undo a hold that was put on its Sales Order in ERPNext.
 		if status_changed:
-			self.apply_status_actions(actions)
+			self.apply_status_actions(actions, active)
 
 	def create_sales_order(self, actions: frozenset[str]) -> None:
 		"""
@@ -542,14 +542,23 @@ class SynchroniseSalesOrder(
 
 		self.sales_order = new_sales_order
 		try:
-			if ACTION_HOLD in actions and ACTION_INVOICE in actions:
-				self.invoice_and_hold()
-			elif ACTION_HOLD in actions:
+			if ACTION_HOLD in actions:
 				self.hold_sales_order()
 		except Exception:
 			# The Sales Order is made, so a hold that fails must not undo it
 			error_message = f"{frappe.get_traceback()}\n\nSales Order Data{new_sales_order.as_dict()!s}"
 			frappe.log_error("WooCommerce Error", error_message)
+
+
+def get_payment_method(wc_order) -> str | None:
+	"""
+	The title of the payment method of an order, or its id when the title doesn't fit. A Sales Order keeps it
+	for the person who books its payment.
+	"""
+	title = wc_order.payment_method_title
+	if title and len(title) < PAYMENT_METHOD_LENGTH:
+		return title
+	return wc_order.payment_method or None
 
 
 def push_order_status(sales_order_name: str) -> None:

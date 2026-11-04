@@ -98,13 +98,21 @@ frappe.ui.form.on("WooCommerce Order", {
 			freeze_message: __("Sync Order with ERPNext..."),
 			callback: function (r) {
 				const sales_order = r.message && r.message[0];
-				frappe.show_alert(
-					{
-						message: sales_order
-							? __("Synced with Sales Order {0}", [sales_order.name])
+				let message = __("Synced with Sales Order {0}", [sales_order && sales_order.name]);
+				if (!sales_order) {
+					// The sync makes Sales Orders only for orders it first sees going on
+					message =
+						frm.doc.status === "completed"
+							? __(
+									"A completed order is brought in by a WooCommerce Order Import, with its invoice and payment"
+							  )
 							: __("An order with status {0} doesn't make a Sales Order", [
 									frm.doc.status,
-							  ]),
+							  ]);
+				}
+				frappe.show_alert(
+					{
+						message: message,
 						indicator: sales_order ? "green" : "blue",
 					},
 					5

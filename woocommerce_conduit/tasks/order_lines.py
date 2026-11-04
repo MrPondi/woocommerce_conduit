@@ -316,7 +316,8 @@ class SalesOrderLinesMixin:
 		"""
 		Bring the lines of the Sales Order in line with WooCommerce. As long as nothing was delivered or
 		invoiced the Sales Order is changed, like Update Items does. After that the lines are left to a
-		person, as the Delivery Note or Sales Invoice would have to change too.
+		person, as the Delivery Note or Sales Invoice would have to change too. A draft invoice a person has
+		started counts, though ERPNext's per_billed doesn't, as it would keep the old lines.
 		"""
 		sales_order = self.sales_order
 		wc_server = self.get_wc_server()
@@ -331,6 +332,7 @@ class SalesOrderLinesMixin:
 			or not keyed
 			or flt(sales_order.per_delivered) > 0
 			or flt(sales_order.per_billed) > 0
+			or self.get_invoices()
 		):
 			self.flag_sync_issue(
 				_(
