@@ -120,7 +120,7 @@
    "read_only": 1
   },
   {
-   "description": "An imported order's Sales Invoice is submitted together with its Payment Entry, on the default account of the Mode of Payment of its payment method, both dated when WooCommerce says it was paid. An order whose payment method has no Mode of Payment here is skipped until it gets one.",
+   "description": "An imported order's Sales Invoice is submitted together with its Payment Entry, on the default account of the Mode of Payment of its payment method, both dated when WooCommerce says it was paid, or when it was completed, as the row of its payment method says. An order whose payment method has no Mode of Payment here is skipped until it gets one.",
    "fieldname": "payments_section",
    "fieldtype": "Section Break",
    "label": "Payments"
@@ -186,7 +186,7 @@
    "link_fieldname": "order_import"
   }
  ],
- "modified": "2026-11-04 20:00:00.000000",
+ "modified": "2026-11-04 22:00:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Order Import",

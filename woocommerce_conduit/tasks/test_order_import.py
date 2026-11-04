@@ -1,7 +1,7 @@
 # Copyright (c) 2026, Karol Parzonka and Contributors
 # See license.txt
 
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -27,6 +27,9 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_order_import_log.woocom
 	RESULT_NEEDS_REVIEW,
 	RESULT_PAID,
 	RESULT_SKIPPED,
+)
+from woocommerce_conduit.woocommerce.doctype.woocommerce_order_import_payment_method.woocommerce_order_import_payment_method import (
+	PAYMENT_DATE_COMPLETED,
 )
 
 SERVER = "import.example.com"
@@ -427,8 +430,11 @@ class TestImportingAnOrder(IntegrationTestCase):
 		self.assertEqual(
 			importer.result, ImportResult(RESULT_PAID, None, "SAL-ORD-7", "ACC-SINV-7", "ACC-PAY-7")
 		)
-		method, account = stubs.make_payment_entry.call_args.args[1:]
+		method, account, paid_at = stubs.make_payment_entry.call_args.args[1:]
 		self.assertEqual((method.mode_of_payment, account), ("Credit Card", ACCOUNT))
+		# Dated when WooCommerce took it as paid, the invoice as its payment
+		self.assertEqual(paid_at, datetime(2026, 10, 30, 14, 0))
+		stubs.make_invoice.assert_called_once_with(paid_at)
 		stubs.deliver.assert_not_called()
 		stubs.close.assert_called_once()
 
@@ -446,7 +452,7 @@ class TestImportingAnOrder(IntegrationTestCase):
 			patch.object(
 				OrderImport,
 				"make_invoice",
-				side_effect=lambda: order.append("invoice") or _dict(name="ACC-SINV-7"),
+				side_effect=lambda paid_at: order.append("invoice") or _dict(name="ACC-SINV-7"),
 			),
 			patch.object(
 				OrderImport,
@@ -511,6 +517,26 @@ class TestImportingAnOrder(IntegrationTestCase):
 				self.assertIn("without an invoice", flag)
 				self.assertIn("Re-open", flag)
 
+	def test_a_method_paid_on_completion_needs_the_completion_date(self):
+		doc = make_import()
+		doc.payment_method_map[0].payment_date = PAYMENT_DATE_COMPLETED
+
+		# Without a payment date it is imported, dated when it was completed
+		importer = make_importer(doc=doc, wc_order=make_order(date_paid=None))
+		stubs = self.run_steps(importer)
+		self.assertEqual(importer.result.result, RESULT_PAID)
+		stubs.make_invoice.assert_called_once_with(datetime(2026, 11, 2, 9, 15, 30))
+		self.assertEqual(stubs.make_payment_entry.call_args.args[3], datetime(2026, 11, 2, 9, 15, 30))
+
+		# Without a completion date a person dates it
+		importer = make_importer(doc=doc, wc_order=make_order(date_completed=None))
+		stubs = self.run_steps(importer)
+		self.assertEqual(
+			(importer.result.result, importer.result.message),
+			(RESULT_NEEDS_REVIEW, "WooCommerce has no completion date for it"),
+		)
+		stubs.make_invoice.assert_not_called()
+
 	def test_an_order_without_a_sales_order_fails(self):
 		importer = make_importer()
 		with (
@@ -536,12 +562,12 @@ class TestImportedDocuments(IntegrationTestCase):
 			patch.object(order_import, "make_sales_invoice", return_value=invoice) as make_sales_invoice,
 			patch.object(order_import, "get_due_date", return_value=date(2026, 11, 13)) as get_due_date,
 		):
-			self.assertIs(importer.make_invoice(), invoice)
+			self.assertIs(importer.make_invoice(datetime(2026, 10, 30, 14, 0)), invoice)
 
 		make_sales_invoice.assert_called_once_with("SAL-ORD-7")
 		self.assertEqual(
-			(invoice.update_stock, invoice.set_posting_time, invoice.posting_date),
-			(0, 1, date(2026, 10, 30)),
+			(invoice.update_stock, invoice.set_posting_time, invoice.posting_date, invoice.posting_time),
+			(0, 1, date(2026, 10, 30), "14:00:00"),
 		)
 		# Due from the day it was paid rather than today, which the template would refuse
 		get_due_date.assert_called_once_with(
@@ -561,7 +587,10 @@ class TestImportedDocuments(IntegrationTestCase):
 			patch.object(order_import, "get_payment_entry", return_value=payment_entry) as get_payment_entry,
 			patch.object(frappe, "get_cached_value", return_value="PLN"),
 		):
-			self.assertIs(importer.make_payment_entry(invoice, method, ACCOUNT), payment_entry)
+			self.assertIs(
+				importer.make_payment_entry(invoice, method, ACCOUNT, importer.get_paid_at(method)),
+				payment_entry,
+			)
 		return payment_entry, get_payment_entry
 
 	def test_the_payment_is_booked_on_the_invoice_when_it_was_paid(self):
@@ -585,6 +614,28 @@ class TestImportedDocuments(IntegrationTestCase):
 		payment_entry.set_exchange_rate.assert_not_called()
 		payment_entry.insert.assert_called_once()
 		payment_entry.submit.assert_called_once()
+
+	def test_a_method_paid_on_completion_is_booked_when_the_order_was_completed(self):
+		# A transfer for a reserved product, or cash the courier collects, comes in after WooCommerce's paid date
+		method = _dict(
+			mode_of_payment="Wire Transfer", bank_account=None, payment_date=PAYMENT_DATE_COMPLETED
+		)
+		importer = make_importer(sales_order=make_sales_order())
+		paid_at = importer.get_paid_at(method)
+		self.assertEqual(paid_at, datetime(2026, 11, 2, 9, 15, 30))
+
+		invoice = MagicMock(customer="Jan", company=COMPANY, payment_terms_template=None)
+		with (
+			patch.object(order_import, "make_sales_invoice", return_value=invoice),
+			patch.object(order_import, "get_due_date", return_value=date(2026, 11, 2)) as get_due_date,
+		):
+			importer.make_invoice(paid_at)
+		self.assertEqual((invoice.posting_date, invoice.posting_time), (date(2026, 11, 2), "09:15:30"))
+		self.assertEqual(get_due_date.call_args.args[0], date(2026, 11, 2))
+
+		payment_entry, get_payment_entry = self.make_payment(method)
+		self.assertEqual(payment_entry.posting_date, date(2026, 11, 2))
+		self.assertEqual(get_payment_entry.call_args.kwargs["reference_date"], date(2026, 11, 2))
 
 	def test_a_payment_without_a_bank_account_carries_none(self):
 		method = _dict(mode_of_payment="Cash", bank_account=None)
@@ -688,18 +739,23 @@ class TestOrderImportForm(IntegrationTestCase):
 
 	def test_a_new_import_takes_the_map_of_the_shops_last_one(self):
 		doc = frappe.get_doc({"doctype": "WooCommerce Order Import", "woocommerce_server": SERVER})
+		last_import = make_import()
+		last_import.payment_method_map[1].payment_date = PAYMENT_DATE_COMPLETED
 		with (
 			patch.object(frappe, "get_all", return_value=["WC-ORD-IMP-00001"]),
-			patch.object(frappe, "get_doc", return_value=make_import()),
+			patch.object(frappe, "get_doc", return_value=last_import),
 		):
 			doc.add_payment_methods()
 
 		self.assertEqual(
 			[
-				(row.woocommerce_payment_method, row.mode_of_payment, row.bank_account)
+				(row.woocommerce_payment_method, row.mode_of_payment, row.bank_account, row.payment_date)
 				for row in doc.payment_method_map
 			],
-			[("stripe", "Credit Card", "Stripe Bank"), ("cod", None, None)],
+			[
+				("stripe", "Credit Card", "Stripe Bank", last_import.payment_method_map[0].payment_date),
+				("cod", None, None, PAYMENT_DATE_COMPLETED),
+			],
 		)
 
 	def test_the_first_import_of_a_shop_starts_with_its_gateways(self):

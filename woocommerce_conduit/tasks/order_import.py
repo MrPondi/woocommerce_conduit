@@ -8,6 +8,7 @@ completed while the sync wasn't watching.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 
 import frappe
 from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
@@ -32,6 +33,9 @@ from woocommerce_conduit.woocommerce.doctype.woocommerce_order_import_log.woocom
 	RESULT_PAID,
 	RESULT_SKIPPED,
 	RETRIED_RESULTS,
+)
+from woocommerce_conduit.woocommerce.doctype.woocommerce_order_import_payment_method.woocommerce_order_import_payment_method import (
+	PAYMENT_DATE_COMPLETED,
 )
 from woocommerce_conduit.woocommerce.doctype.woocommerce_server_order_status.woocommerce_server_order_status import (
 	normalise_status,
@@ -428,11 +432,12 @@ class OrderImport(SynchroniseSalesOrder):
 		if not self.sales_order:
 			frappe.throw(_("No Sales Order could be made, as its Customer couldn't be made or found"))
 
-		reason = self.get_review_reason()
+		paid_at = self.get_paid_at(method)
+		reason = self.get_review_reason(method, paid_at)
 		invoice = payment_entry = None
 		if not reason:
-			invoice = self.make_invoice()
-			payment_entry = self.make_payment_entry(invoice, method, account)
+			invoice = self.make_invoice(paid_at)
+			payment_entry = self.make_payment_entry(invoice, method, account, paid_at)
 		if self.order_import.deliver:
 			self.deliver()
 		closed = self.close_if_undelivered()
@@ -445,14 +450,25 @@ class OrderImport(SynchroniseSalesOrder):
 				RESULT_PAID, None, self.sales_order.name, invoice.name, payment_entry.name
 			)
 
-	def get_review_reason(self) -> str | None:
+	def get_paid_at(self, method) -> datetime | None:
+		"""
+		When the order's invoice and payment are dated: when WooCommerce took it as paid, or, for a payment method
+		whose row says so, when it was completed. WooCommerce takes cash on delivery as paid at checkout, and a
+		transfer for a reserved product comes in after it. An order with nothing to pay has no row.
+		"""
+		value = self.woocommerce_order.get("date_completed" if is_paid_on_completion(method) else "date_paid")
+		return get_datetime(value) if value else None
+
+	def get_review_reason(self, method, paid_at: datetime | None) -> str | None:
 		"""
 		Why the order can't be invoiced with its payment, so a person has to: None when it can
 		"""
 		wc_order, sales_order = self.woocommerce_order, self.sales_order
 		if sales_order.woocommerce_sync_issue:
 			return _("Its Sales Order is flagged: {0}").format(sales_order.woocommerce_sync_issue)
-		if not wc_order.date_paid:
+		if not paid_at:
+			if is_paid_on_completion(method):
+				return _("WooCommerce has no completion date for it")
 			return _("WooCommerce has no payment date for it")
 		# WooCommerce's total doesn't subtract them, so the invoice would bill too much
 		if get_json_lines(wc_order, "refunds"):
@@ -472,18 +488,19 @@ class OrderImport(SynchroniseSalesOrder):
 			message += " " + _("Re-open it to invoice it.")
 		self.flag_sync_issue(message)
 
-	def make_invoice(self):
+	def make_invoice(self, paid_at: datetime):
 		"""
 		The Sales Invoice of the order, dated when it was paid, as an invoice is made when its payment is
 		processed. Submitted at once, as its Payment Entry follows.
 		"""
 		sales_order = self.sales_order
-		paid_on = getdate(self.woocommerce_order.date_paid)
+		paid_on = getdate(paid_at)
 		invoice = make_sales_invoice(sales_order.name)
 		# Delivering is a separate step, with its own Delivery Note
 		invoice.update_stock = 0
 		invoice.set_posting_time = 1
 		invoice.posting_date = paid_on
+		invoice.posting_time = paid_at.strftime("%H:%M:%S")
 		# The mapper dated them from today, which a Payment Terms Template refuses for an invoice of an earlier
 		# day. ERPNext makes the schedule again from the posting date.
 		invoice.due_date = get_due_date(
@@ -499,13 +516,12 @@ class OrderImport(SynchroniseSalesOrder):
 		invoice.submit()
 		return invoice
 
-	def make_payment_entry(self, invoice, method, account: str):
+	def make_payment_entry(self, invoice, method, account: str, paid_at: datetime):
 		"""
-		The payment of the invoice, on the account of the order's Mode of Payment, dated when WooCommerce says it
-		was paid
+		The payment of the invoice, on the account of the order's Mode of Payment, dated as the invoice
 		"""
 		wc_order = self.woocommerce_order
-		paid_on = getdate(wc_order.date_paid)
+		paid_on = getdate(paid_at)
 		payment_entry = get_payment_entry(
 			"Sales Invoice", invoice.name, bank_account=account, reference_date=paid_on
 		)
@@ -562,6 +578,13 @@ class OrderImport(SynchroniseSalesOrder):
 		):
 			sales_order.cancel_stock_reservation_entries(notify=False)
 		return True
+
+
+def is_paid_on_completion(method) -> bool:
+	"""
+	Whether the orders paid with a row's payment method are dated when they were completed
+	"""
+	return bool(method) and method.get("payment_date") == PAYMENT_DATE_COMPLETED
 
 
 def set_exchange_rates(payment_entry, invoice) -> None:

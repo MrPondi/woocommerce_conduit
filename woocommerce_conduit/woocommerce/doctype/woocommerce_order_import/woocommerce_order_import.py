@@ -15,6 +15,7 @@ PAYMENT_METHOD_FIELDS = (
 	"woocommerce_payment_method_title",
 	"mode_of_payment",
 	"bank_account",
+	"payment_date",
 )
 
 

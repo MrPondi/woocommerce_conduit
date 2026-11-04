@@ -20,7 +20,7 @@ Refunds the shop made before ERPNext saw the order are only found when its Sales
 - The Order Import makes no invoice for an order with refunds, and flags it. Its invoice and payment, then a Credit Note for each refund (details at `orders/{id}/refunds`) and the money paid back, would import it whole.
 - The sync makes the Sales Order of a partly refunded active order at the full amount. Flag it, so whoever invoices it sees the refund.
 
-Start at: ERPNext's `make_sales_return` (Sales Invoice), `order_status.enqueue_status_push_from_hook` and `SynchroniseSalesOrder.push_status_to_woocommerce` for the shape of a push, `OrderImport.book_invoice_and_payment`, and `SynchroniseSalesOrder.create_sales_order`.
+Start at: ERPNext's `make_sales_return` (Sales Invoice), `order_status.enqueue_status_push_from_hook` and `SynchroniseSalesOrder.push_status_to_woocommerce` for the shape of a push, `OrderImport.make_invoice` and `make_payment_entry`, and `SynchroniseSalesOrder.create_sales_order`.
 
 ### VAT on shipping and fees at WooCommerce's rate
 
@@ -33,12 +33,6 @@ Start at: `order_lines.build_charges`, `taxes.get_vat_rates`.
 The sync makes Sales Orders only for orders it first sees active, so an order completed before it saw it waits for a WooCommerce Order Import, and nothing says so: one completed while Pause Order Sync was on, entered in wp-admin as completed, or completed within the hour after its webhook failed. A count on the server form of the shop's completed orders without a Sales Order, or an import that says how many it would take before it starts, would bring them up.
 
 Start at: `order_import.get_orders_to_import`, `WooCommerceOrder.get_count_of_records`, `item_parity.get_unlinked_order_products` (Check Order Items).
-
-### When an imported cash on delivery order was paid
-
-The Order Import dates an invoice and its Payment Entry at the order's `date_paid`. WooCommerce sets it when an order reaches processing, which a cash on delivery order does at checkout, so both are dated before the courier collected the money. The order's `date_completed`, or a choice of date on each row of the import's Payment Method Map, would be closer.
-
-Start at: `OrderImport.book_invoice_and_payment`, `woocommerce_order_import_payment_method.json`.
 
 ### Shipping methods outside the zones
 
