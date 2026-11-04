@@ -1,7 +1,9 @@
 """
 The Customers that look like the same buyer, by email, tax ID, phone, email domain or name, so that those of
 earlier orders can be merged by hand: with Review in the Possible Duplicates of the Customer form, or with
-Rename (Merge with existing). Pairs a person decided are not the same are left out. It changes nothing.
+Rename (Merge with existing). Every Customer is read, also one made by hand or by another app, which may be the
+same buyer as one the shop's orders made. Pairs a person decided are not the same are left out, and so are the
+email domains WooCommerce Settings ignores. It changes nothing.
 """
 
 from collections import defaultdict
@@ -18,16 +20,6 @@ from woocommerce_conduit.tasks.customer_duplicates import (
 )
 from woocommerce_conduit.tasks.order_customer import GUEST_PREFIX, normalise_tax_id, normalise_text
 
-# Providers whose address says nothing about who the customer is, so a shared domain there is no sign of two
-# Customers being one buyer: the big ones of the world, and Poland's. The default of the Ignore Email Domains
-# filter, which the report's JSON repeats.
-DEFAULT_IGNORED_EMAIL_DOMAINS = (
-	"gmail.com, googlemail.com, yahoo.com, ymail.com, hotmail.com, outlook.com, live.com, msn.com, "
-	"icloud.com, me.com, mac.com, aol.com, protonmail.com, proton.me, pm.me, gmx.com, gmx.net, "
-	"zoho.com, mail.com, yandex.com, qq.com, 163.com, wp.pl, o2.pl, onet.pl, op.pl, interia.pl, "
-	"interia.eu, onet.eu, poczta.onet.pl, vp.pl, gazeta.pl, tlen.pl, poczta.fm, go2.pl, int.pl"
-)
-
 # The signs of two Customers being one buyer, as the Grouped By filter names them. Email, tax ID and phone are
 # to be trusted, a name needs a look at every group.
 EMAIL, TAX_ID, PHONE, EMAIL_DOMAIN, NAME = "Email", "Tax ID", "Phone", "Email Domain", "Name"
@@ -36,8 +28,8 @@ EMAIL, TAX_ID, PHONE, EMAIL_DOMAIN, NAME = "Email", "Tax ID", "Phone", "Email Do
 def execute(filters=None):
 	filters = frappe._dict(filters or {})
 	customers = get_customers(filters)
-	groups = drop_decided_pairs(build_groups(customers, filters), get_decided_pairs())
-	return get_columns(), get_rows(groups, customers)
+	groups = build_groups(customers, filters, get_ignored_email_domains())
+	return get_columns(), get_rows(drop_decided_pairs(groups, get_decided_pairs()), customers)
 
 
 def get_columns() -> list[dict]:
@@ -79,24 +71,24 @@ def get_grouping_labels() -> dict[str, str]:
 	}
 
 
-def get_ignored_email_domains(filters) -> set[str]:
+def get_ignored_email_domains() -> set[str]:
 	"""
-	The domains that don't tell who a customer is. Separated by commas or lines, `@` optional.
+	The domains that don't tell who a customer is: free mail providers, whose addresses anyone gets. WooCommerce
+	Settings lists them, separated by commas or lines, `@` optional.
 	"""
-	listed = filters.get("ignore_email_domains")
-	if listed is None:
-		listed = DEFAULT_IGNORED_EMAIL_DOMAINS
+	return parse_email_domains(frappe.get_cached_doc("WooCommerce Settings").ignore_email_domains)
+
+
+def parse_email_domains(listed: str | None) -> set[str]:
 	return {
 		domain.strip().lower().lstrip("@")
-		for domain in listed.replace("\n", ",").split(",")
+		for domain in cstr(listed).replace("\n", ",").split(",")
 		if domain.strip()
 	}
 
 
 def get_customers(filters) -> list[frappe._dict]:
 	conditions = {}
-	if filters.get("woocommerce_only"):
-		conditions["woocommerce_identifier"] = ["is", "set"]
 	if filters.get("woocommerce_server"):
 		conditions["woocommerce_server"] = filters.woocommerce_server
 
@@ -140,13 +132,12 @@ def get_customers(filters) -> list[frappe._dict]:
 	return customers
 
 
-def build_groups(customers: list, filters) -> dict[tuple[str, str], list[str]]:
+def build_groups(customers: list, filters, ignored_domains: set[str]) -> dict[tuple[str, str], list[str]]:
 	"""
-	The Customers by each sign of being one buyer in turn. Only groups of more than one are kept, as a group
-	of one is just a customer.
+	The Customers by each sign of being one buyer in turn, leaving out the email domains that don't tell who a
+	customer is. Only groups of more than one are kept, as a group of one is just a customer.
 	"""
 	wanted = filters.get("grouped_by")
-	ignored_domains = get_ignored_email_domains(filters)
 	groups = defaultdict(list)
 
 	def add(grouping: str, key: str, customer):

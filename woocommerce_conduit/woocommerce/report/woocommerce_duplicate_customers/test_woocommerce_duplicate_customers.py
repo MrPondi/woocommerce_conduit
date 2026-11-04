@@ -1,6 +1,8 @@
 # Copyright (c) 2026, Karol Parzonka and Contributors
 # See license.txt
 
+from unittest.mock import patch
+
 import frappe
 from frappe.tests import IntegrationTestCase
 
@@ -8,7 +10,9 @@ from woocommerce_conduit.woocommerce.report.woocommerce_duplicate_customers.wooc
 	build_groups,
 	drop_decided_pairs,
 	execute,
+	get_ignored_email_domains,
 	get_rows,
+	parse_email_domains,
 )
 
 SERVER = "one.example.com"
@@ -47,7 +51,7 @@ class TestDuplicateCustomers(IntegrationTestCase):
 			customer("F", ["y@wp.pl"]),
 		]
 
-		groups = build_groups(customers, frappe._dict())
+		groups = build_groups(customers, frappe._dict(), {"wp.pl"})
 
 		self.assertEqual(
 			groups,
@@ -60,15 +64,25 @@ class TestDuplicateCustomers(IntegrationTestCase):
 			},
 		)
 		self.assertEqual(
-			list(build_groups(customers, frappe._dict(grouped_by="Tax ID"))), [("Tax ID", "6791003801")]
+			list(build_groups(customers, frappe._dict(grouped_by="Tax ID"), {"wp.pl"})),
+			[("Tax ID", "6791003801")],
 		)
-		# The domains to leave out are the filter's
+		# A domain that isn't ignored groups its Customers
 		self.assertIn(
 			("Email Domain", "wp.pl"),
-			build_groups(
-				customers, frappe._dict(grouped_by="Email Domain", ignore_email_domains="gmail.com")
-			),
+			build_groups(customers, frappe._dict(grouped_by="Email Domain"), {"gmail.com"}),
 		)
+
+	def test_the_ignored_email_domains_are_those_of_woocommerce_settings(self):
+		with patch.object(
+			frappe, "get_cached_doc", return_value=frappe._dict(ignore_email_domains=" Firma.PL\n@wp.pl,, ")
+		):
+			self.assertEqual(get_ignored_email_domains(), {"firma.pl", "wp.pl"})
+		self.assertEqual(parse_email_domains(None), set())
+
+		# The Settings ignore the free mail providers until someone changes them
+		default = frappe.get_meta("WooCommerce Settings").get_field("ignore_email_domains").default
+		self.assertLessEqual({"gmail.com", "outlook.com", "wp.pl", "onet.pl"}, parse_email_domains(default))
 
 	def test_customers_decided_not_to_be_the_same_are_left_out(self):
 		groups = {("Email", "a@firma.pl"): ["A", "B", "C"], ("Phone", "500100200"): ["A", "B"]}
@@ -86,7 +100,7 @@ class TestDuplicateCustomers(IntegrationTestCase):
 			customer("Third", ["c@firma.pl", "a@firma.pl"], creation="2026-02-01"),
 			customer("Other", ["c@firma.pl"], creation="2026-01-15"),
 		]
-		groups = build_groups(customers, frappe._dict(grouped_by="Email"))
+		groups = build_groups(customers, frappe._dict(grouped_by="Email"), set())
 
 		rows = get_rows(groups, customers)
 
@@ -105,14 +119,19 @@ class TestDuplicateCustomers(IntegrationTestCase):
 	def test_the_emails_are_those_of_the_customers_contacts(self):
 		frappe.db.savepoint("test_duplicate_customers")
 		self.addCleanup(frappe.db.rollback, save_point="test_duplicate_customers")
-		for name, creation in (("_Test WC Ann", "2026-01-01"), ("_Test WC Guest", "2026-02-01")):
+		for name, creation, server in (
+			("_Test WC Ann", "2026-01-01", SERVER),
+			("_Test WC Guest", "2026-02-01", SERVER),
+			# Made by hand, which may be the same buyer as well
+			("_Test WC By Hand", "2026-03-01", None),
+		):
 			frappe.get_doc(
 				{
 					"doctype": "Customer",
 					"name": name,
 					"customer_name": "Ann Smith",
-					"woocommerce_server": SERVER,
-					"woocommerce_identifier": name,
+					"woocommerce_server": server,
+					"woocommerce_identifier": name if server else None,
 					"creation": creation,
 				}
 			).db_insert()
@@ -134,9 +153,19 @@ class TestDuplicateCustomers(IntegrationTestCase):
 			}
 		).db_insert()
 
-		_columns, rows = execute({"grouped_by": "Email", "woocommerce_server": SERVER, "woocommerce_only": 1})
+		def get_group(filters):
+			_columns, rows = execute({"grouped_by": "Email", **filters})
+			return [
+				(row["customer"], row["orders"], row["ordered"])
+				for row in rows
+				if row["group"] == "ann@example.com"
+			]
 
+		# Every Customer, whoever made it
 		self.assertEqual(
-			[(row["group"], row["customer"], row["orders"], row["ordered"]) for row in rows],
-			[("ann@example.com", "_Test WC Ann", 1, 120), ("ann@example.com", "_Test WC Guest", 0, 0)],
+			get_group({}),
+			[("_Test WC Ann", 1, 120), ("_Test WC Guest", 0, 0), ("_Test WC By Hand", 0, 0)],
+		)
+		self.assertEqual(
+			get_group({"woocommerce_server": SERVER}), [("_Test WC Ann", 1, 120), ("_Test WC Guest", 0, 0)]
 		)

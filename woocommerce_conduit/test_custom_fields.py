@@ -20,6 +20,22 @@ class TestCustomFields(IntegrationTestCase):
 					self.assertEqual(field.pop("is_system_generated"), 1)
 					self.assertEqual(field, df)
 
+	def test_the_customer_form_starts_with_its_possible_duplicates_then_its_shop(self):
+		# Above ERPNext's first section, the duplicates in a section of their own, so they take the whole width
+		fieldnames = [df.fieldname for df in frappe.get_meta("Customer").fields]
+		self.assertEqual(
+			fieldnames[:7],
+			[
+				"woocommerce_duplicates_section",
+				"woocommerce_duplicates",
+				"woocommerce_section",
+				"woocommerce_identifier",
+				"woocommerce_column_break",
+				"woocommerce_server",
+				"basic_info",
+			],
+		)
+
 	def test_each_field_follows_a_field_of_its_doctype(self):
 		# Frappe puts a field whose insert_after it doesn't find at the end of the form, such as after a rename
 		for doctype, fields in get_custom_fields().items():

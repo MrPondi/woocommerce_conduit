@@ -15,6 +15,7 @@ class WooCommerceSettings(Document):
 		from frappe.types import DF
 
 		fetch_variations: DF.Check
+		ignore_email_domains: DF.SmallText | None
 		max_variations: DF.Int
 		minimum_creation_date: DF.Datetime
 		variation_batch_size: DF.Int

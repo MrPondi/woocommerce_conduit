@@ -1,6 +1,11 @@
 # The module of the fields, so uninstalling the app removes them
 MODULE = "WooCommerce"
 
+# A Customer's form shows its possible duplicates only when there are some (customer_duplicates.py)
+HAS_POSSIBLE_DUPLICATES = (
+	"eval:doc.__onload && doc.__onload.woocommerce_duplicates && doc.__onload.woocommerce_duplicates.length"
+)
+
 
 def _(text: str) -> str:
 	"""Marks a label for translation. It is stored as it is, and Frappe translates it where it shows it."""
@@ -30,20 +35,33 @@ def get_custom_fields() -> dict[str, list[dict]]:
 				"module": MODULE,
 			},
 		],
-		# Who a Customer is in the shop it was made for, at the end of the form
+		# At the top of the form, above ERPNext's fields: the Customers that may be the same buyer, then who the
+		# Customer is in the shop it was made for
 		"Customer": [
-			# The Customers that may be the same buyer (customer_duplicates.py), at the top of the form, shown
-			# only when there are some
+			# The possible duplicates, in a section of their own so they take the whole width, shown only when
+			# there are some. A field without insert_after goes to the top of the form (Meta.sort_fields). It is
+			# the only one: a second would go there too, in an order of its own.
+			{
+				"fieldname": "woocommerce_duplicates_section",
+				"fieldtype": "Section Break",
+				"depends_on": HAS_POSSIBLE_DUPLICATES,
+				"print_hide": 1,
+				"module": MODULE,
+			},
 			{
 				"fieldname": "woocommerce_duplicates",
 				"label": _("Possible Duplicates"),
 				"fieldtype": "HTML",
-				"insert_after": "basic_info",
-				"depends_on": (
-					"eval:doc.__onload && doc.__onload.woocommerce_duplicates"
-					" && doc.__onload.woocommerce_duplicates.length"
-				),
+				"insert_after": "woocommerce_duplicates_section",
+				"depends_on": HAS_POSSIBLE_DUPLICATES,
 				"print_hide": 1,
+				"module": MODULE,
+			},
+			{
+				"fieldname": "woocommerce_section",
+				"fieldtype": "Section Break",
+				"print_hide": 1,
+				"insert_after": "woocommerce_duplicates",
 				"module": MODULE,
 			},
 			{
@@ -54,6 +72,7 @@ def get_custom_fields() -> dict[str, list[dict]]:
 				"in_list_view": 1,
 				"search_index": 1,
 				"print_hide": 1,
+				"insert_after": "woocommerce_section",
 				"module": MODULE,
 			},
 			{

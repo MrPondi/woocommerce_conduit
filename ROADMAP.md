@@ -97,6 +97,12 @@ Every doctype of the app is for System Manager only. A Sales User doesn't get th
 
 Start at: the `permissions` of `woocommerce_order.json`, `woocommerce_product.json` and `woocommerce_server.json`.
 
+### WooCommerce Settings' defaults on a new site
+
+Frappe gives a Single its fields' defaults only while nothing of it is stored (`Document.load_from_db`). On a new site, once a server is enabled, the hourly order sync stores its cursor (`wc_last_sync_date_orders`) in WooCommerce Settings, whether or not anyone has saved them. From then on the defaulted fields come up empty: Variation Batch Size and Max Variations, which the product list falls back from in code (20 and 100), and Ignore Email Domains, which leaves the Duplicate Customers report grouping Customers by gmail.com and the other free mail providers until someone fills it in. Storing the defaults on install, or with the cursor while nothing else is stored, would keep them.
+
+Start at: `install.after_install`, `sync_sales_orders.sync_woocommerce_orders_modified_since`, `patches/v1/set_ignore_email_domains.py`.
+
 ## Desk
 
 ### A WooCommerce workspace
