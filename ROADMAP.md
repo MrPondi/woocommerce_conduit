@@ -51,12 +51,6 @@ Start at: `SynchroniseSalesOrder.create_sales_order`, `WooCommerceServer.get_shi
 
 ## Customers
 
-### Duplicate Customers report
-
-Fusion's WooCommerce Duplicate Customers report groups the Customers that look like the same buyer, by email, by name or by company email domain (the big free mail providers left out), with each one's Sales Orders and their total, oldest first, so they can be merged by hand. It changes nothing. Conduit made a Customer for every guest order until guests were found by email, so those repeat.
-
-Start at: Fusion's `report/woocommerce_duplicate_customers/`. Conduit has no `woocommerce_is_guest` field, but a guest's identifier starts with `Guest-`, and as the identifier of an account is its username, the email is the Customer's `email_id`, from its primary Contact.
-
 ### Moving an order to another Customer
 
 A Sales Order is flagged when the Customer its account or email found bears another name than the order (`order_customer.py`), as the buyer may be someone else on that email or account. The Customer of a submitted Sales Order can't be changed: it is cancelled and amended with the right one. A cancel made by hand pushes the WooCommerce status the Order Status Map gives Cancelled when the server pushes status changes (`get_status_to_push`), which cancels the order in the shop. A server button, or a flag that keeps the push off while a person amends the Sales Order, would let them move it.
