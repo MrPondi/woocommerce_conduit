@@ -6,6 +6,7 @@ from frappe.tests import IntegrationTestCase
 
 from woocommerce_conduit.woocommerce.report.woocommerce_duplicate_customers.woocommerce_duplicate_customers import (
 	build_groups,
+	drop_decided_pairs,
 	execute,
 	get_rows,
 )
@@ -13,7 +14,9 @@ from woocommerce_conduit.woocommerce.report.woocommerce_duplicate_customers.wooc
 SERVER = "one.example.com"
 
 
-def customer(name, emails=(), tax_id=None, customer_name=None, identifier=None, creation="2026-01-01"):
+def customer(
+	name, emails=(), tax_id=None, customer_name=None, identifier=None, creation="2026-01-01", phones=()
+):
 	"""
 	A Customer as the report reads it
 	"""
@@ -28,16 +31,17 @@ def customer(name, emails=(), tax_id=None, customer_name=None, identifier=None, 
 		orders=0,
 		ordered=0,
 		emails=set(emails),
+		phones=set(phones),
 	)
 
 
 class TestDuplicateCustomers(IntegrationTestCase):
 	def test_customers_are_grouped_by_each_sign_of_one_buyer(self):
 		customers = [
-			customer("A", ["ann@firma.pl"], "PL6791003801", "Ann Smith"),
+			customer("A", ["ann@firma.pl"], "PL6791003801", "Ann Smith", phones=["500100200"]),
 			customer("B", ["ann@firma.pl"]),
 			customer("C", tax_id="679-100-38-01"),
-			customer("D", ["bob@firma.pl"], customer_name="ANN  smith"),
+			customer("D", ["bob@firma.pl"], customer_name="ANN  smith", phones=["500100200"]),
 			# Free mail says nothing about who the customer is
 			customer("E", ["x@wp.pl"]),
 			customer("F", ["y@wp.pl"]),
@@ -50,6 +54,7 @@ class TestDuplicateCustomers(IntegrationTestCase):
 			{
 				("Email", "ann@firma.pl"): ["A", "B"],
 				("Tax ID", "6791003801"): ["A", "C"],
+				("Phone", "500100200"): ["A", "D"],
 				("Email Domain", "firma.pl"): ["A", "B", "D"],
 				("Name", "ann smith"): ["A", "D"],
 			},
@@ -64,6 +69,15 @@ class TestDuplicateCustomers(IntegrationTestCase):
 				customers, frappe._dict(grouped_by="Email Domain", ignore_email_domains="gmail.com")
 			),
 		)
+
+	def test_customers_decided_not_to_be_the_same_are_left_out(self):
+		groups = {("Email", "a@firma.pl"): ["A", "B", "C"], ("Phone", "500100200"): ["A", "B"]}
+		# A and B are told apart, so only C keeps them in the email's group
+		decided = {frozenset(("A", "B"))}
+
+		self.assertEqual(drop_decided_pairs(groups, decided), {("Email", "a@firma.pl"): ["A", "B", "C"]})
+		decided |= {frozenset(("A", "C")), frozenset(("B", "C"))}
+		self.assertEqual(drop_decided_pairs(groups, decided), {})
 
 	def test_the_biggest_group_comes_first_and_its_oldest_customer(self):
 		customers = [

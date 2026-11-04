@@ -19,7 +19,11 @@ add_to_apps_screen = [
 	}
 ]
 
-doctype_js = {"Item": "public/js/item.js", "Sales Order": "public/js/sales_order.js"}
+doctype_js = {
+	"Customer": "public/js/customer.js",
+	"Item": "public/js/item.js",
+	"Sales Order": "public/js/sales_order.js",
+}
 
 # Installation
 # ------------
@@ -33,6 +37,12 @@ after_migrate = "woocommerce_conduit.install.after_migrate"
 # ---------------
 
 doc_events = {
+	# The Customers that may be the same buyer, and what a merge keeps, also one made with Rename
+	"Customer": {
+		"onload": "woocommerce_conduit.tasks.customer_duplicates.add_possible_duplicates",
+		"before_rename": "woocommerce_conduit.tasks.customer_duplicates.remember_kept_customer_name",
+		"after_rename": "woocommerce_conduit.tasks.customer_duplicates.record_merge",
+	},
 	"Sales Order": {
 		"on_submit": [
 			"woocommerce_conduit.tasks.sync_sales_orders.run_sales_order_sync_from_hook",

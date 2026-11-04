@@ -2364,6 +2364,24 @@ class TestCustomer(IntegrationTestCase):
 
 		self.assertEqual(frappe.db.get_value("Customer", name, "woocommerce_identifier"), "ann@example.com")
 
+	def test_an_account_whose_customer_was_merged_goes_to_the_customer_it_was_merged_into(self):
+		kept = self.make_customer("Kept", "Ann Smith", "Guest-5")
+		frappe.get_doc(
+			{
+				"doctype": "WooCommerce Customer Decision",
+				"decision": "Merged",
+				"customer": kept,
+				"merged_customer": "_Test WC Ann",
+				"woocommerce_server": SERVER,
+				"woocommerce_identifier": "ann",
+			}
+		).insert(ignore_permissions=True)
+
+		sync, name = self.run_step(customer_id=7, account={"username": "ann", "role": "customer"})
+
+		self.assertEqual(name, kept)
+		self.assertEqual(sync.customer_issues, [])
+
 	def test_an_order_the_shops_staff_placed_is_the_buyers(self):
 		admin = self.make_customer("Admin", "Shop Admin", "admin")
 		account = {"username": "admin", "avatar_url": "https://a.example.com/admin", "role": "administrator"}

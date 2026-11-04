@@ -20,6 +20,9 @@ from frappe.contacts.doctype.contact.contact import Contact
 from frappe.utils import cint, cstr
 
 from woocommerce_conduit.tasks.field_map import get_mapped_values
+from woocommerce_conduit.woocommerce.doctype.woocommerce_customer_decision.woocommerce_customer_decision import (
+	DECISION_MERGED,
+)
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import (
 	WooCommerceOrder,
 	get_address_data,
@@ -65,6 +68,33 @@ def normalise_tax_id(tax_id) -> str:
 	"""
 	key = re.sub(r"[^0-9A-Z]", "", cstr(tax_id).upper())
 	return re.sub(r"^[A-Z]{2}(?=\d)", "", key)
+
+
+def normalise_phone(phone) -> str:
+	"""
+	A phone number as it is compared: its last 9 digits, so `+48 500 100 200` and `500100200` are the same. A
+	number of fewer digits isn't compared.
+	"""
+	digits = re.sub(r"\D", "", cstr(phone))
+	return digits[-9:] if len(digits) >= 9 else ""
+
+
+def get_merged_customer(woocommerce_server: str, identifier: str) -> str | None:
+	"""
+	The Customer that the shop's Customer with this identifier was merged into, so its account's orders go there
+	rather than to a new one. The decision's link follows any later merge, as Frappe's merge moves every link
+	to the Customer it removes.
+	"""
+	return frappe.db.get_value(
+		"WooCommerce Customer Decision",
+		{
+			"decision": DECISION_MERGED,
+			"woocommerce_server": woocommerce_server,
+			"woocommerce_identifier": identifier,
+		},
+		"customer",
+		order_by="creation desc",
+	)
 
 
 def get_buyer(billing: dict, tax_id=None) -> frappe._dict:
@@ -260,8 +290,8 @@ class SalesOrderCustomerMixin:
 		puts on the Sales Order. The Customer is looked up within the order's shop, as ids and usernames repeat
 		across shops:
 		- the one with the order's tax ID, which says which company it is
-		- else a registered customer's, by their username; or, for a guest's order or one the shop's staff
-		  placed for someone, the one with the order's email
+		- else a registered customer's, by their username (or the Customer theirs was merged into); or, for a
+		  guest's order or one the shop's staff placed for someone, the one with the order's email
 		- else a new one
 		A Customer that is found keeps its name and details and only gets what it lacks. Its Sales Order is
 		flagged when it bears another name than the order, as the order may be someone else's.
@@ -294,13 +324,12 @@ class SalesOrderCustomerMixin:
 		name = find_customer_by_tax_id(server, buyer.tax_id)
 		found_by_tax_id = bool(name)
 		if not name:
-			name = (
-				frappe.db.get_value(
+			if identifier:
+				name = frappe.db.get_value(
 					"Customer", {"woocommerce_server": server, "woocommerce_identifier": identifier}, "name"
-				)
-				if identifier
-				else find_customer_by_email(server, buyer.email)
-			)
+				) or get_merged_customer(server, identifier)
+			else:
+				name = find_customer_by_email(server, buyer.email)
 			# An order with a tax ID is a company's. The Customer of its account or email is that company only
 			# while it has no tax ID and the company's name: a person who also buys for their firm gets two.
 			if name and buyer.tax_id and not takes_tax_id(name, buyer):

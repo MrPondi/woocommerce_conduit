@@ -32,6 +32,20 @@ def get_custom_fields() -> dict[str, list[dict]]:
 		],
 		# Who a Customer is in the shop it was made for, at the end of the form
 		"Customer": [
+			# The Customers that may be the same buyer (customer_duplicates.py), at the top of the form, shown
+			# only when there are some
+			{
+				"fieldname": "woocommerce_duplicates",
+				"label": _("Possible Duplicates"),
+				"fieldtype": "HTML",
+				"insert_after": "basic_info",
+				"depends_on": (
+					"eval:doc.__onload && doc.__onload.woocommerce_duplicates"
+					" && doc.__onload.woocommerce_duplicates.length"
+				),
+				"print_hide": 1,
+				"module": MODULE,
+			},
 			{
 				"fieldname": "woocommerce_identifier",
 				"label": _("Woocommerce Identifier"),

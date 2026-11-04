@@ -1,6 +1,7 @@
 """
-The Customers that look like the same buyer, by email, tax ID, email domain or name, so that those of earlier
-orders can be merged by hand, with Rename on the Customer form (Merge with existing). It changes nothing.
+The Customers that look like the same buyer, by email, tax ID, phone, email domain or name, so that those of
+earlier orders can be merged by hand: with Review in the Possible Duplicates of the Customer form, or with
+Rename (Merge with existing). Pairs a person decided are not the same are left out. It changes nothing.
 """
 
 from collections import defaultdict
@@ -10,6 +11,11 @@ from frappe import _
 from frappe.query_builder.functions import Count, Sum
 from frappe.utils import cint, cstr
 
+from woocommerce_conduit.tasks.customer_duplicates import (
+	get_customer_emails,
+	get_customer_phones,
+	get_decided_pairs,
+)
 from woocommerce_conduit.tasks.order_customer import GUEST_PREFIX, normalise_tax_id, normalise_text
 
 # Providers whose address says nothing about who the customer is, so a shared domain there is no sign of two
@@ -22,15 +28,15 @@ DEFAULT_IGNORED_EMAIL_DOMAINS = (
 	"interia.eu, onet.eu, poczta.onet.pl, vp.pl, gazeta.pl, tlen.pl, poczta.fm, go2.pl, int.pl"
 )
 
-# The signs of two Customers being one buyer, as the Grouped By filter names them. Email and tax ID are to
-# be trusted, a name needs a look at every group.
-EMAIL, TAX_ID, EMAIL_DOMAIN, NAME = "Email", "Tax ID", "Email Domain", "Name"
+# The signs of two Customers being one buyer, as the Grouped By filter names them. Email, tax ID and phone are
+# to be trusted, a name needs a look at every group.
+EMAIL, TAX_ID, PHONE, EMAIL_DOMAIN, NAME = "Email", "Tax ID", "Phone", "Email Domain", "Name"
 
 
 def execute(filters=None):
 	filters = frappe._dict(filters or {})
 	customers = get_customers(filters)
-	groups = build_groups(customers, filters)
+	groups = drop_decided_pairs(build_groups(customers, filters), get_decided_pairs())
 	return get_columns(), get_rows(groups, customers)
 
 
@@ -64,7 +70,13 @@ def get_columns() -> list[dict]:
 
 
 def get_grouping_labels() -> dict[str, str]:
-	return {EMAIL: _("Email"), TAX_ID: _("Tax ID"), EMAIL_DOMAIN: _("Email Domain"), NAME: _("Name")}
+	return {
+		EMAIL: _("Email"),
+		TAX_ID: _("Tax ID"),
+		PHONE: _("Phone"),
+		EMAIL_DOMAIN: _("Email Domain"),
+		NAME: _("Name"),
+	}
 
 
 def get_ignored_email_domains(filters) -> set[str]:
@@ -117,36 +129,15 @@ def get_customers(filters) -> list[frappe._dict]:
 			.groupby(sales_order.customer)
 		).run(as_dict=True)
 	}
-	emails = get_customer_emails()
+	emails, phones = get_customer_emails(), get_customer_phones()
 
 	for customer in customers:
 		row = totals.get(customer.name)
 		customer.orders = row.orders if row else 0
 		customer.ordered = row.ordered if row else 0
 		customer.emails = emails.get(customer.name, set())
+		customer.phones = phones.get(customer.name, set())
 	return customers
-
-
-def get_customer_emails() -> dict[str, set[str]]:
-	"""
-	Every email of each Customer's Contacts, in lower case, by Customer
-	"""
-	contact_email = frappe.qb.DocType("Contact Email")
-	link = frappe.qb.DocType("Dynamic Link")
-	rows = (
-		frappe.qb.from_(contact_email)
-		.join(link)
-		.on((link.parenttype == "Contact") & (link.parent == contact_email.parent))
-		.select(link.link_name, contact_email.email_id)
-		.where(contact_email.parenttype == "Contact")
-		.where(link.link_doctype == "Customer")
-	).run(as_dict=True)
-
-	emails = defaultdict(set)
-	for row in rows:
-		if email := cstr(row.email_id).strip().lower():
-			emails[row.link_name].add(email)
-	return emails
 
 
 def build_groups(customers: list, filters) -> dict[tuple[str, str], list[str]]:
@@ -166,12 +157,31 @@ def build_groups(customers: list, filters) -> dict[tuple[str, str], list[str]]:
 		for email in sorted(customer.emails):
 			add(EMAIL, email, customer)
 		add(TAX_ID, normalise_tax_id(customer.tax_id), customer)
+		for phone in sorted(customer.phones):
+			add(PHONE, phone, customer)
 		domains = {email.rsplit("@", 1)[-1] for email in customer.emails if "@" in email}
 		for domain in sorted(domains - ignored_domains):
 			add(EMAIL_DOMAIN, domain, customer)
 		add(NAME, normalise_text(customer.customer_name), customer)
 
 	return {key: names for key, names in groups.items() if len(names) > 1}
+
+
+def drop_decided_pairs(groups: dict, decided: set[frozenset[str]]) -> dict[tuple[str, str], list[str]]:
+	"""
+	The groups without the Customers decided not to be the same as any other one of the group, and without the
+	groups that leaves fewer than two in
+	"""
+	kept = {}
+	for key, names in groups.items():
+		names = [
+			name
+			for name in names
+			if any(frozenset((name, other)) not in decided for other in names if other != name)
+		]
+		if len(names) > 1:
+			kept[key] = names
+	return kept
 
 
 def get_rows(groups: dict, customers: list) -> list[dict]:
