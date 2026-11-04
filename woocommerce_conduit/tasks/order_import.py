@@ -18,6 +18,7 @@ from frappe.query_builder.functions import Count
 from frappe.utils import add_days, cstr, flt, get_datetime, getdate, strip_html
 from rq.timeouts import JobTimeoutException
 
+from woocommerce_conduit.tasks.order_import_serials import assign_serial_numbers, check_serial_numbers
 from woocommerce_conduit.tasks.order_lines import get_json_lines
 from woocommerce_conduit.tasks.sync_sales_orders import SynchroniseSalesOrder
 from woocommerce_conduit.woocommerce.doctype.woocommerce_order.woocommerce_order import WooCommerceOrder
@@ -100,6 +101,8 @@ def start_order_import(order_import: str) -> bool:
 		frappe.has_permission(doctype, "create", throw=True)
 	if server.price_list or server.sales_price_list:
 		frappe.has_permission("Item Price", "create", throw=True)
+	# The site's serials may have moved since the file was saved
+	check_serial_numbers(doc)
 
 	return enqueue_order_import(doc.name, doc.woocommerce_server)
 
@@ -130,11 +133,13 @@ def import_orders(order_import: str) -> None:
 	# ERPNext changes a Sales Order's status on a copy of its own, which the status push would send to the shop
 	frappe.flags.woocommerce_order_import = True
 	listed = timed_out = False
+	unused_serials = 0
 	try:
 		doc.db_set("status", STATUS_IN_PROGRESS)
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 		try:
+			serials = check_serial_numbers(doc)
 			names = get_orders_to_import(doc)
 		except JobTimeoutException:
 			raise
@@ -145,24 +150,32 @@ def import_orders(order_import: str) -> None:
 			return
 		listed = True
 
+		imported = set()
 		for done, name in enumerate(names, start=1):
-			import_order(doc, name)
+			result, order_number = import_order(doc, name, serials)
+			if result.result in (RESULT_PAID, RESULT_NEEDS_REVIEW):
+				imported.add(order_number)
 			publish_import_progress(doc.name, done=done, total=len(names))
+		unused_serials = sum(
+			len(serial_nos) for number, serial_nos in serials.items() if number not in imported
+		)
 	except JobTimeoutException:
 		timed_out = True
 		raise
 	finally:
 		frappe.flags.woocommerce_order_import = False
-		finish_import(doc, listed=listed, timed_out=timed_out)
+		finish_import(doc, listed=listed, timed_out=timed_out, unused_serials=unused_serials)
 
 
-def import_order(order_import, woocommerce_order_name: str) -> ImportResult:
+def import_order(
+	order_import, woocommerce_order_name: str, serials: dict[str, list[str]] | None = None
+) -> tuple[ImportResult, str | None]:
 	"""
-	Import one order and log what was done with it. The order is its own transaction: what it made is
-	committed, or all of it rolled back.
+	Import one order and log what was done with it, and return that with the order's number. The order is its
+	own transaction: what it made is committed, or all of it rolled back.
 	"""
 	frappe.clear_messages()
-	importer = OrderImport(order_import, woocommerce_order_name)
+	importer = OrderImport(order_import, woocommerce_order_name, serials)
 	try:
 		result = importer.run()
 	except JobTimeoutException:
@@ -176,7 +189,7 @@ def import_order(order_import, woocommerce_order_name: str) -> ImportResult:
 	write_log(order_import, importer, result)
 	# A manual commit, as the docstring says why
 	frappe.db.commit()  # nosemgrep: frappe-manual-commit
-	return result
+	return result, importer.order_number
 
 
 def write_log(order_import, importer: "OrderImport", result: ImportResult) -> None:
@@ -193,13 +206,12 @@ def write_log(order_import, importer: "OrderImport", result: ImportResult) -> No
 			"result": ["in", RETRIED_RESULTS],
 		},
 	)
-	wc_order = importer.woocommerce_order
 	frappe.get_doc(
 		{
 			"doctype": "WooCommerce Order Import Log",
 			"order_import": order_import.name,
 			"woocommerce_id": woocommerce_id,
-			"order_number": cstr(wc_order.number or wc_order.woocommerce_id) if wc_order else None,
+			"order_number": importer.order_number,
 			"result": result.result,
 			"message": result.message,
 			"sales_order": result.sales_order,
@@ -209,7 +221,7 @@ def write_log(order_import, importer: "OrderImport", result: ImportResult) -> No
 	).insert(ignore_permissions=True)
 
 
-def finish_import(order_import, listed: bool, timed_out: bool) -> None:
+def finish_import(order_import, listed: bool, timed_out: bool, unused_serials: int = 0) -> None:
 	"""
 	Note how the import went, from its log, and tell the user who started it
 	"""
@@ -245,6 +257,10 @@ def finish_import(order_import, listed: bool, timed_out: bool) -> None:
 		)
 		if timed_out:
 			message += " " + _("It ran out of time. Start it again to import the rest.")
+		elif unused_serials:
+			message += " " + _(
+				"{0} serial numbers of the file weren't used, as their orders weren't imported."
+			).format(unused_serials)
 	frappe.msgprint(
 		message,
 		indicator="green" if status == STATUS_SUCCESS else "orange" if listed else "red",
@@ -355,10 +371,22 @@ class OrderImport(SynchroniseSalesOrder):
 	Fiscal Year or a delivery without stock is tried again by the next run rather than left half made.
 	"""
 
-	def __init__(self, order_import, woocommerce_order_name: str) -> None:
+	def __init__(
+		self, order_import, woocommerce_order_name: str, serials: dict[str, list[str]] | None = None
+	) -> None:
 		super().__init__(woocommerce_order_name=woocommerce_order_name)
 		self.order_import = order_import
+		# The serial number file's serials by order number
+		self.serials = serials or {}
 		self.result: ImportResult | None = None
+
+	@property
+	def order_number(self) -> str | None:
+		"""
+		The number the customer saw, which the serial number file names an order by
+		"""
+		wc_order = self.woocommerce_order
+		return cstr(wc_order.number or wc_order.woocommerce_id) if wc_order else None
 
 	def run(self) -> ImportResult:
 		# Under the order's lock, as a webhook may sync it meanwhile. An import runs while the order sync is
@@ -509,6 +537,7 @@ class OrderImport(SynchroniseSalesOrder):
 		delivery_note.posting_date = getdate(completed) if completed else sales_order.transaction_date
 		if completed:
 			delivery_note.posting_time = get_datetime(completed).strftime("%H:%M:%S")
+		assign_serial_numbers(delivery_note, self.serials.get(self.order_number, []))
 		delivery_note.flags.created_by_sync = True
 		delivery_note.insert()
 		delivery_note.submit()

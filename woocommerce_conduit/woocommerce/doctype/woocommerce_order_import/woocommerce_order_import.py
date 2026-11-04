@@ -7,6 +7,8 @@ from frappe.model.document import Document
 from frappe.utils import cstr, getdate
 from frappe.utils.background_jobs import is_job_enqueued
 
+from woocommerce_conduit.tasks.order_import_serials import check_serial_numbers
+
 # The fields of a row of the Payment Method Map, which a new import copies from the shop's last one
 PAYMENT_METHOD_FIELDS = (
 	"woocommerce_payment_method",
@@ -53,6 +55,8 @@ class WooCommerceOrderImport(Document):
 		needs_review: DF.Int
 		paid: DF.Int
 		payment_method_map: DF.Table[WooCommerceOrderImportPaymentMethod]
+		serial_number_summary: DF.SmallText | None
+		serial_numbers: DF.Attach | None
 		skipped: DF.Int
 		status: DF.Literal["Pending", "In Progress", "Success", "Partial Success", "Timed Out", "Error"]
 		woocommerce_server: DF.Link
@@ -72,6 +76,21 @@ class WooCommerceOrderImport(Document):
 		)
 		self.validate_dates()
 		self.validate_payment_method_map()
+		self.validate_serial_numbers()
+
+	def validate_serial_numbers(self):
+		"""
+		Check the serial number file when it, or what it is checked against, changes. A file is refused whole,
+		listing every row that is wrong.
+		"""
+		if not self.serial_numbers:
+			self.serial_number_summary = None
+			return
+		if not (
+			self.is_new() or any(self.has_value_changed(field) for field in ("serial_numbers", "deliver"))
+		):
+			return
+		check_serial_numbers(self)
 
 	def onload(self):
 		self.set_onload("running", self.is_running())

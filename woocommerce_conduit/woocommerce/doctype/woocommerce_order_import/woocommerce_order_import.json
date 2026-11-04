@@ -16,6 +16,10 @@
   "created_to",
   "delivery_section",
   "deliver",
+  "serial_numbers_section",
+  "serial_numbers",
+  "column_break_serials",
+  "serial_number_summary",
   "payments_section",
   "load_payment_methods",
   "payment_method_map",
@@ -93,6 +97,29 @@
    "label": "Make Delivery Notes"
   },
   {
+   "depends_on": "eval: doc.deliver || doc.serial_numbers",
+   "description": "The serial numbers to put on the Delivery Notes, so each customer's product carries its serial and its warranty starts on the day of the delivery. A CSV whose first row is exactly <code>order_number,serial_no</code>, then one serial per row: the order's number without #, and the serial as the site spells it. Every serial must be Active in the warehouse the shop's orders ship from, and have come into stock by the day its order was completed. An order of a serialized Item needs as many serials of it as it has units. Saving checks the file, and refuses it whole for one bad row. <a href=\"/assets/woocommerce_conduit/order_import/serial_numbers_template.csv\" target=\"_blank\">Template</a> · <a href=\"/assets/woocommerce_conduit/order_import/serial_numbers_guide.md\" target=\"_blank\">Guide for converting earlier records</a>, to give to an LLM that writes the conversion script.",
+   "fieldname": "serial_numbers_section",
+   "fieldtype": "Section Break",
+   "label": "Serial Numbers"
+  },
+  {
+   "fieldname": "serial_numbers",
+   "fieldtype": "Attach",
+   "label": "Serial Numbers (CSV)"
+  },
+  {
+   "fieldname": "column_break_serials",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "serial_number_summary",
+   "fieldtype": "Small Text",
+   "label": "Serial Number File",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
    "description": "An imported order's Sales Invoice is submitted together with its Payment Entry, on the default account of the Mode of Payment of its payment method, both dated when WooCommerce says it was paid. An order whose payment method has no Mode of Payment here is skipped until it gets one.",
    "fieldname": "payments_section",
    "fieldtype": "Section Break",
@@ -159,7 +186,7 @@
    "link_fieldname": "order_import"
   }
  ],
- "modified": "2026-11-04 18:00:00.000000",
+ "modified": "2026-11-04 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Order Import",

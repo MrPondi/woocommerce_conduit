@@ -350,7 +350,7 @@ class TestImportJob(ImportCase):
 
 class TestStartingAnImport(IntegrationTestCase):
 	def start(self, deliver=0, enabled=1, price_list=None):
-		doc = MagicMock(woocommerce_server=SERVER, deliver=deliver)
+		doc = MagicMock(woocommerce_server=SERVER, deliver=deliver, serial_numbers=None)
 		doc.name = "WC-ORD-IMP-00001"
 		server = _dict(name=SERVER, enabled=enabled, price_list=price_list, sales_price_list=None)
 		with (
