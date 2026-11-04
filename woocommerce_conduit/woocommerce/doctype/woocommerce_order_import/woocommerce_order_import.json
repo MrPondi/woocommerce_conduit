@@ -1,0 +1,187 @@
+{
+ "actions": [],
+ "autoname": "WC-ORD-IMP-.#####",
+ "creation": "2026-11-04 18:00:00.000000",
+ "description": "Brings the completed orders of a shop that have no Sales Order yet into ERPNext: the shop's old orders, and those completed while the order sync wasn't watching. Each gets its Sales Order and, when its payment can be booked, its Sales Invoice and Payment Entry, submitted together. The order sync itself makes no invoices or payments.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "woocommerce_server",
+  "company",
+  "column_break_status",
+  "status",
+  "orders_section",
+  "created_from",
+  "column_break_dates",
+  "created_to",
+  "delivery_section",
+  "deliver",
+  "payments_section",
+  "load_payment_methods",
+  "payment_method_map",
+  "results_section",
+  "paid",
+  "needs_review",
+  "column_break_results",
+  "skipped",
+  "failed"
+ ],
+ "fields": [
+  {
+   "fieldname": "woocommerce_server",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "WooCommerce Server",
+   "options": "WooCommerce Server",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "fetch_from": "woocommerce_server.company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "no_copy": 1,
+   "options": "Pending\nIn Progress\nSuccess\nPartial Success\nTimed Out\nError",
+   "read_only": 1
+  },
+  {
+   "description": "The completed orders of the shop that have no Sales Order yet, created between these days. Leave them empty for all of them. An import can be started again: orders it imported are left out, the others are tried again.",
+   "fieldname": "orders_section",
+   "fieldtype": "Section Break",
+   "label": "Orders"
+  },
+  {
+   "fieldname": "created_from",
+   "fieldtype": "Date",
+   "label": "Created From"
+  },
+  {
+   "fieldname": "column_break_dates",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "created_to",
+   "fieldtype": "Date",
+   "label": "Created To"
+  },
+  {
+   "fieldname": "delivery_section",
+   "fieldtype": "Section Break",
+   "label": "Delivery"
+  },
+  {
+   "default": "0",
+   "description": "Off: no stock moves, and each Sales Order is closed, so it reserves no stock. To invoice such an order by hand, re-open it first. On: each order gets a Delivery Note dated when WooCommerce completed it. That needs stock on that day, and may need the role that may post back-dated stock entries. It reposts stock and lowers today's stock, which the stock sync sends to the shop. An order whose delivery fails isn't imported, and a later run can take it, perhaps without this tick.",
+   "fieldname": "deliver",
+   "fieldtype": "Check",
+   "label": "Make Delivery Notes"
+  },
+  {
+   "description": "An imported order's Sales Invoice is submitted together with its Payment Entry, on the default account of the Mode of Payment of its payment method, both dated when WooCommerce says it was paid. An order whose payment method has no Mode of Payment here is skipped until it gets one.",
+   "fieldname": "payments_section",
+   "fieldtype": "Section Break",
+   "label": "Payments"
+  },
+  {
+   "fieldname": "load_payment_methods",
+   "fieldtype": "Button",
+   "label": "Add Missing Payment Methods"
+  },
+  {
+   "fieldname": "payment_method_map",
+   "fieldtype": "Table",
+   "label": "Payment Method Map",
+   "options": "WooCommerce Order Import Payment Method"
+  },
+  {
+   "fieldname": "results_section",
+   "fieldtype": "Section Break",
+   "label": "Result"
+  },
+  {
+   "description": "Imported with a submitted Sales Invoice and Payment Entry",
+   "fieldname": "paid",
+   "fieldtype": "Int",
+   "label": "Paid",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "description": "Imported without an invoice, and flagged on the Sales Order for a person",
+   "fieldname": "needs_review",
+   "fieldtype": "Int",
+   "label": "Needs Review",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_results",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Left out, with nothing made",
+   "fieldname": "skipped",
+   "fieldtype": "Int",
+   "label": "Skipped",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "description": "Rolled back after an error. The next run tries them again.",
+   "fieldname": "failed",
+   "fieldtype": "Int",
+   "label": "Failed",
+   "no_copy": 1,
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 0,
+ "links": [
+  {
+   "link_doctype": "WooCommerce Order Import Log",
+   "link_fieldname": "order_import"
+  }
+ ],
+ "modified": "2026-11-04 18:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "WooCommerce",
+ "name": "WooCommerce Order Import",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

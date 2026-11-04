@@ -69,6 +69,10 @@ def enqueue_status_push_from_hook(doc, method=None):
 	"""
 	if frappe.in_test or doc.docstatus == 0 or doc.flags.get("created_by_sync"):
 		return
+	# An Order Import's documents change the status of a Sales Order on ERPNext's own copy of it, without the
+	# flag, and the shop's old orders mustn't be changed by them
+	if frappe.flags.get("woocommerce_order_import"):
+		return
 	if not get_status_to_push(doc):
 		return
 

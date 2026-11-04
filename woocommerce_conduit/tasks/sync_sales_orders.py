@@ -259,14 +259,15 @@ class SynchroniseSalesOrder(
 		"""
 		self.run_locked(self.push_status_to_woocommerce)
 
-	def run_locked(self, sync):
+	def run_locked(self, sync, while_paused: bool = False):
 		"""
 		Load both orders and sync them. The documents are loaded inside the lock, so the webhook, the hourly
 		sync and the Sales Order hook can't all create the Sales Order of the same WooCommerce Order, or
-		change it on top of each other.
+		change it on top of each other. `while_paused` runs it also when the server's order sync is paused, as
+		an Order Import does.
 		"""
 		woocommerce_server = get_domain_and_id_from_woocommerce_record_name(self.get_record_name())[0]
-		if is_order_sync_paused(woocommerce_server):
+		if not while_paused and is_order_sync_paused(woocommerce_server):
 			# Asked for in the form, rather than by a job that was queued before the pause
 			if frappe.request:
 				frappe.throw(
