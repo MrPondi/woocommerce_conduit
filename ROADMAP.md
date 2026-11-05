@@ -46,6 +46,12 @@ ERPNext refuses a Shipping Rule whose Valid for Countries leaves out the order's
 
 Start at: `SynchroniseSalesOrder.create_sales_order`, `WooCommerceServer.get_shipping_rule`.
 
+### The Sales Order's price list
+
+A synced Sales Order has Selling Settings' default price list, which `new_doc` puts on it, so the Price List Rate and the discount a line shows (a free line's 100% too) are against that list rather than the shop's prices. Decided: give it the server's Price List, which the shop's regular prices come from, so a line's discount is the shop's sale or coupon against its regular price. Keep the default when the server has no Price List, or its list is disabled, not for selling, or in another currency than the order. It changes every new Sales Order and the invoices made from them, the Order Import's too. Existing ones keep theirs.
+
+Start at: `SynchroniseSalesOrder.create_sales_order`, `order_lines.build_item_row` (a free line's discount).
+
 ## Customers
 
 ### A phone number ERPNext refuses fails the order
@@ -66,6 +72,18 @@ An order shipped to someone else, a gift say, keeps the recipient's name only as
 
 Start at: `SalesOrderCustomerMixin.set_order_addresses`, ERPNext's `make_shipment` (Delivery Note), `polish_shipping/dhl24/provider.py`.
 
+### One Customer across shops, and Customers made by hand
+
+Every Customer lookup searches only the order's shop (`Customer.woocommerce_server`): the tax ID, the account's identifier and the email. So a company or person who buys in two shops, or whom someone made by hand for an offline sale, gets another Customer with its first order there, and a person merges the two in the duplicate review, which compares all Customers already. After a merge a registered account's orders go to the kept Customer (`get_merged_customer`), but a guest's next order in the other shop makes a new one again, as the email lookup doesn't look beyond its shop.
+
+Decided: the order sync matches across shops and with Customers made by hand, by tax ID and by email.
+
+- The tax ID and email lookups search every enabled Customer: the order's shop's first, then the others, made by hand or of another shop, oldest first. A Customer found by email that bears another name than the order still flags the Sales Order.
+- One shop field can't say which shops a Customer is in, nor keep an account's username for each. A child table on Customer, a row per shop with its identifier (as `Item WooCommerce Server` is for Items), would replace `woocommerce_server` and `woocommerce_identifier`, with a patch that moves them. A registered account that no row names yet is looked up by its email, like a guest, and its row added. A Customer made by hand gets its shop's row with its first order.
+- What reads the two fields follows: `get_merged_customer` and the Merged decision (`record_merge` keeps the merged Customer's shop and identifier), the Customer form's WooCommerce section, and the Duplicate Customers report's shop filter.
+
+Start at: `SalesOrderCustomerMixin` in `order_customer.py` (`find_customer_by_tax_id`, `find_customer_by_email`, `create_customer`), `custom_fields.py`, `tasks/customer_duplicates.py`, `public/js/customer.js`, the `woocommerce_duplicate_customers` report, `patches/v1/set_customer_woocommerce_server.py`.
+
 ## Items
 
 ### Variations 100 a request
@@ -79,6 +97,12 @@ Start at: `sync_items.read_products`, `WooCommerceProduct.during_get_list_of_rec
 The Item form's Update Item from WooCommerce button, and Sync on the WooCommerce Product form, overwrite the Item's name, image, tax template and mapped fields with its primary product's after a confirm that doesn't say what changes, and on a template ERPNext then copies the Item Variant Settings fields to all its variants. Update Linked Items shows each value before it is written, and keeps a template in step with its variants. The buttons could open that review for their one Item.
 
 Start at: `public/js/item.js`, `sync_item_from_woocommerce`, `SynchroniseItem.update_item`, `tasks/linked_item_update.py`.
+
+### A notice of Items without a price
+
+The price push leaves out an Item with no price in the server's Price List today (deleted, past its Valid Upto, or never set), so the shop keeps selling it at the last price ERPNext sent. That stays: WooCommerce can't sell a product with an empty regular price, so a price deleted by mistake would take it off sale at once. But nobody is told. Decided: the daily push sends the System Managers one bell notice per shop naming the linked Items it left out, as `notify_orders_to_import` does for the orders waiting for an import. Work them out once in `run_item_price_sync_in_background`, not in each batch job, with the same conditions as `get_connections` (a disabled Item only with `sync_prices_for_disabled_items`).
+
+Start at: `SynchroniseItemPrice.get_erpnext_item_prices` (the connections without a rate), `run_item_price_sync_in_background`, `order_import.notify_orders_to_import`.
 
 ## Configuration
 
@@ -129,11 +153,3 @@ The tests mock WooCommerce, so API behaviour is only checked by hand: what a PUT
 ### Setup and usage documentation
 
 A guide for users rather than developers: how to connect a shop (API keys, the four order webhooks and their secret), Pause Order Sync while the Items are set up, and the maps. Fusion's `docs/` (vitepress) is a model.
-
-## Open questions
-
-These need a decision before anything is built.
-
-- **A deleted regular price.** Deleting the server's Price List price for an Item leaves the shop's old price in place, while deleting a sale price ends the sale. Clearing the regular price would make the product unpurchasable, so leaving it may be right.
-- **One customer in several shops.** A Customer is looked up within its shop (`Customer.woocommerce_server`), so a person who buys in two shops gets a Customer in each. Matching across shops by email, as Fusion does, would make them one, and as an order no longer renames the Customer it finds, it would keep its name and addresses. But one shop field can't say which shops it is in. A tax ID names one company everywhere, so its lookup (`find_customer_by_tax_id`) could take other shops' Customers first, and those made by hand, say for offline sales.
-- **The Sales Order's price list.** A synced Sales Order has Selling Settings' default price list, which `new_doc` puts on it, so the discount a line shows (a free line's 100% too) is against that list. Fusion uses the customer's default price list when it is in the order's currency (`get_customer_selling_price_list`). The server's Price List, which the shop's prices come from, would show each line's discount against the shop's regular price. Either changes every new Sales Order, and a list in another currency or not enabled for selling would have to be passed over.
