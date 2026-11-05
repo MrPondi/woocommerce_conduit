@@ -54,12 +54,6 @@ Start at: `SynchroniseSalesOrder.create_sales_order`, `order_lines.build_item_ro
 
 ## Customers
 
-### Moving an order to another Customer
-
-A Sales Order is flagged when the Customer its account or email found bears another name than the order (`order_customer.py`), as the buyer may be someone else on that email or account. The Customer of a submitted Sales Order can't be changed: it is cancelled and amended with the right one. A cancel made by hand pushes the WooCommerce status the Order Status Map gives Cancelled when the server pushes status changes (`get_status_to_push`), which cancels the order in the shop. A server button, or a flag that keeps the push off while a person amends the Sales Order, would let them move it.
-
-Start at: `order_status.enqueue_status_push_from_hook`, `SalesOrderStatusMixin.amend_sales_order`.
-
 ### A parcel for someone other than the buyer
 
 An order shipped to someone else, a gift say, keeps the recipient's name only as the title of its shipping Address, and their phone on it, or the buyer's when the order gave none. The Sales Order's Contact is the buyer, and DHL24 names the receiver after the Customer (`polish_shipping` `get_delivery_name`) and calls the Delivery Note's Contact, so the parcel is addressed to the buyer. A Contact for the recipient, which the Delivery Note could carry, or a receiver's name taken from the shipping Address, would address it to them.
@@ -125,6 +119,12 @@ Start at: `install.after_install`, `sync_sales_orders.sync_woocommerce_orders_mo
 The app opens on the WooCommerce Server list. Fusion has a workspace with its servers, orders, products and logs. Conduit's could have the servers and settings, the WooCommerce Orders and Products, the Integration Requests of the WooCommerce service, and a count of the Sales Orders with a `woocommerce_sync_issue`, which wait for a person.
 
 Start at: Fusion's `workspace/woocommerce/woocommerce.json`, `app_home` and `add_to_apps_screen` in `hooks.py`.
+
+### A flag a person has dealt with
+
+`Sales Order.woocommerce_sync_issue` is read-only, so a flag stays once a person has checked it. A Customer-name flag raised by a typo in the order's name, where the buyer is the Customer's own person, is then invoiced as it is, and still reads as something to check. The workspace's count of flagged Sales Orders would count it for good. A way to mark a flag as dealt with, keeping who did it and when, would leave it out.
+
+Start at: `woocommerce_sync_issue` in `custom_fields.py`, `SalesOrderStatusMixin.flag_sync_issue`, `public/js/sales_order.js`.
 
 ### The shop's admin from the forms
 
