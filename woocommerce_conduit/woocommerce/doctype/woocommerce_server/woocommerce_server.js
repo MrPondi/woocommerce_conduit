@@ -179,7 +179,18 @@ frappe.ui.form.on("WooCommerce Server", {
 	},
 
 	// View WooCommerce Webhook Configuration
-	view_webhook_config: function (frm) {
+	view_webhook_config: async function (frm) {
+		// The secret is made when the server is saved. Before then Frappe would only say it has no password.
+		if (frm.is_new() || !frm.doc.secret) {
+			frappe.msgprint(__("Save the server first: its webhook secret is made then."));
+			return;
+		}
+		// A Password field: the form only has its mask
+		const secret = await frappe.xcall("frappe.client.get_password", {
+			doctype: frm.doctype,
+			name: frm.doc.name,
+			fieldname: "secret",
+		});
 		let d = new frappe.ui.Dialog({
 			title: __("WooCommerce Webhook Settings"),
 			fields: [
@@ -213,7 +224,7 @@ frappe.ui.form.on("WooCommerce Server", {
 					label: __("Secret"),
 					fieldname: "secret",
 					fieldtype: "Data",
-					default: frm.doc.secret,
+					default: secret,
 					read_only: 1,
 				},
 				{

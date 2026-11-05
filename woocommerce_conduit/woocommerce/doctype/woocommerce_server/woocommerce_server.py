@@ -124,7 +124,7 @@ class WooCommerceServer(Document):
 		sales_order_status_map: DF.Table[WooCommerceServerOrderStatus]
 		sales_price_list: DF.Link | None
 		sales_taxes_and_charges_template: DF.Link
-		secret: DF.SmallText | None
+		secret: DF.Password | None
 		shipping_rule_map: DF.Table[WooCommerceServerShippingRule]
 		subtract_reserved_stock: DF.Check
 		sync_in_sales_uom: DF.Check

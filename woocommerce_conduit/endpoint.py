@@ -28,7 +28,7 @@ ORDER_EVENTS = ("created", "updated", "deleted", "restored")
 def validate_request() -> tuple[WooCommerceServer | None, Response | None]:
 	"""
 	The WooCommerce Server a webhook comes from, once its signature checks out against the server's secret,
-	or the response that refuses the webhook
+	or the response that refuses the webhook. A secret not encrypted yet (before the patch) is read as it is.
 	"""
 	try:
 		webhook_source_url: str = frappe.get_request_header("x-wc-webhook-source", "")  # type: ignore
@@ -38,8 +38,13 @@ def validate_request() -> tuple[WooCommerceServer | None, Response | None]:
 	except Exception:
 		return None, Response(response=_("Missing Header"), status=HTTPStatus.BAD_REQUEST)
 
+	# A Password field: the document holds a mask, the secret is kept encrypted
+	secret = wc_server.get_password("secret", raise_exception=False)
+	# Without one, a signature made with an empty key would pass
+	if not secret:
+		return None, Response(response=_("Unauthorized"), status=HTTPStatus.UNAUTHORIZED)
 	expected = base64.b64encode(
-		hmac.new((wc_server.secret or "").encode("utf8"), frappe.request.data or b"", hashlib.sha256).digest()
+		hmac.new(secret.encode("utf8"), frappe.request.data or b"", hashlib.sha256).digest()
 	)
 	received = (frappe.get_request_header("x-wc-webhook-signature", "") or "").encode()  # type: ignore
 	# In constant time, so the signature can't be guessed from how long a refusal takes

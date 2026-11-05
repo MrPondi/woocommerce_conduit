@@ -1233,9 +1233,13 @@ class TestWebhook(IntegrationTestCase):
 
 
 class TestWebhookSignature(IntegrationTestCase):
-	def validate(self, signature: str | None, secret="s3cret", source=f"https://{SERVER}/"):
+	def validate(self, signature: str | None, secret: str | None = "s3cret", source=f"https://{SERVER}/"):
 		body = b'{"id": 12}'
 		headers = {"x-wc-webhook-source": source, "x-wc-webhook-signature": signature}
+		# A Password field: the server holds its mask, and the secret is read with get_password
+		self.server = MagicMock(secret="*" * len(secret or ""))
+		self.server.name = SERVER
+		self.server.get_password.return_value = secret
 		with (
 			patch.object(frappe, "request", MagicMock(data=body)),
 			patch.object(
@@ -1243,7 +1247,7 @@ class TestWebhookSignature(IntegrationTestCase):
 				"get_request_header",
 				side_effect=lambda key, default=None: headers.get(key) or default,
 			),
-			patch.object(frappe, "get_doc", return_value=_dict(name=SERVER, secret=secret)),
+			patch.object(frappe, "get_doc", return_value=self.server),
 		):
 			return endpoint.validate_request()
 
@@ -1256,6 +1260,17 @@ class TestWebhookSignature(IntegrationTestCase):
 		server, refusal = self.validate(self.sign(b'{"id": 12}', "s3cret"))
 		self.assertIsNone(refusal)
 		self.assertEqual(server.name, SERVER)
+		self.server.get_password.assert_called_once_with("secret", raise_exception=False)
+
+	def test_the_mask_the_server_holds_is_not_the_key(self):
+		_server, refusal = self.validate(self.sign(b'{"id": 12}', "******"))
+		self.assertEqual(refusal.status_code, 401)
+
+	def test_a_server_without_a_secret_takes_no_webhook(self):
+		# Anyone can sign with an empty key
+		server, refusal = self.validate(self.sign(b'{"id": 12}', ""), secret=None)
+		self.assertIsNone(server)
+		self.assertEqual(refusal.status_code, 401)
 
 	def test_a_wrong_or_missing_signature_is_refused(self):
 		for signature in (self.sign(b'{"id": 12}', "guessed"), None):
