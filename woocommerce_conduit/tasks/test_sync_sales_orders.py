@@ -19,7 +19,11 @@ from woocommerce_conduit.exceptions import SyncDisabledError
 from woocommerce_conduit.patches.v1 import set_customer_woocommerce_server
 from woocommerce_conduit.tasks import order_import, order_lines, sync_sales_orders
 from woocommerce_conduit.tasks.field_map import LOGGED_PROBLEMS_FLAG
-from woocommerce_conduit.tasks.order_customer import get_addresses_linking_to, normalise_tax_id
+from woocommerce_conduit.tasks.order_customer import (
+	clean_phone,
+	get_addresses_linking_to,
+	normalise_tax_id,
+)
 from woocommerce_conduit.tasks.order_lines import (
 	build_charges,
 	get_line_rate,
@@ -2229,8 +2233,11 @@ class TestCustomer(IntegrationTestCase):
 			("Ann Smith", "ann@example.com", "555-0100"),
 		)
 
-	def test_what_to_check_about_the_customer_is_flagged_before_the_submit(self):
-		sync = make_sync(woocommerce_order_name=f"{SERVER}~12")
+	def create_sales_order(self, sync, customer_issues=(), phone_issues=(), line_issues=()):
+		"""
+		The Sales Order that `sync` makes of an order whose customer step and lines found these issues, and what
+		it was flagged with when it was submitted
+		"""
 		sync.woocommerce_order = _dict(
 			woocommerce_server=SERVER,
 			woocommerce_id="12",
@@ -2239,13 +2246,14 @@ class TestCustomer(IntegrationTestCase):
 			woocommerce_date_modified="2026-11-03T10:00:00",
 			currency="PLN",
 		)
-		sync.line_issues = ["Line 1 has no Item"]
-		sales_order = MagicMock(flags=_dict())
+		sync.line_issues = list(line_issues)
+		sales_order = MagicMock(flags=_dict(), woocommerce_sync_issue=None)
 		flagged_at_submit = []
 		sales_order.submit.side_effect = lambda: flagged_at_submit.append(sales_order.woocommerce_sync_issue)
 
 		def customer_step():
-			sync.customer_issues = ["Placed as Ann Smith, but its Customer is Bob Smith"]
+			sync.customer_issues = list(customer_issues)
+			sync.phone_issues = list(phone_issues)
 			return "_Test WC Bob"
 
 		with (
@@ -2258,17 +2266,114 @@ class TestCustomer(IntegrationTestCase):
 			patch.object(frappe, "get_cached_doc", return_value=make_server()),
 		):
 			sync.create_sales_order(SUBMIT)
+		return sales_order, flagged_at_submit
+
+	def test_what_to_check_about_the_customer_is_flagged_before_the_submit(self):
+		_sales_order, flagged_at_submit = self.create_sales_order(
+			make_sync(woocommerce_order_name=f"{SERVER}~12"),
+			customer_issues=["Placed as Ann Smith, but its Customer is Bob Smith"],
+			line_issues=["Line 1 has no Item"],
+		)
 
 		# Flagged, the Sales Order isn't invoiced until a person has looked at it
 		self.assertEqual(
 			flagged_at_submit, ["Placed as Ann Smith, but its Customer is Bob Smith; Line 1 has no Item"]
 		)
 
+	def test_a_phone_erpnext_can_not_take_is_flagged_by_the_sync(self):
+		customer_issue = "Placed as Ann Smith, but its Customer is Bob Smith"
+		phone_issue = "The billing phone 1 / 2 isn't a number ERPNext takes"
+		line_issue = "Line 1 has no Item"
+
+		sales_order, flagged_at_submit = self.create_sales_order(
+			make_sync(woocommerce_order_name=f"{SERVER}~12"),
+			customer_issues=[customer_issue],
+			phone_issues=[phone_issue],
+			line_issues=[line_issue],
+		)
+
+		self.assertEqual(flagged_at_submit, ["; ".join([customer_issue, phone_issue, line_issue])])
+		sales_order.add_comment.assert_not_called()
+
+	def test_an_import_tells_of_a_phone_erpnext_can_not_take_in_a_comment(self):
+		note = "The billing phone <1> / 2 isn't a number ERPNext takes"
+		importer = order_import.OrderImport(MagicMock(), f"{SERVER}~12")
+
+		sales_order, flagged_at_submit = self.create_sales_order(importer, phone_issues=[note])
+
+		# A flag would hold back the invoice of an order that shipped long ago
+		self.assertEqual(flagged_at_submit, [None])
+		sales_order.add_comment.assert_called_once_with("Comment", frappe.utils.escape_html(note))
+
 	def test_tax_ids_are_compared_however_they_are_written(self):
 		for tax_id in ("PL 679-100-38-01", "pl6791003801", "679 100 38 01"):
 			with self.subTest(tax_id=tax_id):
 				self.assertEqual(normalise_tax_id(tax_id), "6791003801")
 		self.assertEqual(normalise_tax_id(None), "")
+
+	def test_phone_numbers_are_cleaned_as_erpnext_takes_them(self):
+		for typed, cleaned in (
+			# Taken as they are, so the Addresses made from them still match
+			("555-0100", "555-0100"),
+			("+48 (12) 345 67 89", "+48 (12) 345 67 89"),
+			("-", "-"),
+			# En dash, em dash and minus sign
+			("+48 \u2013 500-100-200", "+48 - 500-100-200"),
+			("500\u2014100\u2014200", "500-100-200"),
+			("500\u2212100\u2212200", "500-100-200"),
+			# No-break and thin spaces
+			("500\u00a0100\u00a0200", "500 100 200"),
+			("500\u2009100\u2009200", "500 100 200"),
+			# Full-width digits and plus sign
+			("\uff0b48 \uff15\uff10\uff10 100 200", "+48 500 100 200"),
+			# Other characters are dropped
+			("tel. 500 100 200", "500 100 200"),
+			("500/100/200", "500 100 200"),
+			# Still too long for ERPNext, so left out
+			("+48 500 100 200 / +48 600 100 200", ""),
+			("brak", ""),
+			(None, ""),
+		):
+			with self.subTest(typed=typed):
+				self.assertEqual(clean_phone(typed), cleaned)
+
+	def test_a_phone_typed_with_a_dash_is_cleaned_on_the_address_and_contact(self):
+		sync, _name = self.run_step(billing_phone="+48 \u2013 500-100-200")
+
+		self.assertEqual(frappe.db.get_value("Address", sync.billing_address, "phone"), "+48 - 500-100-200")
+		self.assertEqual(frappe.db.get_value("Contact", sync.contact, "phone"), "+48 - 500-100-200")
+		self.assertEqual(sync.phone_issues, [])
+
+	def test_a_phone_erpnext_can_not_take_is_left_out_and_noted(self):
+		typed = "+48 500 100 200 / +48 600 100 200"
+
+		sync, _name = self.run_step(billing_phone=typed)
+
+		self.assertFalse(frappe.db.get_value("Address", sync.billing_address, "phone"))
+		contact = frappe.get_doc("Contact", sync.contact)
+		self.assertEqual((contact.email_id, contact.phone_nos), ("ann@example.com", []))
+		self.assertEqual(len(sync.phone_issues), 1)
+		self.assertIn(typed, sync.phone_issues[0])
+
+	def test_a_shipping_phone_erpnext_can_not_take_gives_way_to_the_billing_one(self):
+		typed = "+48 500 100 200 / +48 600 100 200"
+
+		sync, _name = self.run_step(
+			shipping_first_name="Bob",
+			shipping_last_name="Smith",
+			shipping_address_1="Gift Street 2",
+			shipping_phone=typed,
+		)
+
+		self.assertEqual(frappe.db.get_value("Address", sync.shipping_address, "phone"), "555-0100")
+		self.assertEqual(len(sync.phone_issues), 1)
+		self.assertIn(typed, sync.phone_issues[0])
+
+	def test_a_phone_field_without_a_number_is_left_out_unnoted(self):
+		sync, _name = self.run_step(billing_phone="brak")
+
+		self.assertFalse(frappe.db.get_value("Address", sync.billing_address, "phone"))
+		self.assertEqual(sync.phone_issues, [])
 
 
 class TestCustomerShopPatch(IntegrationTestCase):

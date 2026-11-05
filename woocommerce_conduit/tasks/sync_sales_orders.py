@@ -210,6 +210,9 @@ class SynchroniseSalesOrder(SalesOrderCustomerMixin, SalesOrderStatusMixin, Sale
 	completed.
 	"""
 
+	# A phone number ERPNext can't take is flagged on the new Sales Order, so whoever ships the order sees it
+	flag_refused_phones = True
+
 	def __init__(
 		self,
 		sales_order_name: str | None = None,
@@ -222,6 +225,7 @@ class SynchroniseSalesOrder(SalesOrderCustomerMixin, SalesOrderStatusMixin, Sale
 		# The shop deleted the order for good, so there is no WooCommerce Order to load
 		self.deleted_in_woocommerce = False
 		self.customer_issues: list[str] = []
+		self.phone_issues: list[str] = []
 
 	def get_lock_name(self) -> str:
 		"""
@@ -530,7 +534,8 @@ class SynchroniseSalesOrder(SalesOrderCustomerMixin, SalesOrderStatusMixin, Sale
 		new_sales_order.insert(set_name=get_sales_order_name(wc_server, order_number))
 
 		# Kept, but flagged for a person to look at
-		issues = [*self.customer_issues, *self.line_issues]
+		phone_issues = self.phone_issues if self.flag_refused_phones else []
+		issues = [*self.customer_issues, *phone_issues, *self.line_issues]
 		if issue := self.check_totals(new_sales_order):
 			issues.append(issue)
 		if issues:
@@ -539,6 +544,11 @@ class SynchroniseSalesOrder(SalesOrderCustomerMixin, SalesOrderStatusMixin, Sale
 
 		new_sales_order.reload()
 		new_sales_order.flags.created_by_sync = True
+		if self.phone_issues and not self.flag_refused_phones:
+			# Told in a comment, which holds nothing back. The numbers are as the customer typed them.
+			new_sales_order.add_comment(
+				"Comment", "<br>".join(frappe.utils.escape_html(issue) for issue in self.phone_issues)
+			)
 
 		self.sales_order = new_sales_order
 		try:

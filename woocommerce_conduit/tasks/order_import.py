@@ -500,6 +500,10 @@ class OrderImport(SynchroniseSalesOrder):
 	Fiscal Year or a delivery without stock is tried again by the next run rather than left half made.
 	"""
 
+	# An imported order shipped long ago, and a flag would hold back its invoice: a phone number ERPNext can't
+	# take is told in a comment on its Sales Order instead
+	flag_refused_phones = False
+
 	def __init__(
 		self, order_import, woocommerce_order_name: str, serials: dict[str, list[str]] | None = None
 	) -> None:

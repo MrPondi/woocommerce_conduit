@@ -54,12 +54,6 @@ Start at: `SynchroniseSalesOrder.create_sales_order`, `order_lines.build_item_ro
 
 ## Customers
 
-### A phone number ERPNext refuses fails the order
-
-Frappe checks a phone field against `PHONE_NUMBER_PATTERN` (`frappe/utils/__init__.py`: digits, spaces and `+-_,.*#()`, at most 20 characters). The Address or Contact of an order whose phone has anything else fails, and the whole order with it, in the order sync and the Order Import alike, as a first import showed: a number such as `+48 – 500-100-200`, typed with an en dash, fails it. Clean the number (a hyphen for a dash, the other characters dropped), and leave out one that still doesn't fit, flagging the Sales Order, so the order gets its Sales Order and the person the number.
-
-Start at: `SalesOrderCustomerMixin` in `order_customer.py`: where the billing phone is read, `add_phone` on the Contact, and the Address values (`phone`).
-
 ### Moving an order to another Customer
 
 A Sales Order is flagged when the Customer its account or email found bears another name than the order (`order_customer.py`), as the buyer may be someone else on that email or account. The Customer of a submitted Sales Order can't be changed: it is cancelled and amended with the right one. A cancel made by hand pushes the WooCommerce status the Order Status Map gives Cancelled when the server pushes status changes (`get_status_to_push`), which cancels the order in the shop. A server button, or a flag that keeps the push off while a person amends the Sales Order, would let them move it.

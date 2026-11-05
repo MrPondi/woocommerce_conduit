@@ -10,6 +10,7 @@ them, and it is flagged when the Customer bears another name than the order.
 """
 
 import re
+import unicodedata
 from typing import TYPE_CHECKING, Literal
 
 import frappe
@@ -17,7 +18,7 @@ from erpnext.selling.doctype.customer.customer import Customer
 from frappe import _
 from frappe.contacts.doctype.address.address import Address
 from frappe.contacts.doctype.contact.contact import Contact
-from frappe.utils import cint, cstr
+from frappe.utils import cint, cstr, validate_phone_number
 
 from woocommerce_conduit.tasks.field_map import get_mapped_values
 from woocommerce_conduit.woocommerce.doctype.woocommerce_customer_decision.woocommerce_customer_decision import (
@@ -43,6 +44,10 @@ GUEST_PREFIX = "Guest-"
 TAX_ID_PREFIX = "TaxID-"
 # The fields an address of the order is compared with the Customer's Addresses by
 ADDRESS_KEY_FIELDS = ("address_line1", "address_line2", "city", "state", "pincode", "country", "phone")
+# What Frappe refuses in a phone field: all but digits, spaces and `+-_,.*#()` (PHONE_NUMBER_PATTERN)
+REFUSED_PHONE_CHARACTERS = re.compile(r"[^0-9 +_\-,.*#()]")
+# What a cleaned phone number doesn't start or end with
+PHONE_NUMBER_ENDS = " .,-_"
 
 
 class WooCustomer(Customer):
@@ -79,6 +84,42 @@ def normalise_phone(phone) -> str:
 	return digits[-9:] if len(digits) >= 9 else ""
 
 
+def clean_phone(phone) -> str:
+	"""
+	A phone number of the order as Frappe takes it in a phone field (validate_phone_number: digits, spaces and
+	`+-_,.*#()`, at most 20 characters). One it takes is kept as it is, so the Addresses made from it still
+	match. Otherwise its dashes become hyphens, its digits and spaces plain ones, and the other characters Frappe
+	refuses are dropped, a `tel.` say. Empty when that still isn't a number Frappe takes, say one of more than 20
+	characters.
+	"""
+	phone = cstr(phone).strip()
+	if not phone or validate_phone_number(phone):
+		return phone
+	# NFKC: full-width plus signs and parentheses, and no-break spaces, as their plain forms
+	text = "".join(clean_phone_character(char) for char in unicodedata.normalize("NFKC", phone))
+	text = " ".join(REFUSED_PHONE_CHARACTERS.sub(" ", text).split()).strip(PHONE_NUMBER_ENDS)
+	return text if validate_phone_number(text) else ""
+
+
+def clean_phone_character(char: str) -> str:
+	if char.isdecimal():
+		# A digit of any script
+		return str(unicodedata.decimal(char))
+	# Unicode's dashes, and the minus sign, which it counts among the maths symbols
+	if unicodedata.category(char) == "Pd" or char == "\u2212":
+		return "-"
+	return " " if char.isspace() else char
+
+
+def is_refused_phone(phone) -> bool:
+	"""
+	Whether the order gave a phone number that ERPNext can't take even cleaned (clean_phone). A text without a
+	digit, a `brak` ("none") say, is no number to tell a person of.
+	"""
+	phone = cstr(phone).strip()
+	return bool(re.search(r"\d", phone)) and not clean_phone(phone)
+
+
 def get_merged_customer(woocommerce_server: str, identifier: str) -> str | None:
 	"""
 	The Customer that the shop's Customer with this identifier was merged into, so its account's orders go there
@@ -112,7 +153,7 @@ def get_buyer(billing: dict, tax_id=None) -> frappe._dict:
 		company=company,
 		name=company or f"{first_name} {last_name}".strip() or email,
 		email=email,
-		phone=cstr(billing.get("phone")).strip(),
+		phone=clean_phone(billing.get("phone")),
 		tax_id=cstr(tax_id).strip(),
 	)
 
@@ -280,6 +321,8 @@ class SalesOrderCustomerMixin:
 	customer: WooCustomer
 	# What a person should check about the Customer the order went to, flagged on its Sales Order
 	customer_issues: list[str]
+	# The phone numbers of the order that ERPNext can't take, which its Address and Contact are made without
+	phone_issues: list[str]
 	billing_address: str | None
 	shipping_address: str | None
 	contact: str | None
@@ -297,11 +340,13 @@ class SalesOrderCustomerMixin:
 		flagged when it bears another name than the order, as the order may be someone else's.
 		"""
 		self.customer_issues = []
+		self.phone_issues = []
 		if not self.woocommerce_order:
 			return None
 
 		order = self.woocommerce_order
 		billing = get_address_data(order, "billing")
+		shipping = get_address_data(order, "shipping")
 		values = self.get_customer_field_values()
 		buyer = get_buyer(billing, values.get("tax_id"))
 
@@ -360,7 +405,8 @@ class SalesOrderCustomerMixin:
 				buyer, values, identifier or f"{GUEST_PREFIX}{order.woocommerce_id}", avatar_url
 			)
 
-		self.set_order_addresses(billing, get_address_data(order, "shipping"))
+		self.note_refused_phones(billing, shipping)
+		self.set_order_addresses(billing, shipping)
 		self.set_order_contact(buyer)
 		if not self.customer.customer_primary_address:
 			updates["customer_primary_address"] = self.billing_address
@@ -474,9 +520,29 @@ class SalesOrderCustomerMixin:
 				shipping_values, "Shipping", is_shipping_address=needs_shipping
 			)
 
+	def note_refused_phones(self, billing: dict, shipping: dict) -> None:
+		"""
+		Note the phone numbers that ERPNext can't take even cleaned (clean_phone), which the Address and Contact
+		are made without, as they were typed, so a person can add them. A shipping address the order leaves empty
+		has no phone of its own to note.
+		"""
+		if is_refused_phone(billing.get("phone")):
+			self.phone_issues.append(
+				_(
+					"The billing phone {0} isn't a number ERPNext takes, so it was left out of the Address and Contact"
+				).format(cstr(billing.get("phone")).strip())
+			)
+		if has_address(shipping) and is_refused_phone(shipping.get("phone")):
+			self.phone_issues.append(
+				_(
+					"The shipping phone {0} isn't a number ERPNext takes, so it was left out of the shipping Address"
+				).format(cstr(shipping.get("phone")).strip())
+			)
+
 	def get_address_values(self, data: dict) -> dict:
 		"""
-		An address of the order as the fields of an Address, titled with the name it gives
+		An address of the order as the fields of an Address, titled with the name it gives. Its phone is as
+		ERPNext takes it (clean_phone), and left out when ERPNext can't.
 		"""
 		return {
 			"address_title": get_address_title(data) or self.customer.customer_name,
@@ -486,7 +552,7 @@ class SalesOrderCustomerMixin:
 			"state": data.get("state"),
 			"pincode": data.get("postcode"),
 			"country": self.get_country(data.get("country")),
-			"phone": data.get("phone"),
+			"phone": clean_phone(data.get("phone")),
 		}
 
 	def create_address(
