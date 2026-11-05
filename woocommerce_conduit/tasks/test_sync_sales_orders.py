@@ -22,6 +22,7 @@ from woocommerce_conduit.tasks.field_map import LOGGED_PROBLEMS_FLAG
 from woocommerce_conduit.tasks.order_customer import (
 	clean_phone,
 	get_addresses_linking_to,
+	international_phone,
 	normalise_tax_id,
 )
 from woocommerce_conduit.tasks.order_lines import (
@@ -2337,11 +2338,84 @@ class TestCustomer(IntegrationTestCase):
 			with self.subTest(typed=typed):
 				self.assertEqual(clean_phone(typed), cleaned)
 
+	def test_phone_numbers_get_their_country_code(self):
+		for typed, region, international in (
+			("500 100 200", "PL", "+48500100200"),
+			("+48 500-100-200", "PL", "+48500100200"),
+			("48500100200", "PL", "+48500100200"),
+			("0048 500 100 200", "PL", "+48500100200"),
+			("(+48) 500 100 200", "PL", "+48500100200"),
+			("22 123 45 67", "PL", "+48221234567"),
+			# One the numbering plan doesn't know is kept, as writing it otherwise could change it
+			("555-0100", "PL", "555-0100"),
+			("0 22 123 45 67", "PL", "0 22 123 45 67"),
+			("500100200", "DE", "500100200"),
+			("030 1234567", "DE", "+49301234567"),
+			# A number with a code of its own keeps it
+			("+49 30 1234567", "PL", "+49301234567"),
+			# E.164 has no place for an extension
+			("500100200#12", "PL", "500100200#12"),
+			# Without a country, only a number that gives its code can be read
+			("500100200", None, "500100200"),
+			("+48 500 100 200", None, "+48500100200"),
+			(None, "PL", ""),
+		):
+			with self.subTest(typed=typed, region=region):
+				self.assertEqual(international_phone(typed, region), international)
+
+	def test_a_number_gets_its_country_code_on_the_address_contact_and_sales_order(self):
+		sync, _name = self.run_step(billing_phone="500 100 200")
+		sales_order = frappe.new_doc("Sales Order")
+
+		sync.set_customer_in_sales_order(sales_order)
+
+		self.assertEqual(frappe.db.get_value("Address", sync.billing_address, "phone"), "+48500100200")
+		self.assertEqual(frappe.db.get_value("Contact", sync.contact, "phone"), "+48500100200")
+		self.assertEqual(
+			(sales_order.contact_phone, sales_order.contact_mobile), ("+48500100200", "+48500100200")
+		)
+
+	def test_an_address_stored_without_the_country_code_is_used_again(self):
+		ann = self.make_customer("Ann", "Ann Smith", "Guest-5")
+		self.make_contact(ann, "Ann", "Smith", "ann@example.com")
+		address = self.make_address(ann, "Order Street 1", phone="500100200")
+
+		sync, _name = self.run_step(billing_phone="+48 500 100 200")
+
+		self.assertEqual((sync.billing_address, sync.shipping_address), (address, address))
+		# The sync never edits an Address, so it keeps the number as it was stored
+		self.assertEqual(frappe.db.get_value("Address", address, "phone"), "500100200")
+
+	def test_an_order_without_an_email_finds_the_contact_of_its_number_however_written(self):
+		ann = self.make_customer("Ann", "Ann Smith", "ann")
+		contact = (
+			frappe.get_doc(
+				{
+					"doctype": "Contact",
+					"first_name": "Ann",
+					"last_name": "Smith",
+					"phone_nos": [{"phone": "500100200", "is_primary_phone": 1}],
+					"links": [{"link_doctype": "Customer", "link_name": ann}],
+				}
+			)
+			.insert()
+			.name
+		)
+
+		sync, name = self.run_step(
+			customer_id=7,
+			account={"username": "ann", "role": "customer"},
+			billing_email="",
+			billing_phone="+48 500 100 200",
+		)
+
+		self.assertEqual((name, sync.contact), (ann, contact))
+
 	def test_a_phone_typed_with_a_dash_is_cleaned_on_the_address_and_contact(self):
 		sync, _name = self.run_step(billing_phone="+48 \u2013 500-100-200")
 
-		self.assertEqual(frappe.db.get_value("Address", sync.billing_address, "phone"), "+48 - 500-100-200")
-		self.assertEqual(frappe.db.get_value("Contact", sync.contact, "phone"), "+48 - 500-100-200")
+		self.assertEqual(frappe.db.get_value("Address", sync.billing_address, "phone"), "+48500100200")
+		self.assertEqual(frappe.db.get_value("Contact", sync.contact, "phone"), "+48500100200")
 		self.assertEqual(sync.phone_issues, [])
 
 	def test_a_phone_erpnext_can_not_take_is_left_out_and_noted(self):

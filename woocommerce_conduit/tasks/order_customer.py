@@ -14,6 +14,7 @@ import unicodedata
 from typing import TYPE_CHECKING, Literal
 
 import frappe
+import phonenumbers
 from erpnext.selling.doctype.customer.customer import Customer
 from frappe import _
 from frappe.contacts.doctype.address.address import Address
@@ -87,10 +88,10 @@ def normalise_phone(phone) -> str:
 def clean_phone(phone) -> str:
 	"""
 	A phone number of the order as Frappe takes it in a phone field (validate_phone_number: digits, spaces and
-	`+-_,.*#()`, at most 20 characters). One it takes is kept as it is, so the Addresses made from it still
-	match. Otherwise its dashes become hyphens, its digits and spaces plain ones, and the other characters Frappe
-	refuses are dropped, a `tel.` say. Empty when that still isn't a number Frappe takes, say one of more than 20
-	characters.
+	`+-_,.*#()`, at most 20 characters), before international_phone gives it its country code. One Frappe takes
+	is kept as it is. Otherwise its dashes become hyphens, its digits and spaces plain ones, and the other
+	characters Frappe refuses are dropped, a `tel.` say. Empty when that still isn't a number Frappe takes, say
+	one of more than 20 characters.
 	"""
 	phone = cstr(phone).strip()
 	if not phone or validate_phone_number(phone):
@@ -120,6 +121,41 @@ def is_refused_phone(phone) -> bool:
 	return bool(re.search(r"\d", phone)) and not clean_phone(phone)
 
 
+def international_phone(phone, region: str | None) -> str:
+	"""
+	A phone number of the order with its country code, as E.164 writes it (`+48500100200`): read as a number of
+	`region`, the ISO code of its address's country, unless it gives a code of its own. One the numbering plan
+	doesn't know as valid is kept as clean_phone leaves it, as writing it otherwise could change the number, and
+	so is one with an extension (`#12`), which E.164 has no place for.
+	"""
+	phone = clean_phone(phone)
+	if not phone:
+		return phone
+	try:
+		number = phonenumbers.parse(phone, region)
+	except phonenumbers.NumberParseException:
+		return phone
+	if number.extension or not phonenumbers.is_valid_number(number):
+		return phone
+	return phonenumbers.format_number(number, phonenumbers.PhoneNumberFormat.E164)
+
+
+def get_phone_key(phone, region: str | None) -> str:
+	"""
+	A phone number as it is compared: the digits of its international form (international_phone), so
+	`500 100 200` and `+48500100200` are the same in Poland, however a number was stored before
+	"""
+	return re.sub(r"\D", "", international_phone(phone, region))
+
+
+def get_country_code(country: str | None) -> str | None:
+	"""
+	The ISO code of a Country, as phonenumbers names the region a number is read in
+	"""
+	code = frappe.get_cached_value("Country", country, "code") if country else None
+	return cstr(code).upper() or None
+
+
 def get_merged_customer(woocommerce_server: str, identifier: str) -> str | None:
 	"""
 	The Customer that the shop's Customer with this identifier was merged into, so its account's orders go there
@@ -138,10 +174,11 @@ def get_merged_customer(woocommerce_server: str, identifier: str) -> str | None:
 	)
 
 
-def get_buyer(billing: dict, tax_id=None) -> frappe._dict:
+def get_buyer(billing: dict, tax_id=None, region: str | None = None) -> frappe._dict:
 	"""
 	Who placed the order, as its billing address says. `name` is what a Customer made for the order is called:
-	the company, else the person, else their email.
+	the company, else the person, else their email. `region` is the country their phone is read in
+	(international_phone).
 	"""
 	first_name = cstr(billing.get("first_name")).strip()
 	last_name = cstr(billing.get("last_name")).strip()
@@ -153,7 +190,8 @@ def get_buyer(billing: dict, tax_id=None) -> frappe._dict:
 		company=company,
 		name=company or f"{first_name} {last_name}".strip() or email,
 		email=email,
-		phone=clean_phone(billing.get("phone")),
+		phone=international_phone(billing.get("phone"), region),
+		phone_region=region,
 		tax_id=cstr(tax_id).strip(),
 	)
 
@@ -248,7 +286,17 @@ def get_address_title(data: dict) -> str:
 
 
 def get_address_key(values) -> tuple[str, ...]:
-	return tuple(normalise_text(values.get(fieldname)) for fieldname in ADDRESS_KEY_FIELDS)
+	"""
+	What an address is compared by: its lines, city, state, postcode and country regardless of case and spaces,
+	and its phone however it is written (get_phone_key), read in the address's own country
+	"""
+	region = get_country_code(values.get("country"))
+	return tuple(
+		get_phone_key(values.get(fieldname), region)
+		if fieldname == "phone"
+		else normalise_text(values.get(fieldname))
+		for fieldname in ADDRESS_KEY_FIELDS
+	)
 
 
 def find_address(addresses: list, values: dict) -> str | None:
@@ -273,7 +321,9 @@ def get_addresses_linking_to(doctype, docname, fields=None):
 
 def get_contact_of_customer(customer_name: str, buyer) -> str | None:
 	"""
-	The Customer's Contact with the order's email and name, or with its phone and name when there is no email
+	The Customer's Contact with the order's email and name, or with its phone and name when there is no email.
+	A phone is compared however either was written (get_phone_key), as a Contact keeps the number it was made
+	with.
 	"""
 	filters = [
 		["Dynamic Link", "link_doctype", "=", "Customer"],
@@ -281,14 +331,31 @@ def get_contact_of_customer(customer_name: str, buyer) -> str | None:
 	]
 	if buyer.email:
 		filters.append(["Contact Email", "email_id", "=", buyer.email])
-	else:
-		filters.append(["Contact Phone", "phone", "=", buyer.phone])
 	person = f"{buyer.first_name} {buyer.last_name}"
-	contacts = frappe.get_all("Contact", filters=filters, fields=["name", "first_name", "last_name"])
-	return next(
-		(row.name for row in contacts if same_name(f"{row.first_name or ''} {row.last_name or ''}", person)),
-		None,
+	contacts = [
+		row.name
+		for row in frappe.get_all("Contact", filters=filters, fields=["name", "first_name", "last_name"])
+		if same_name(f"{row.first_name or ''} {row.last_name or ''}", person)
+	]
+	if not buyer.email:
+		with_phone = get_contacts_with_phone(contacts, buyer.phone, buyer.phone_region)
+		contacts = [name for name in contacts if name in with_phone]
+	return next(iter(contacts), None)
+
+
+def get_contacts_with_phone(contacts: list[str], phone, region: str | None) -> set[str]:
+	"""
+	Those of `contacts` that have this phone number, however either was written (get_phone_key)
+	"""
+	key = get_phone_key(phone, region)
+	if not (key and contacts):
+		return set()
+	rows = frappe.get_all(
+		"Contact Phone",
+		filters={"parenttype": "Contact", "parent": ["in", contacts]},
+		fields=["parent", "phone"],
 	)
+	return {row.parent for row in rows if get_phone_key(row.phone, region) == key}
 
 
 def create_contact(buyer, billing_address: str, customer: Customer, is_primary_contact=False) -> str:
@@ -348,7 +415,7 @@ class SalesOrderCustomerMixin:
 		billing = get_address_data(order, "billing")
 		shipping = get_address_data(order, "shipping")
 		values = self.get_customer_field_values()
-		buyer = get_buyer(billing, values.get("tax_id"))
+		buyer = get_buyer(billing, values.get("tax_id"), self.get_phone_region(billing.get("country")))
 
 		identifier, avatar_url = None, None
 		if cint(order.customer_id) > 0:
@@ -541,9 +608,11 @@ class SalesOrderCustomerMixin:
 
 	def get_address_values(self, data: dict) -> dict:
 		"""
-		An address of the order as the fields of an Address, titled with the name it gives. Its phone is as
-		ERPNext takes it (clean_phone), and left out when ERPNext can't.
+		An address of the order as the fields of an Address, titled with the name it gives. Its phone has its
+		country code, read in the address's country (international_phone), and is left out when ERPNext can't take
+		it.
 		"""
+		country = self.get_country(data.get("country"))
 		return {
 			"address_title": get_address_title(data) or self.customer.customer_name,
 			"address_line1": data.get("address_1"),
@@ -551,8 +620,8 @@ class SalesOrderCustomerMixin:
 			"city": data.get("city"),
 			"state": data.get("state"),
 			"pincode": data.get("postcode"),
-			"country": self.get_country(data.get("country")),
-			"phone": clean_phone(data.get("phone")),
+			"country": country,
+			"phone": international_phone(data.get("phone"), get_country_code(country)),
 		}
 
 	def create_address(
@@ -582,6 +651,13 @@ class SalesOrderCustomerMixin:
 			"WooCommerce Server", self.woocommerce_order.woocommerce_server, "company"
 		)
 		return frappe.get_cached_value("Company", company, "country") if company else None
+
+	def get_phone_region(self, code: str | None) -> str | None:
+		"""
+		The country a phone number of an address of the order is read in, as phonenumbers names it: the
+		address's, else that of the server's company, as get_country falls back
+		"""
+		return get_country_code(self.get_country(code))
 
 	def set_order_contact(self, buyer) -> None:
 		"""

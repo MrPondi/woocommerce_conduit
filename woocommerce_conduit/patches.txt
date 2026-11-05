@@ -14,3 +14,4 @@ woocommerce_conduit.patches.v1.set_ignore_email_domains
 woocommerce_conduit.patches.v1.move_payment_method_map
 woocommerce_conduit.patches.v1.untick_submit_on_completed
 woocommerce_conduit.patches.v1.encrypt_webhook_secrets
+woocommerce_conduit.patches.v1.add_phone_country_codes
